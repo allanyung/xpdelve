@@ -1,0 +1,22 @@
+xpdelve
+Copyright 2026 Allan Yung
+
+This product includes software adapted from Sofka:
+https://github.com/nklmilojevic/sofka
+Copyright 2026 Nikola Milojević
+Licensed under Apache License, Version 2.0.
+
+The built-in theme catalog and portions of the theme resolution and semantic
+styling in src/theme.rs are adapted from Sofka's src/theme.rs. The code was
+translated and modified for xpdelve in 2026.
+
+This product includes software adapted from xpdig:
+https://github.com/brunoluiz/xpdig
+Copyright 2025 Bruno Luiz da Silva
+Licensed under Apache License, Version 2.0.
+
+Portions of the Crossplane condition and package projection in src/model.rs are
+adapted from xpdig's internal/xplane/model.go and internal/xplane/xpkg/xpkg.go.
+Portions of the tree and table presentation in src/app.rs are adapted from
+xpdig's internal/bubbles/layout/xpnavigator/model.go. The code was translated
+to Rust and substantially modified for xpdelve in 2026.

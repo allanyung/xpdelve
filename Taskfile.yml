@@ -1,0 +1,57 @@
+version: "3"
+
+vars:
+  CARGO: cargo
+
+tasks:
+  build:
+    desc: Build xpdelve
+    cmds:
+      - '{{.CARGO}} build --locked {{.CLI_ARGS}}'
+
+  test:
+    desc: Run all tests
+    cmds:
+      - '{{.CARGO}} test --locked {{.CLI_ARGS}}'
+
+  lint:
+    desc: Run Clippy with warnings denied
+    cmds:
+      - '{{.CARGO}} clippy --locked --all-targets -- -D warnings'
+
+  fmt:
+    desc: Format Rust sources
+    cmds:
+      - '{{.CARGO}} fmt --all'
+
+  fmt-check:
+    internal: true
+    cmds:
+      - '{{.CARGO}} fmt --all -- --check'
+
+  check:
+    desc: Run formatting, lint, and tests
+    deps: [fmt-check, lint, test]
+
+  run:
+    desc: Run xpdelve; pass arguments after --
+    cmds:
+      - '{{.CARGO}} run --locked -- {{.CLI_ARGS}}'
+
+  bench:
+    desc: Run benchmarks when benchmarks are present
+    cmds:
+      - '{{.CARGO}} bench --locked {{.CLI_ARGS}}'
+
+  package:
+    desc: Build the release binary
+    cmds:
+      - '{{.CARGO}} build --locked --release'
+
+  ci:
+    desc: Run the local CI quality gate
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: package
