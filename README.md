@@ -98,8 +98,10 @@ context, resource, API group, and name through the variables in `args`.
 
 ## Keys
 
-- `j`/`k` or arrows: move through resources
-- `Enter`, `Space`, `Right`, `Left`: expand or collapse the tree
+- `j`/`k` or `Up`/`Down`: move through resources
+- `Enter`/`Space`: toggle expansion
+- `Right`: expand or select the first child
+- `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
 - `/`: filter; `f`: find; `n`/`N`: next or previous match
 - `d`, `y`, `v`, `i`: describe, live YAML, events, and previous-trace diff

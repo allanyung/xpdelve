@@ -43,6 +43,38 @@ const EVENT_BUFFER: usize = 128;
 const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
+const HELP_LINES: &[&str] = &[
+    "Navigation",
+    "  j/k, Up/Down      move selection",
+    "  PgUp/PgDn         move one page",
+    "  Enter/Space       toggle expand or collapse",
+    "  Right             expand or select first child",
+    "  Left              collapse or select parent",
+    "  [                 collapse all",
+    "  ]                 expand all",
+    "  z                 toggle fitted / full-width table",
+    "  Alt+h / Alt+l     scroll full-width table",
+    "",
+    "Discovery",
+    "  /                 filter tree",
+    "  f                 find text",
+    "  n / N             next / previous match",
+    "  Esc               clear find and filter",
+    "",
+    "Session",
+    "  r                 refresh now",
+    "  P                 pause automatic refresh",
+    "  q / Ctrl+C        quit",
+    "",
+    "Actions",
+    "  d / y / v         describe / live YAML / events",
+    "  i                 diff from previous trace",
+    "  e                 kubectl edit",
+    "  c                 copy resource identifier",
+    "  p / u             pause / unpause resource",
+    "  Ctrl+D            delete resource",
+    "  Ctrl+X            remove all finalizers",
+];
 
 enum AppEvent {
     TraceFinished {
@@ -114,6 +146,7 @@ struct App {
     selected_visible: usize,
     collapsed: HashSet<Identity>,
     mode: InputMode,
+    help_scroll: u16,
     input: String,
     filter: String,
     find: String,
@@ -150,6 +183,7 @@ impl App {
             selected_visible: 0,
             collapsed: HashSet::new(),
             mode: InputMode::Normal,
+            help_scroll: 0,
             input: String::new(),
             filter: String::new(),
             find: String::new(),
@@ -289,6 +323,29 @@ impl App {
         let identity = node.identity.clone();
         if !self.collapsed.remove(&identity) {
             self.collapsed.insert(identity);
+        }
+    }
+
+    fn expand_or_child(&mut self) {
+        let visible = self.visible();
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let Some(index) = visible.get(self.selected_visible).copied() else {
+            return;
+        };
+        let node = &snapshot.nodes[index];
+        if node.child_count == 0 {
+            return;
+        }
+        if self.collapsed.remove(&node.identity) {
+            return;
+        }
+        if let Some(position) = visible
+            .iter()
+            .position(|child| snapshot.nodes[*child].parent == Some(index))
+        {
+            self.set_selection(position);
         }
     }
 
@@ -532,7 +589,29 @@ impl App {
             return UiAction::None;
         }
         if self.mode == InputMode::Help {
-            self.mode = InputMode::Normal;
+            let area = centered(terminal_area, 72, 20);
+            let body_height = area.height.saturating_sub(3);
+            let max_scroll = (HELP_LINES.len() as u16).saturating_sub(body_height);
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    self.mode = InputMode::Normal;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(max_scroll);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(body_height).min(max_scroll);
+                }
+                KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(body_height);
+                }
+                KeyCode::Home | KeyCode::Char('g') => self.help_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.help_scroll = max_scroll,
+                _ => {}
+            }
             return UiAction::None;
         }
         if matches!(self.mode, InputMode::Filter | InputMode::Find) {
@@ -605,7 +684,8 @@ impl App {
             (KeyCode::End | KeyCode::Char('G'), _) => {
                 self.set_selection(self.visible().len().saturating_sub(1));
             }
-            (KeyCode::Enter | KeyCode::Right | KeyCode::Char(' '), _) => self.toggle_selected(),
+            (KeyCode::Enter | KeyCode::Char(' '), _) => self.toggle_selected(),
+            (KeyCode::Right, _) => self.expand_or_child(),
             (KeyCode::Left, _) => self.collapse_or_parent(),
             (KeyCode::Char(']'), _) => self.collapsed.clear(),
             (KeyCode::Char('['), _) => {
@@ -635,7 +715,10 @@ impl App {
                 self.find.clear();
                 self.set_selection(self.selected_visible);
             }
-            (KeyCode::Char('?'), _) => self.mode = InputMode::Help,
+            (KeyCode::Char('?'), _) => {
+                self.help_scroll = 0;
+                self.mode = InputMode::Help;
+            }
             (KeyCode::Char('P'), _) => {
                 self.paused = !self.paused;
                 self.status = if self.paused {
@@ -1224,7 +1307,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
     render_prompt(frame, chunks[2], app);
     render_status(frame, chunks[3], app);
     if app.mode == InputMode::Help {
-        render_help(frame, centered(area, 72, 20), &app.theme);
+        render_help(frame, centered(area, 72, 20), app.help_scroll, &app.theme);
     }
     if let Some(modal) = &app.modal {
         let modal_area = match modal {
@@ -1767,47 +1850,36 @@ fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(message).style(style), area);
 }
 
-fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
+fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, scroll: u16, theme: &Theme) {
     frame.render_widget(Clear, area);
+    let block = bordered_block(" Help ", theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let regions = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let lines = HELP_LINES
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                return Line::default();
+            }
+            if !line.starts_with(' ') {
+                return Line::from(Span::styled(format!("  {line}"), theme.title()));
+            }
+            let (binding, description) = line.split_at(20);
+            let binding = binding.trim_end();
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(binding.trim_start(), theme.warning()),
+                Span::raw(" ".repeat(20 - binding.len())),
+                Span::styled(description, theme.subtle()),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), regions[0]);
     frame.render_widget(
-        Paragraph::new(
-            [
-                "Navigation",
-                "  j/k, arrows       move selection",
-                "  PgUp/PgDn         move one page",
-                "  Enter/Space/Right expand or collapse",
-                "  Left              collapse or select parent",
-                "  [                 collapse all",
-                "  ]                 expand all",
-                "  z                 toggle fitted / full-width table",
-                "  Alt+h / Alt+l     scroll full-width table",
-                "",
-                "Discovery",
-                "  /                 filter tree",
-                "  f                 find text",
-                "  n / N             next / previous match",
-                "  Esc               clear find and filter",
-                "",
-                "Session",
-                "  r                 refresh now",
-                "  P                 pause automatic refresh",
-                "  q / Ctrl+C        quit",
-                "",
-                "Actions",
-                "  d / y / v         describe / live YAML / events",
-                "  i                 diff from previous trace",
-                "  e                 kubectl edit",
-                "  c                 copy resource identifier",
-                "  p / u             pause / unpause resource",
-                "  Ctrl+D            delete resource",
-                "  Ctrl+X            remove all finalizers",
-                "",
-                "Press any key to close help",
-            ]
-            .join("\n"),
-        )
-        .block(bordered_block(" Help ", theme)),
-        area,
+        Paragraph::new("j/k scroll  PgUp/PgDn page  g/G top/bottom  Esc/q/? close")
+            .style(theme.subtle()),
+        regions[1],
     );
 }
 
@@ -2251,6 +2323,29 @@ mod tests {
     }
 
     #[test]
+    fn right_expands_a_collapsed_node() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+        app.toggle_selected();
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+
+        assert_eq!(app.visible().len(), 2);
+        assert_eq!(app.selected_visible, 0);
+    }
+
+    #[test]
+    fn right_selects_the_first_child_of_an_expanded_node() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+
+        assert_eq!(app.selected_visible, 1);
+        assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
+    }
+
+    #[test]
     fn unicode_tree_uses_disconnected_xpdig_indentation() {
         let app = app();
         let snapshot = app.snapshot.as_ref().unwrap();
@@ -2591,6 +2686,63 @@ mod tests {
         assert!(rendered.contains("Enter/Space expand/collapse"));
         assert!(rendered.contains("ctrl-d delete"));
         assert!(!rendered.contains("j/k move"));
+    }
+
+    #[test]
+    fn help_modal_scrolls_to_session_and_actions_on_a_standard_terminal() {
+        let mut app = app();
+        app.mode = InputMode::Help;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Navigation"));
+        assert!(!rendered.contains("Session"));
+        assert!(rendered.contains("j/k scroll"));
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Rect::new(0, 0, 80, 24),
+        );
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Session"));
+        assert!(rendered.contains("refresh now"));
+        assert!(rendered.contains("Actions"));
+        assert!(rendered.contains("remove all finalizers"));
+        assert!(rendered.contains("Esc/q/? close"));
+    }
+
+    #[test]
+    fn help_modal_styles_headings_keys_and_descriptions() {
+        let mut app = app();
+        app.mode = InputMode::Help;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((7, 3)).unwrap().fg, app.theme.palette.teal);
+        assert_eq!(buffer.cell((7, 4)).unwrap().fg, app.theme.palette.yellow);
+        assert_eq!(buffer.cell((25, 4)).unwrap().fg, app.theme.palette.overlay1);
+    }
+
+    #[test]
+    fn help_navigation_keys_scroll_without_closing() {
+        let mut app = app();
+        app.mode = InputMode::Help;
+        let area = Rect::new(0, 0, 80, 24);
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+        assert_eq!(app.mode, InputMode::Help);
+        assert_eq!(app.help_scroll, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        assert_eq!(app.mode, InputMode::Normal);
     }
 
     #[test]
