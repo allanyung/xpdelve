@@ -74,6 +74,28 @@ xpdelve --context development ObjectStorage/example
 Configuration is read from `~/.config/xpdelve/config.toml`. See
 [`docs/configuration.md`](docs/configuration.md).
 
+### Sofka Integration
+
+`xpdelve` can be launched for the selected Kubernetes resource from
+[`sofka`](https://github.com/nklmilojevic/sofka). Ensure `xpdelve` is available
+on your `PATH`, then add this plugin to your Sofka configuration file:
+
+```toml
+[[plugins]]
+key = "ctrl-t"
+palette = "xpdelve"
+name = "Crossplane Delve"
+command = "xpdelve"
+args = ["-n", "$NAMESPACE", "--context", "$CONTEXT", "$RESOURCE.$GROUP/$NAME"]
+mutating = false
+output = "terminal"
+timeout = "10s"
+```
+
+Select a Crossplane resource in Sofka and press `ctrl-t` to open its resource trace
+in `xpdelve`. Sofka supplies the selected resource's namespace, kubeconfig
+context, resource, API group, and name through the variables in `args`.
+
 ## Keys
 
 - `j`/`k` or arrows: move through resources
@@ -82,11 +104,11 @@ Configuration is read from `~/.config/xpdelve/config.toml`. See
 - `/`: filter; `f`: find; `n`/`N`: next or previous match
 - `d`, `y`, `v`, `i`: describe, live YAML, events, and previous-trace diff
 - `p`/`u`: pause or unpause the selected Crossplane resource
-- `Ctrl+D`: delete with a propagation-policy confirmation
-- `Ctrl+X`: selectively remove finalizers after confirmation
+- `ctrl+d`: delete with a propagation-policy confirmation
+- `ctrl+x`: selectively remove finalizers after confirmation
 - `e`: run `kubectl edit`
 - `c`: copy the canonical resource identifier using OSC 52
-- `z`: toggle fitted/full-width columns; `Alt+h`/`Alt+l`: horizontal scroll
+- `z`: toggle fitted/full-width columns; `alt+h`/`alt+l`: horizontal scroll
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
 Delete confirmation defaults to foreground propagation. Press `c` in the
