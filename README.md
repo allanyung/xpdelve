@@ -38,6 +38,13 @@ Linux archives use the GNU ABI and are built on Ubuntu 22.04. macOS binaries
 are currently unsigned and not notarized. Windows and musl builds are not
 currently provided.
 
+On macOS, Gatekeeper may prevent the unsigned binary from running. Remove the
+quarantine attribute after extracting it:
+
+```console
+xattr -d com.apple.quarantine xpdelve
+```
+
 ## Prerequisites
 
 ### Runtime

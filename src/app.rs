@@ -19,7 +19,7 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -1251,15 +1251,30 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         Style::default().bold()
     };
     let title_style = app.theme.title();
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    let app_version_width = "xpdelve ".width() + version.width();
+    let regions = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(app_version_width as u16),
+    ])
+    .split(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" xpdelve ", title_style),
+            Span::raw(" "),
             Span::raw(text::sanitize(&app.resource)),
             Span::styled(activity, activity_style),
             Span::styled(paused, warning_style),
             Span::styled(readonly, warning_style),
         ])),
-        area,
+        regions[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("xpdelve ", title_style),
+            Span::styled(version, app.theme.subtle()),
+        ]))
+        .alignment(Alignment::Right),
+        regions[1],
     );
 }
 
@@ -2405,6 +2420,30 @@ mod tests {
         assert!(rendered.contains("OBJECT"));
         assert!(rendered.contains("GROUP"));
         assert!(rendered.contains("Root/root"));
+    }
+
+    #[test]
+    fn header_shows_app_and_version_at_right() {
+        let app = app();
+        let width = 100;
+        let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        let backend = TestBackend::new(width, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let app_start = width - u16::try_from("xpdelve ".width() + version.width()).unwrap();
+        let version_start = width - u16::try_from(version.width()).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((app_start, 0)).unwrap().symbol(), "x");
+        assert_eq!(
+            buffer.cell((app_start, 0)).unwrap().fg,
+            app.theme.palette.teal
+        );
+        assert_eq!(buffer.cell((version_start, 0)).unwrap().symbol(), "v");
+        assert_eq!(
+            buffer.cell((version_start, 0)).unwrap().fg,
+            app.theme.palette.overlay1
+        );
     }
 
     #[test]
