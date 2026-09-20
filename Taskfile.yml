@@ -98,6 +98,11 @@ tasks:
           exit 1
         fi
 
+        rollback() {
+          git restore --source=HEAD --staged --worktree -- Cargo.toml Cargo.lock
+        }
+        trap rollback EXIT
+
         python3 - "$version" <<'PY'
         import re
         import sys
@@ -116,7 +121,7 @@ tasks:
         manifest.write_text(updated)
         PY
 
-        cargo metadata --no-deps --format-version 1 >/dev/null
+        cargo update --offline -p xpdelve
         cargo_version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
         if [ "$cargo_version" != "$version" ]; then
           printf 'Cargo version %s does not match requested version %s\n' "$cargo_version" "$version" >&2
@@ -127,6 +132,7 @@ tasks:
         git add Cargo.toml Cargo.lock
         git commit -m "Release $tag"
         git tag -a "$tag" -m "Release $tag"
+        trap - EXIT
 
         printf '\nRelease %s is committed and tagged locally. Push it with:\n\n' "$tag"
         printf '  git push origin main %s\n' "$tag"
