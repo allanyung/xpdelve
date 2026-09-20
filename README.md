@@ -12,26 +12,25 @@ both projects under Apache-2.0; see [`NOTICE`](NOTICE) for detailed provenance.
 
 ## Status
 
-Version `0.1.0` provides live trace browsing,
-resilient refresh, tree find/filter, native Kubernetes inspection and
-mutations, and kubectl-backed Describe and Edit workflows. See
+xpdelve provides live trace browsing, resilient refresh, tree find/filter,
+native Kubernetes inspection and mutations, and kubectl-backed Describe and
+Edit workflows. See
 [`docs/implementation.md`](docs/implementation.md) for remaining release work.
-See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 ## Installation
 
 Download the archive for your platform from the GitHub release:
 
-- `xpdelve_0.1.0_Linux_x86_64.tar.gz`
-- `xpdelve_0.1.0_Linux_arm64.tar.gz`
-- `xpdelve_0.1.0_Darwin_x86_64.tar.gz`
-- `xpdelve_0.1.0_Darwin_arm64.tar.gz`
+- `xpdelve_VERSION_Linux_x86_64.tar.gz`
+- `xpdelve_VERSION_Linux_arm64.tar.gz`
+- `xpdelve_VERSION_Darwin_x86_64.tar.gz`
+- `xpdelve_VERSION_Darwin_arm64.tar.gz`
 
 Extract the archive and place `xpdelve` somewhere on your `PATH`:
 
 ```console
-tar -xzf xpdelve_0.1.0_Linux_x86_64.tar.gz
-install -m 0755 xpdelve_0.1.0_Linux_x86_64/xpdelve ~/.local/bin/xpdelve
+tar -xzf xpdelve_VERSION_Linux_x86_64.tar.gz
+install -m 0755 xpdelve_VERSION_Linux_x86_64/xpdelve ~/.local/bin/xpdelve
 ```
 
 Linux archives use the GNU ABI and are built on Ubuntu 22.04. macOS binaries
@@ -153,6 +152,17 @@ task run -- ObjectStorage/example
 
 Task is the supported contributor interface. Cargo remains the underlying Rust
 build system and can also be used directly.
+
+To prepare a release from a clean `main` branch, provide its version without a
+`v` prefix:
+
+```console
+task release VERSION=0.1.1
+```
+
+The task updates Cargo's package version and lockfile, runs the local CI gate,
+then creates a release commit and annotated tag. It prints the command for
+pushing the commit and tag; it does not push them automatically.
 
 ## License
 

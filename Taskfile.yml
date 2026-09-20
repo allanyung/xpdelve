@@ -55,3 +55,78 @@ tasks:
       - task: lint
       - task: test
       - task: package
+
+  release:
+    desc: Prepare, commit, and tag a release (VERSION=x.y.z)
+    silent: true
+    requires:
+      vars: [VERSION]
+    env:
+      RELEASE_VERSION: "{{.VERSION}}"
+    cmds:
+      - |
+        set -eu
+
+        version="$RELEASE_VERSION"
+        if ! python3 -c 'import re, sys; sys.exit(not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", sys.argv[1]))' "$version"; then
+          printf 'VERSION must use x.y.z format without a v prefix\n' >&2
+          exit 1
+        fi
+
+        tag="v$version"
+        branch="$(git branch --show-current)"
+        if [ "$branch" != "main" ]; then
+          printf 'release must run from main (currently %s)\n' "$branch" >&2
+          exit 1
+        fi
+        if [ -n "$(git status --porcelain)" ]; then
+          printf 'release requires a clean worktree\n' >&2
+          exit 1
+        fi
+        if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+          printf 'tag %s already exists\n' "$tag" >&2
+          exit 1
+        fi
+        remote_tag="$(git ls-remote --tags origin "refs/tags/$tag")"
+        if [ -n "$remote_tag" ]; then
+          printf 'tag %s already exists on origin\n' "$tag" >&2
+          exit 1
+        fi
+        current_version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+        if [ "$current_version" = "$version" ]; then
+          printf 'Cargo.toml already declares version %s\n' "$version" >&2
+          exit 1
+        fi
+
+        python3 - "$version" <<'PY'
+        import re
+        import sys
+        from pathlib import Path
+
+        manifest = Path("Cargo.toml")
+        contents = manifest.read_text()
+        updated, count = re.subn(
+            r'(?m)^(version\s*=\s*")[^"]+("\s*)$',
+            rf'\g<1>{sys.argv[1]}\g<2>',
+            contents,
+            count=1,
+        )
+        if count != 1:
+            raise SystemExit("could not update the package version in Cargo.toml")
+        manifest.write_text(updated)
+        PY
+
+        cargo metadata --no-deps --format-version 1 >/dev/null
+        cargo_version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+        if [ "$cargo_version" != "$version" ]; then
+          printf 'Cargo version %s does not match requested version %s\n' "$cargo_version" "$version" >&2
+          exit 1
+        fi
+
+        task ci
+        git add Cargo.toml Cargo.lock
+        git commit -m "Release $tag"
+        git tag -a "$tag" -m "Release $tag"
+
+        printf '\nRelease %s is committed and tagged locally. Push it with:\n\n' "$tag"
+        printf '  git push origin main %s\n' "$tag"
