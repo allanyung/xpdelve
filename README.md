@@ -41,7 +41,7 @@ On macOS, Gatekeeper may prevent the unsigned binary from running. Remove the
 quarantine attribute after extracting it:
 
 ```console
-xattr -d com.apple.quarantine xpdelve
+xattr -d com.apple.quarantine ~/.local/bin/xpdelve
 ```
 
 ## Prerequisites
