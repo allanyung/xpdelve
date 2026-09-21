@@ -1313,7 +1313,14 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
         let modal_area = match modal {
             Modal::Text { kind, .. } => content_modal_area(area, *kind),
             Modal::Delete { .. } => centered(area, 100, 12),
-            Modal::Finalizers { .. } => centered(area, 84, 24),
+            Modal::Finalizers { finalizers, .. } => centered(
+                area,
+                100,
+                u16::try_from(finalizers.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(10)
+                    .clamp(12, 24),
+            ),
         };
         render_modal(frame, modal_area, modal, &app.theme);
     }
@@ -1926,25 +1933,7 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             let regions =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             let content_width = usize::from(regions[0].width);
-            let resource = text::sanitize(&format!(
-                "{}/{}",
-                target.identity.kind, target.identity.name
-            ));
-            let resource = pad_or_truncate(&resource, content_width)
-                .trim_end()
-                .to_owned();
-            let group = if target.identity.group.is_empty() {
-                "core"
-            } else {
-                &target.identity.group
-            };
-            let namespace = target.identity.namespace.as_deref().unwrap_or("<cluster>");
-            let metadata = pad_or_truncate(
-                &text::sanitize(&format!("{group} · namespace/{namespace}")),
-                content_width,
-            )
-            .trim_end()
-            .to_owned();
+            let (resource, metadata) = target_summary(target, content_width);
             let identity_style = theme.title();
             let selected_style = theme.selected_option();
             let subtle_style = theme.subtle();
@@ -2000,30 +1989,83 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             selected,
             cursor,
         } => {
+            let block = destructive_block(" Remove finalizers ", theme);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let regions =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+            let (resource, metadata) = target_summary(target, usize::from(regions[0].width));
+            let identity_style = theme.title();
+            let selected_style = theme.selected_option();
+            let subtle_style = theme.subtle();
             let mut lines = vec![
-                Line::from(format!(
-                    "Remove finalizers from {}?",
-                    text::sanitize(&target.identity.to_string())
-                )),
-                Line::from("This can bypass cleanup and leave external resources behind."),
                 Line::from(""),
+                Line::styled(resource, identity_style),
+                Line::styled(metadata, subtle_style),
+                Line::from(""),
+                Line::styled("Finalizers", Style::default().bold()),
             ];
             lines.extend(finalizers.iter().enumerate().map(|(index, finalizer)| {
-                let checked = if selected.contains(&index) { "x" } else { " " };
-                let marker = if index == *cursor { ">" } else { " " };
-                Line::from(format!(
-                    "{marker} [{checked}] {}",
-                    text::sanitize(finalizer)
-                ))
+                let cursor_selected = index == *cursor;
+                let checked = selected.contains(&index);
+                let style = if cursor_selected {
+                    selected_style
+                } else if checked {
+                    Style::default()
+                } else {
+                    subtle_style
+                };
+                Line::from(vec![
+                    Span::styled(if cursor_selected { "› " } else { "  " }, style),
+                    Span::styled(if checked { "● " } else { "○ " }, style),
+                    Span::styled(text::sanitize(finalizer), style),
+                ])
             }));
             lines.push(Line::from(""));
-            lines.push(Line::from("Space toggles; Enter confirms; Esc cancels."));
+            lines.push(Line::styled(
+                "Removing finalizers can bypass cleanup and leave external resources behind.",
+                subtle_style,
+            ));
+            frame.render_widget(Paragraph::new(lines), regions[0]);
+            let remove_style = if theme.colors_enabled {
+                theme.danger()
+            } else {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            };
             frame.render_widget(
-                Paragraph::new(lines).block(bordered_block(" Confirm finalizer removal ", theme)),
-                area,
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" j/k", selected_style),
+                    Span::styled(" Select   ", subtle_style),
+                    Span::styled("Space", selected_style),
+                    Span::styled(" Toggle   ", subtle_style),
+                    Span::styled("Enter Remove", remove_style),
+                    Span::styled("   Esc Cancel ", subtle_style),
+                ])),
+                regions[1],
             );
         }
     }
+}
+
+fn target_summary(target: &Target, width: usize) -> (String, String) {
+    let resource = text::sanitize(&format!(
+        "{}/{}",
+        target.identity.kind, target.identity.name
+    ));
+    let resource = pad_or_truncate(&resource, width).trim_end().to_owned();
+    let group = if target.identity.group.is_empty() {
+        "core"
+    } else {
+        &target.identity.group
+    };
+    let namespace = target.identity.namespace.as_deref().unwrap_or("<cluster>");
+    let metadata = pad_or_truncate(
+        &text::sanitize(&format!("{group} · namespace/{namespace}")),
+        width,
+    )
+    .trim_end()
+    .to_owned();
+    (resource, metadata)
 }
 
 fn styled_content_line<'a>(
@@ -2657,6 +2699,68 @@ mod tests {
         assert!(rendered.contains("c Change propagation"), "{rendered}");
         assert!(rendered.contains("Enter Delete"));
         assert!(!rendered.contains("UID"));
+        assert!(!rendered.contains("must-not-be-rendered"));
+        assert_eq!(
+            terminal.backend().buffer().cell((10, 4)).unwrap().fg,
+            theme.palette.red
+        );
+        assert_eq!(
+            terminal.backend().buffer().cell((12, 4)).unwrap().fg,
+            theme.palette.red
+        );
+        assert_eq!(
+            terminal.backend().buffer().cell((11, 14)).unwrap().fg,
+            theme.palette.yellow
+        );
+    }
+
+    #[test]
+    fn finalizer_confirmation_matches_destructive_modal_style() {
+        let modal = Modal::Finalizers {
+            target: Target {
+                identity: Identity {
+                    group: "demo.xpdelve.io".into(),
+                    version: "v1alpha1".into(),
+                    kind: "DemoNetwork".into(),
+                    namespace: Some("xpdelve-demo".into()),
+                    name: "xpdelve-demo-network".into(),
+                },
+                expected_uid: Some("must-not-be-rendered".into()),
+            },
+            finalizers: vec![
+                "demo.xpdelve.io/hold-for-recording".into(),
+                "kubernetes.io/foregroundDeletion".into(),
+            ],
+            selected: HashSet::from([0]),
+            cursor: 1,
+        };
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = centered(Rect::new(0, 0, 120, 20), 100, 12);
+        let theme = app().theme;
+        terminal
+            .draw(|frame| render_modal(frame, area, &modal, &theme))
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Remove finalizers"), "{rendered}");
+        assert!(
+            rendered.contains("DemoNetwork/xpdelve-demo-network"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("demo.xpdelve.io · namespace/xpdelve-demo"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("● demo.xpdelve.io/hold-for-recording"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("› ○ kubernetes.io/foregroundDeletion"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Space Toggle"), "{rendered}");
+        assert!(rendered.contains("Enter Remove"), "{rendered}");
         assert!(!rendered.contains("must-not-be-rendered"));
         assert_eq!(
             terminal.backend().buffer().cell((10, 4)).unwrap().fg,

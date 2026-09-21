@@ -38,6 +38,29 @@ tasks:
     cmds:
       - '{{.CARGO}} run --locked -- {{.CLI_ARGS}}'
 
+  demo:setup:
+    desc: Create the vind cluster and install the xpdelve demo
+    cmds:
+      - ./demo/scripts/setup.sh
+
+  demo:reset:
+    desc: Recreate the root resource for another demo recording
+    cmds:
+      - ./demo/scripts/reset.sh
+
+  demo:record:
+    desc: Build xpdelve and record docs/assets/xpdelve.gif with VHS
+    deps: [package]
+    cmds:
+      - ./demo/scripts/reset.sh
+      - mkdir -p docs/assets
+      - vhs demo/xpdelve.tape
+
+  demo:destroy:
+    desc: Delete the xpdelve vind demo cluster
+    cmds:
+      - ./demo/scripts/destroy.sh
+
   bench:
     desc: Run benchmarks when benchmarks are present
     cmds:

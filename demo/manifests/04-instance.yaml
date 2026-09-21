@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: xpdelve-demo
+---
+apiVersion: demo.xpdelve.io/v1alpha1
+kind: DemoPlatform
+metadata:
+  namespace: xpdelve-demo
+  name: xpdelve-demo
+  labels:
+    app.kubernetes.io/name: xpdelve-demo
+spec:
+  owner: xpdelve
+  environment: recording
+  replicas: 2

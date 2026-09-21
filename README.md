@@ -10,6 +10,11 @@ The project is an opinionated Rust successor to
 by [`sofka`](https://github.com/nklmilojevic/sofka). Portions are adapted from
 both projects under Apache-2.0; see [`NOTICE`](NOTICE) for detailed provenance.
 
+![xpdelve demo](docs/assets/xpdelve.gif)
+
+The reproducible nested-Composition environment and VHS recording used for the
+project demo are documented in [`demo/`](demo/README.md).
+
 ## Status
 
 xpdelve provides live trace browsing, resilient refresh, tree find/filter,

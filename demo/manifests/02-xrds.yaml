@@ -1,0 +1,97 @@
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: demoplatforms.demo.xpdelve.io
+spec:
+  scope: Namespaced
+  group: demo.xpdelve.io
+  names:
+    kind: DemoPlatform
+    plural: demoplatforms
+  defaultCompositionRef:
+    name: xpdelve-demo-platform
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                owner:
+                  type: string
+                environment:
+                  type: string
+                replicas:
+                  type: integer
+                  minimum: 1
+              required:
+                - owner
+                - environment
+                - replicas
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: demonetworks.demo.xpdelve.io
+spec:
+  scope: Namespaced
+  group: demo.xpdelve.io
+  names:
+    kind: DemoNetwork
+    plural: demonetworks
+  defaultCompositionRef:
+    name: xpdelve-demo-network
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                owner:
+                  type: string
+                cidr:
+                  type: string
+              required:
+                - owner
+                - cidr
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: demoapplications.demo.xpdelve.io
+spec:
+  scope: Namespaced
+  group: demo.xpdelve.io
+  names:
+    kind: DemoApplication
+    plural: demoapplications
+  defaultCompositionRef:
+    name: xpdelve-demo-application
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                owner:
+                  type: string
+                replicas:
+                  type: integer
+                  minimum: 1
+              required:
+                - owner
+                - replicas

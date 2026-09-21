@@ -1,0 +1,197 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xpdelve-demo-platform
+spec:
+  compositeTypeRef:
+    apiVersion: demo.xpdelve.io/v1alpha1
+    kind: DemoPlatform
+  mode: Pipeline
+  pipeline:
+    - step: compose-platform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: 01-network
+            base:
+              apiVersion: demo.xpdelve.io/v1alpha1
+              kind: DemoNetwork
+              metadata:
+                name: xpdelve-demo-network
+              spec:
+                cidr: 10.42.0.0/16
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: spec.owner
+          - name: 02-application
+            base:
+              apiVersion: demo.xpdelve.io/v1alpha1
+              kind: DemoApplication
+              metadata:
+                name: xpdelve-demo-app
+              spec: {}
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: spec.owner
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.replicas
+                toFieldPath: spec.replicas
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xpdelve-demo-network
+spec:
+  compositeTypeRef:
+    apiVersion: demo.xpdelve.io/v1alpha1
+    kind: DemoNetwork
+  mode: Pipeline
+  pipeline:
+    - step: compose-network
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: 01-network-settings
+            base:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: xpdelve-demo-network-settings
+                finalizers:
+                  - demo.xpdelve.io/hold-for-recording
+                labels:
+                  app.kubernetes.io/name: xpdelve-demo
+                  app.kubernetes.io/component: network
+              data:
+                cidr: unset
+                purpose: Demonstrate a blocked cascading deletion in xpdelve
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.cidr
+                toFieldPath: data.cidr
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.labels[demo.xpdelve.io/owner]
+            readinessChecks:
+              - type: None
+          - name: 02-default-deny
+            base:
+              apiVersion: networking.k8s.io/v1
+              kind: NetworkPolicy
+              metadata:
+                name: xpdelve-demo-default-deny
+                labels:
+                  app.kubernetes.io/name: xpdelve-demo
+                  app.kubernetes.io/component: network
+              spec:
+                podSelector: {}
+                policyTypes:
+                  - Ingress
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.labels[demo.xpdelve.io/owner]
+            readinessChecks:
+              - type: None
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xpdelve-demo-application
+spec:
+  compositeTypeRef:
+    apiVersion: demo.xpdelve.io/v1alpha1
+    kind: DemoApplication
+  mode: Pipeline
+  pipeline:
+    - step: compose-application
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: 01-web-deployment
+            base:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: xpdelve-demo-web
+                labels:
+                  app.kubernetes.io/name: xpdelve-demo
+                  app.kubernetes.io/component: web
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app.kubernetes.io/name: xpdelve-demo-web
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: xpdelve-demo-web
+                  spec:
+                    containers:
+                      - name: web
+                        image: registry.k8s.io/pause:3.10
+                        ports:
+                          - name: http
+                            containerPort: 8080
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.labels[demo.xpdelve.io/owner]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.replicas
+                toFieldPath: spec.replicas
+            readinessChecks:
+              - type: MatchCondition
+                matchCondition:
+                  type: Available
+                  status: "True"
+          - name: 02-web-service
+            base:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: xpdelve-demo-web
+                labels:
+                  app.kubernetes.io/name: xpdelve-demo
+                  app.kubernetes.io/component: web
+              spec:
+                selector:
+                  app.kubernetes.io/name: xpdelve-demo-web
+                ports:
+                  - name: http
+                    port: 80
+                    targetPort: http
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.labels[demo.xpdelve.io/owner]
+            readinessChecks:
+              - type: None
+          - name: 03-app-settings
+            base:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: xpdelve-demo-app-settings
+                labels:
+                  app.kubernetes.io/name: xpdelve-demo
+                  app.kubernetes.io/component: web
+              data:
+                message: Hello from the xpdelve nested Composition demo
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.labels[demo.xpdelve.io/owner]
+            readinessChecks:
+              - type: None
