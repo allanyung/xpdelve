@@ -1,0 +1,6 @@
+experimental:
+  docker:
+    registryProxy:
+      enabled: false
+    loadBalancer:
+      enabled: false
