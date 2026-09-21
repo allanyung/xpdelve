@@ -30,7 +30,7 @@ Extract the archive and place `xpdelve` somewhere on your `PATH`:
 
 ```console
 tar -xzf xpdelve_VERSION_Linux_x86_64.tar.gz
-install -m 0755 xpdelve_VERSION_Linux_x86_64/xpdelve ~/.local/bin/xpdelve
+install -m 0755 xpdelve ~/.local/bin/xpdelve
 ```
 
 Linux archives use the GNU ABI and are built on Ubuntu 22.04. macOS binaries

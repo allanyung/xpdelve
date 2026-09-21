@@ -96,10 +96,7 @@ jobs:
         run: |
           version="${VERSION#v}"
           package="xpdelve_${version}_${ARTIFACT}"
-          mkdir "$package"
-          cp "target/${TARGET}/release/xpdelve" README.md LICENSE NOTICE "$package/"
-          cp -R docs "$package/docs"
-          tar -czf "${package}.tar.gz" "$package"
+          tar -czf "${package}.tar.gz" -C "target/${TARGET}/release" xpdelve
           shasum -a 256 "${package}.tar.gz" > "${package}.tar.gz.sha256"
 
       - name: Upload artifacts
