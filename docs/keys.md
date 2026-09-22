@@ -47,6 +47,8 @@
 Within delete confirmation, `c` cycles foreground, background, and orphan
 propagation. Foreground is always the initial choice.
 
-Content modals use `j`/`k`, PageUp/PageDown, and `g`/`G` for vertical
-navigation. `Alt+h`/`Alt+l` scroll horizontally. `/` starts modal-local search,
-and `n`/`N` navigate matching lines.
+Content modals use `j`/`k` or Up/Down, PageUp/PageDown, and `g`/`G` for vertical
+navigation. Describe and event content wraps long lines. YAML wraps by default;
+press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped YAML and
+diff content horizontally. `/` starts modal-local search, and `n`/`N` navigate
+matching lines.

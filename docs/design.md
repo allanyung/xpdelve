@@ -66,13 +66,15 @@ truncated. The composition-resource annotation is not a table column.
 
 Describe and YAML use the full terminal. Events and diff modals use nearly the
 full terminal; confirmation dialogs remain compact. Content views provide local
-search plus vertical and horizontal navigation. YAML, event, detail, and diff
-content receive lightweight semantic highlighting. Normal borders use the
-active theme's lavender swatch, following Sofka's focused-content role;
-destructive confirmation borders use the active theme's red swatch. Color is
-the desired default but symbols and text carry the same meaning; `NO_COLOR`,
-monochrome, theme customization, and ASCII tree lines are supported. Mouse
-capture is not used, preserving normal terminal text selection.
+search plus vertical navigation. Describe and event content wraps long lines;
+YAML wrapping defaults on and can be toggled. Unwrapped YAML and diff content
+also provide horizontal navigation. YAML, event, detail, and diff content
+receive lightweight semantic highlighting. Normal
+borders use the active theme's lavender swatch, following Sofka's
+focused-content role; destructive confirmation borders use the active theme's
+red swatch. Color is the desired default but symbols and text carry the same
+meaning; `NO_COLOR`, monochrome, theme customization, and ASCII tree lines are
+supported. Mouse capture is not used, preserving normal terminal text selection.
 
 The theme is resolved once before entering the alternate screen and stored in
 application state. Renderers request semantic styles instead of embedding RGB
