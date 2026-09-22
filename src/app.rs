@@ -2,7 +2,7 @@
 // internal/bubbles/layout/xpnavigator/model.go.
 // Copyright 2025 Bruno Luiz da Silva. Licensed under Apache-2.0.
 // Translated and substantially modified for xpdelve in 2026. See NOTICE.
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use crossterm::event::{
-    Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    DisableMouseCapture, EnableMouseCapture, Event as TerminalEvent, EventStream, KeyCode,
+    KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -24,11 +25,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use regex::RegexBuilder;
-use similar::{ChangeTag, TextDiff};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cli::Cli;
@@ -43,6 +44,7 @@ const EVENT_BUFFER: usize = 128;
 const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
+const TOAST_DURATION: Duration = Duration::from_millis(1500);
 const HELP_LINES: &[&str] = &[
     "Navigation",
     "  j/k, Up/Down      move selection",
@@ -68,7 +70,6 @@ const HELP_LINES: &[&str] = &[
     "",
     "Actions",
     "  d / y / v         describe / live YAML / events",
-    "  i                 diff from previous trace",
     "  e                 kubectl edit",
     "  c                 copy resource identifier",
     "  p / u             pause / unpause resource",
@@ -118,6 +119,7 @@ enum Modal {
         horizontal_scroll: u16,
         query: String,
         search_input: Option<String>,
+        selection: Option<TextSelection>,
     },
     Delete {
         target: Target,
@@ -132,17 +134,45 @@ enum Modal {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectionPoint {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextSelection {
+    anchor: SelectionPoint,
+    focus: SelectionPoint,
+}
+
+impl TextSelection {
+    fn range(self) -> std::ops::Range<usize> {
+        self.anchor.start.min(self.focus.start)..self.anchor.end.max(self.focus.end)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Toast {
+    message: String,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContentKind {
     Describe,
     Yaml,
     Events,
-    Diff,
+}
+
+impl ContentKind {
+    fn supports_mouse_selection(self) -> bool {
+        matches!(self, Self::Describe | Self::Yaml | Self::Events)
+    }
 }
 
 struct App {
     resource: String,
     snapshot: Option<Arc<Snapshot>>,
-    previous: Option<Arc<Snapshot>>,
     selected_identity: Option<Identity>,
     selected_visible: usize,
     resource_scroll: usize,
@@ -172,6 +202,7 @@ struct App {
     resource_missing: bool,
     namespace: Option<String>,
     context: Option<String>,
+    toast: Option<Toast>,
 }
 
 impl App {
@@ -180,7 +211,6 @@ impl App {
         Self {
             resource,
             snapshot: None,
-            previous: None,
             selected_identity: None,
             selected_visible: 0,
             resource_scroll: 0,
@@ -210,7 +240,15 @@ impl App {
             resource_missing: false,
             namespace: cli.namespace.clone(),
             context: cli.context.clone(),
+            toast: None,
         }
+    }
+
+    fn show_toast(&mut self, message: impl Into<String>) {
+        self.toast = Some(Toast {
+            message: message.into(),
+            expires_at: Instant::now() + TOAST_DURATION,
+        });
     }
 
     fn visible(&self) -> Vec<usize> {
@@ -238,7 +276,7 @@ impl App {
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
         let selection_chain = self.selection_chain();
         let snapshot = Arc::new(snapshot);
-        self.previous = self.snapshot.replace(Arc::clone(&snapshot));
+        self.snapshot = Some(Arc::clone(&snapshot));
         self.collapsed
             .retain(|identity| snapshot.by_identity.contains_key(identity));
         let visible = self.visible();
@@ -261,7 +299,6 @@ impl App {
 
     fn apply_resource_not_found(&mut self) {
         self.snapshot = None;
-        self.previous = None;
         self.selected_identity = None;
         self.selected_visible = 0;
         self.resource_scroll = 0;
@@ -446,6 +483,80 @@ impl App {
         self.mode = InputMode::Normal;
         self.input.clear();
         self.set_selection(self.selected_visible);
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<String> {
+        let Some(Modal::Text {
+            content,
+            kind,
+            wrapped,
+            vertical_scroll,
+            horizontal_scroll,
+            selection,
+            ..
+        }) = &mut self.modal
+        else {
+            return None;
+        };
+        if !kind.supports_mouse_selection() {
+            return None;
+        }
+        let body = content_modal_body(terminal_area, *kind);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                *selection = selection_point_at(
+                    content,
+                    body,
+                    mouse.column,
+                    mouse.row,
+                    *vertical_scroll,
+                    *horizontal_scroll,
+                    *wrapped,
+                    false,
+                )
+                .map(|point| TextSelection {
+                    anchor: point,
+                    focus: point,
+                });
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(active) = selection
+                    && let Some(point) = selection_point_at(
+                        content,
+                        body,
+                        mouse.column,
+                        mouse.row,
+                        *vertical_scroll,
+                        *horizontal_scroll,
+                        *wrapped,
+                        true,
+                    )
+                {
+                    active.focus = point;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let mut active = selection.take()?;
+                if let Some(point) = selection_point_at(
+                    content,
+                    body,
+                    mouse.column,
+                    mouse.row,
+                    *vertical_scroll,
+                    *horizontal_scroll,
+                    *wrapped,
+                    true,
+                ) {
+                    active.focus = point;
+                }
+                let range = active.range();
+                if !range.is_empty() {
+                    return Some(content[range].to_owned());
+                }
+            }
+            _ => {}
+        }
+        None
     }
 
     fn handle_key(&mut self, key: KeyEvent, terminal_area: Rect) -> UiAction {
@@ -774,22 +885,6 @@ impl App {
                     return UiAction::Events(target);
                 }
             }
-            (KeyCode::Char('i'), _) => {
-                if let Some((title, content)) = self.selected_diff() {
-                    self.modal = Some(Modal::Text {
-                        title,
-                        content,
-                        kind: ContentKind::Diff,
-                        wrapped: false,
-                        vertical_scroll: 0,
-                        horizontal_scroll: 0,
-                        query: String::new(),
-                        search_input: None,
-                    });
-                } else {
-                    self.status = "No previous version is available for this resource".into();
-                }
-            }
             (KeyCode::Char('e'), _) => {
                 if self.config.read_only {
                     self.status = "Edit is disabled in read-only mode".into();
@@ -837,37 +932,6 @@ impl App {
         self.ensure_selection_visible(page_size);
         UiAction::None
     }
-
-    fn selected_diff(&self) -> Option<(String, String)> {
-        let current = self.selected_node()?;
-        let previous = self.previous.as_ref()?;
-        let old = previous
-            .by_identity
-            .get(&current.identity)
-            .and_then(|index| previous.nodes.get(*index));
-        let old = old.map_or_else(
-            || "<resource did not exist>".into(),
-            |node| {
-                serde_yaml::to_string(&crate::kubernetes::redact_object((*node.object).clone()))
-                    .unwrap_or_else(|error| format!("<failed to render previous object: {error}>"))
-            },
-        );
-        let new =
-            serde_yaml::to_string(&crate::kubernetes::redact_object((*current.object).clone()))
-                .unwrap_or_else(|error| format!("<failed to render current object: {error}>"));
-        let diff = TextDiff::from_lines(&old, &new);
-        let mut output = String::new();
-        for change in diff.iter_all_changes() {
-            let marker = match change.tag() {
-                ChangeTag::Delete => '-',
-                ChangeTag::Insert => '+',
-                ChangeTag::Equal => ' ',
-            };
-            output.push(marker);
-            output.push_str(change.value());
-        }
-        Some((format!("Diff: {}", current.identity), output))
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -908,11 +972,23 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     request_refresh(&mut app, cli, &sender, &mut active, true);
 
     while !app.quit {
+        terminal.set_mouse_capture(matches!(
+            &app.modal,
+            Some(Modal::Text { kind, .. }) if kind.supports_mouse_selection()
+        ))?;
         terminal.terminal.draw(|frame| render(frame, &app))?;
+        let toast_active = app.toast.is_some();
+        let toast_delay = app
+            .toast
+            .as_ref()
+            .map_or(Duration::from_secs(86_400), |toast| {
+                toast.expires_at.saturating_duration_since(Instant::now())
+            });
         tokio::select! {
             event = events.next() => {
                 let Some(event) = event else { break };
-                if let TerminalEvent::Key(key) = event.context("failed to read terminal event")? {
+                match event.context("failed to read terminal event")? {
+                    TerminalEvent::Key(key) => {
                         let area = terminal.terminal.size()?;
                         match app.handle_key(key, area.into()) {
                             UiAction::None => {}
@@ -936,6 +1012,17 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                             }
                             action => start_action(&mut app, action, &sender, cli),
                         }
+                    }
+                    TerminalEvent::Mouse(mouse) => {
+                        let area = terminal.terminal.size()?;
+                        if let Some(value) = app.handle_mouse(mouse, area.into()) {
+                            match copy_osc52(&value) {
+                                Ok(()) => app.show_toast("● Copied to clipboard"),
+                                Err(error) => app.status = format!("Copy failed: {error}"),
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             Some(event) = receiver.recv() => {
@@ -994,6 +1081,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                                     horizontal_scroll: 0,
                                     query: String::new(),
                                     search_input: None,
+                                    selection: None,
                                 });
                             }
                             Ok(None) => app.status = format!("{label} succeeded"),
@@ -1019,6 +1107,9 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
             }
             _ = refresh.tick(), if !app.no_watch && !app.paused && !app.loading && !app.resource_missing => {
                 request_refresh(&mut app, cli, &sender, &mut active, false);
+            }
+            _ = time::sleep(toast_delay), if toast_active => {
+                app.toast = None;
             }
         }
     }
@@ -1362,6 +1453,34 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
         };
         render_modal(frame, modal_area, modal, &app.theme);
     }
+    if let Some(toast) = &app.toast
+        && toast.expires_at > Instant::now()
+    {
+        render_toast(frame, area, toast, &app.theme);
+    }
+}
+
+fn render_toast(frame: &mut ratatui::Frame<'_>, area: Rect, toast: &Toast, theme: &Theme) {
+    let width = u16::try_from(toast.message.width())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4)
+        .min(area.width.saturating_sub(2));
+    let height = 3.min(area.height);
+    let popup = Rect::new(
+        area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        area.y
+            .saturating_add(area.height.saturating_sub(height).saturating_sub(2)),
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(toast.message.as_str())
+            .alignment(Alignment::Center)
+            .style(theme.title())
+            .block(bordered_block("", theme)),
+        popup,
+    );
 }
 
 fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -1867,7 +1986,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             format!(" Find: {}", app.find)
         }
         InputMode::Normal | InputMode::Help => {
-            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  / filter  z width  ? help"
+            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  v events  / filter  z width  ? help"
                 .into()
         }
         }
@@ -1938,6 +2057,7 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             horizontal_scroll,
             query,
             search_input,
+            selection,
         } => {
             let block = bordered_block(format!(" {} ", text::sanitize(title)), theme);
             let inner = block.inner(area);
@@ -1954,6 +2074,18 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                 paragraph = paragraph.wrap(Wrap { trim: false });
             }
             frame.render_widget(paragraph, regions[0]);
+            if let Some(selection) = selection {
+                render_text_selection(
+                    frame,
+                    regions[0],
+                    content,
+                    *selection,
+                    *vertical_scroll,
+                    *horizontal_scroll,
+                    *wrapped,
+                    theme,
+                );
+            }
             let footer = search_input.as_ref().map_or_else(
                 || content_modal_footer(*kind, *wrapped).into(),
                 |input| format!(" Find: {input}_"),
@@ -2112,9 +2244,6 @@ fn styled_content_line<'a>(
     theme: &Theme,
 ) -> Line<'a> {
     let base = match kind {
-        ContentKind::Diff if line.starts_with('+') => theme.fg(theme.palette.green).bold(),
-        ContentKind::Diff if line.starts_with('-') => theme.fg(theme.palette.red).bold(),
-        ContentKind::Diff => Style::default().add_modifier(Modifier::DIM),
         ContentKind::Events if line.trim_start().starts_with("Warning") => {
             theme.fg(theme.palette.red).bold()
         }
@@ -2135,13 +2264,17 @@ fn content_wraps_by_default(kind: ContentKind) -> bool {
 fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
     match (kind, wrapped) {
         (ContentKind::Yaml, true) => {
-            " j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
+            " drag to copy  j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
         }
         (ContentKind::Yaml, false) => {
-            " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
+            " drag to copy  j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
         }
-        (_, true) => " j/k or ↑/↓ vertical  / find  n/N matches  Esc close",
-        (_, false) => " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  / find  n/N matches  Esc close",
+        (ContentKind::Describe | ContentKind::Events, true) => {
+            " drag to copy  j/k or ↑/↓ vertical  / find  n/N matches  Esc close"
+        }
+        (ContentKind::Describe | ContentKind::Events, false) => {
+            " drag to copy  j/k or ↑/↓ vertical  h/l or ←/→ horizontal  / find  n/N matches  Esc close"
+        }
     }
 }
 
@@ -2263,6 +2396,241 @@ fn case_insensitive_regex(query: &str) -> Option<regex::Regex> {
         .flatten()
 }
 
+#[derive(Clone, Debug)]
+struct VisualGrapheme {
+    start: usize,
+    end: usize,
+    width: u16,
+    whitespace: bool,
+}
+
+#[derive(Clone, Debug)]
+struct VisualRow {
+    graphemes: Vec<VisualGrapheme>,
+    source_start: usize,
+}
+
+fn visual_rows(content: &str, width: u16, wrapped: bool) -> Vec<VisualRow> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    let mut source_offset = 0;
+    for raw_line in content.split_inclusive('\n') {
+        let without_newline = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = without_newline
+            .strip_suffix('\r')
+            .unwrap_or(without_newline);
+        let graphemes = UnicodeSegmentation::grapheme_indices(line, true)
+            .map(|(offset, symbol)| VisualGrapheme {
+                start: source_offset + offset,
+                end: source_offset + offset + symbol.len(),
+                width: symbol.width().try_into().unwrap_or(u16::MAX),
+                whitespace: symbol.chars().all(char::is_whitespace),
+            })
+            .collect::<Vec<_>>();
+        if wrapped {
+            rows.extend(wrap_visual_line(graphemes, source_offset, width));
+        } else {
+            rows.push(VisualRow {
+                graphemes,
+                source_start: source_offset,
+            });
+        }
+        source_offset += raw_line.len();
+    }
+    rows
+}
+
+// Mirrors Ratatui's WordWrapper with trim=false, while retaining source offsets
+// so mouse coordinates can be translated back into the original YAML.
+fn wrap_visual_line(
+    graphemes: Vec<VisualGrapheme>,
+    source_start: usize,
+    max_width: u16,
+) -> Vec<VisualRow> {
+    let mut rows = Vec::new();
+    let mut pending_line = Vec::new();
+    let mut pending_word = Vec::new();
+    let mut pending_whitespace = VecDeque::new();
+    let mut line_width = 0_u16;
+    let mut word_width = 0_u16;
+    let mut whitespace_width = 0_u16;
+    let mut non_whitespace_previous = false;
+
+    for grapheme in graphemes {
+        if grapheme.width > max_width {
+            continue;
+        }
+        let is_whitespace = grapheme.whitespace;
+        let word_found = non_whitespace_previous && is_whitespace;
+        let untrimmed_overflow = pending_line.is_empty()
+            && word_width
+                .saturating_add(whitespace_width)
+                .saturating_add(grapheme.width)
+                > max_width;
+        if word_found || untrimmed_overflow {
+            pending_line.extend(pending_whitespace.drain(..));
+            line_width = line_width.saturating_add(whitespace_width);
+            pending_line.append(&mut pending_word);
+            line_width = line_width.saturating_add(word_width);
+            whitespace_width = 0;
+            word_width = 0;
+        }
+
+        let line_full = line_width >= max_width;
+        let pending_word_overflow = grapheme.width > 0
+            && line_width
+                .saturating_add(whitespace_width)
+                .saturating_add(word_width)
+                >= max_width;
+        if line_full || pending_word_overflow {
+            let mut remaining = max_width.saturating_sub(line_width);
+            rows.push(VisualRow {
+                source_start: pending_line
+                    .first()
+                    .map_or(source_start, |item: &VisualGrapheme| item.start),
+                graphemes: std::mem::take(&mut pending_line),
+            });
+            line_width = 0;
+            while let Some(item) = pending_whitespace.front() {
+                if item.width > remaining {
+                    break;
+                }
+                whitespace_width = whitespace_width.saturating_sub(item.width);
+                remaining = remaining.saturating_sub(item.width);
+                pending_whitespace.pop_front();
+            }
+            if is_whitespace && pending_whitespace.is_empty() {
+                continue;
+            }
+        }
+
+        if is_whitespace {
+            whitespace_width = whitespace_width.saturating_add(grapheme.width);
+            pending_whitespace.push_back(grapheme);
+        } else {
+            word_width = word_width.saturating_add(grapheme.width);
+            pending_word.push(grapheme);
+        }
+        non_whitespace_previous = !is_whitespace;
+    }
+
+    pending_line.extend(pending_whitespace);
+    pending_line.append(&mut pending_word);
+    if !pending_line.is_empty() {
+        rows.push(VisualRow {
+            source_start: pending_line[0].start,
+            graphemes: pending_line,
+        });
+    }
+    if rows.is_empty() {
+        rows.push(VisualRow {
+            graphemes: Vec::new(),
+            source_start,
+        });
+    }
+    rows
+}
+
+#[allow(clippy::too_many_arguments)]
+fn selection_point_at(
+    content: &str,
+    body: Rect,
+    column: u16,
+    row: u16,
+    vertical_scroll: u16,
+    horizontal_scroll: u16,
+    wrapped: bool,
+    clamp: bool,
+) -> Option<SelectionPoint> {
+    if body.is_empty() {
+        return None;
+    }
+    let inside = column >= body.x
+        && column < body.x.saturating_add(body.width)
+        && row >= body.y
+        && row < body.y.saturating_add(body.height);
+    if !inside && !clamp {
+        return None;
+    }
+    let column = column.clamp(body.x, body.x.saturating_add(body.width).saturating_sub(1));
+    let row = row.clamp(body.y, body.y.saturating_add(body.height).saturating_sub(1));
+    let visual_row = usize::from(vertical_scroll) + usize::from(row - body.y);
+    let rows = visual_rows(content, body.width, wrapped);
+    let visual_row = visual_row.min(rows.len().saturating_sub(1));
+    let row = rows.get(visual_row)?;
+    let target_column = horizontal_scroll.saturating_add(column - body.x);
+    let mut current_column = 0_u16;
+    for grapheme in &row.graphemes {
+        let end_column = current_column.saturating_add(grapheme.width.max(1));
+        if target_column < end_column {
+            return Some(SelectionPoint {
+                start: grapheme.start,
+                end: grapheme.end,
+            });
+        }
+        current_column = end_column;
+    }
+    if clamp {
+        return row.graphemes.last().map_or(
+            Some(SelectionPoint {
+                start: row.source_start,
+                end: row.source_start,
+            }),
+            |grapheme| {
+                Some(SelectionPoint {
+                    start: grapheme.start,
+                    end: grapheme.end,
+                })
+            },
+        );
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_text_selection(
+    frame: &mut ratatui::Frame<'_>,
+    body: Rect,
+    content: &str,
+    selection: TextSelection,
+    vertical_scroll: u16,
+    horizontal_scroll: u16,
+    wrapped: bool,
+    theme: &Theme,
+) {
+    let range = selection.range();
+    let rows = visual_rows(content, body.width, wrapped);
+    for (screen_row, row) in rows
+        .iter()
+        .skip(usize::from(vertical_scroll))
+        .take(usize::from(body.height))
+        .enumerate()
+    {
+        let mut visual_column = 0_u16;
+        for grapheme in &row.graphemes {
+            let grapheme_column = visual_column;
+            visual_column = visual_column.saturating_add(grapheme.width.max(1));
+            if grapheme.start >= range.end || grapheme.end <= range.start {
+                continue;
+            }
+            for offset in 0..grapheme.width.max(1) {
+                let column = grapheme_column.saturating_add(offset);
+                if column < horizontal_scroll {
+                    continue;
+                }
+                let screen_column = column - horizontal_scroll;
+                if screen_column >= body.width {
+                    continue;
+                }
+                frame.buffer_mut()[(body.x + screen_column, body.y + screen_row as u16)]
+                    .set_style(theme.selected_row());
+            }
+        }
+    }
+}
+
 fn modal_max_vertical(content: &str, width: usize, height: usize, wrapped: bool) -> u16 {
     let rows = content
         .lines()
@@ -2315,26 +2683,21 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-fn nearly_full(area: Rect) -> Rect {
-    if area.width < 40 || area.height < 12 {
-        return area;
-    }
-    centered(
-        area,
-        area.width.saturating_mul(95) / 100,
-        area.height.saturating_mul(95) / 100,
-    )
-}
-
 fn content_modal_area(area: Rect, kind: ContentKind) -> Rect {
     match kind {
-        ContentKind::Describe | ContentKind::Yaml => area,
-        ContentKind::Events | ContentKind::Diff => nearly_full(area),
+        ContentKind::Describe | ContentKind::Yaml | ContentKind::Events => area,
     }
+}
+
+fn content_modal_body(area: Rect, kind: ContentKind) -> Rect {
+    let area = content_modal_area(area, kind);
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner)[0]
 }
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    mouse_capture: bool,
 }
 
 impl TerminalGuard {
@@ -2349,16 +2712,35 @@ impl TerminalGuard {
             Ok(terminal) => terminal,
             Err(error) => {
                 let mut stdout = io::stdout();
-                let _ = execute!(stdout, LeaveAlternateScreen);
+                let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
                 let _ = disable_raw_mode();
                 return Err(error.into());
             }
         };
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            mouse_capture: false,
+        })
+    }
+
+    fn set_mouse_capture(&mut self, enabled: bool) -> Result<()> {
+        if enabled == self.mouse_capture {
+            return Ok(());
+        }
+        if enabled {
+            execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
+        } else {
+            execute!(self.terminal.backend_mut(), DisableMouseCapture)?;
+        }
+        self.mouse_capture = enabled;
+        Ok(())
     }
 
     fn suspend(&mut self) -> Result<()> {
         disable_raw_mode()?;
+        if self.mouse_capture {
+            execute!(self.terminal.backend_mut(), DisableMouseCapture)?;
+        }
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
         self.terminal.show_cursor()?;
         Ok(())
@@ -2367,6 +2749,9 @@ impl TerminalGuard {
     fn resume(&mut self) -> Result<()> {
         enable_raw_mode()?;
         execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        if self.mouse_capture {
+            execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
+        }
         self.terminal.clear()?;
         Ok(())
     }
@@ -2375,7 +2760,11 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -2525,7 +2914,6 @@ mod tests {
     #[test]
     fn resource_not_found_clears_stale_trace_state() {
         let mut app = app();
-        app.previous = app.snapshot.clone();
         app.collapsed
             .insert(app.snapshot.as_ref().unwrap().nodes[0].identity.clone());
         app.modal = Some(Modal::Text {
@@ -2537,13 +2925,13 @@ mod tests {
             horizontal_scroll: 0,
             query: String::new(),
             search_input: None,
+            selection: None,
         });
 
         app.apply_resource_not_found();
 
         assert!(app.resource_missing);
         assert!(app.snapshot.is_none());
-        assert!(app.previous.is_none());
         assert!(app.selected_identity.is_none());
         assert!(app.collapsed.is_empty());
         assert!(app.modal.is_none());
@@ -2727,22 +3115,11 @@ mod tests {
     }
 
     #[test]
-    fn yaml_and_describe_use_the_full_terminal() {
+    fn content_views_use_the_full_terminal() {
         let area = Rect::new(0, 0, 100, 40);
         assert_eq!(content_modal_area(area, ContentKind::Yaml), area);
         assert_eq!(content_modal_area(area, ContentKind::Describe), area);
-    }
-
-    #[test]
-    fn events_and_diffs_use_nearly_the_full_terminal() {
-        assert_eq!(
-            content_modal_area(Rect::new(0, 0, 100, 40), ContentKind::Events),
-            Rect::new(2, 1, 95, 38)
-        );
-        assert_eq!(
-            content_modal_area(Rect::new(0, 0, 30, 8), ContentKind::Diff),
-            Rect::new(0, 0, 30, 8)
-        );
+        assert_eq!(content_modal_area(area, ContentKind::Events), area);
     }
 
     #[test]
@@ -2956,6 +3333,7 @@ mod tests {
             horizontal_scroll: 0,
             query: String::new(),
             search_input: None,
+            selection: None,
         };
         let backend = TestBackend::new(100, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2973,15 +3351,15 @@ mod tests {
     fn content_footer_groups_navigation_before_other_actions() {
         assert_eq!(
             content_modal_footer(ContentKind::Yaml, false),
-            " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
+            " drag to copy  j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
         );
         assert_eq!(
             content_modal_footer(ContentKind::Yaml, true),
-            " j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
+            " drag to copy  j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
         );
         assert_eq!(
-            content_modal_footer(ContentKind::Diff, false),
-            " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  / find  n/N matches  Esc close"
+            content_modal_footer(ContentKind::Events, true),
+            " drag to copy  j/k or ↑/↓ vertical  / find  n/N matches  Esc close"
         );
     }
 
@@ -2996,6 +3374,7 @@ mod tests {
             horizontal_scroll: 0,
             query: String::new(),
             search_input: None,
+            selection: None,
         };
         let backend = TestBackend::new(20, 8);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3020,6 +3399,7 @@ mod tests {
             horizontal_scroll: 0,
             query: String::new(),
             search_input: None,
+            selection: None,
         });
 
         app.handle_key(
@@ -3062,6 +3442,103 @@ mod tests {
             panic!("expected text modal");
         };
         assert_eq!(horizontal_scroll, 8);
+    }
+
+    #[test]
+    fn content_mouse_drag_copies_selected_source_text() {
+        let area = Rect::new(0, 0, 40, 10);
+        for content_kind in [
+            ContentKind::Describe,
+            ContentKind::Yaml,
+            ContentKind::Events,
+        ] {
+            let mut app = app();
+            app.modal = Some(Modal::Text {
+                title: "Content".into(),
+                content: "kind: Widget\nmetadata: {}".into(),
+                kind: content_kind,
+                wrapped: true,
+                vertical_scroll: 0,
+                horizontal_scroll: 0,
+                query: String::new(),
+                search_input: None,
+                selection: None,
+            });
+            let body = content_modal_body(area, content_kind);
+            let mouse = |kind, column| MouseEvent {
+                kind,
+                column: body.x + column,
+                row: body.y,
+                modifiers: KeyModifiers::NONE,
+            };
+
+            assert_eq!(
+                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area),
+                None
+            );
+            assert_eq!(
+                app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area),
+                None
+            );
+            assert_eq!(
+                app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area),
+                Some("kind".into())
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_toast_is_rendered_as_a_popup() {
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = app().theme;
+        let toast = Toast {
+            message: "● Copied to clipboard".into(),
+            expires_at: Instant::now() + TOAST_DURATION,
+        };
+
+        terminal
+            .draw(|frame| render_toast(frame, frame.area(), &toast, &theme))
+            .unwrap();
+
+        assert!(
+            terminal
+                .backend()
+                .to_string()
+                .contains("Copied to clipboard")
+        );
+    }
+
+    #[test]
+    fn wrapped_yaml_selection_uses_original_newlines_only() {
+        let content = "value: abcdefghijklmnopqrstuvwxyz\nnext: yes";
+        let body = Rect::new(0, 0, 10, 10);
+        let rows = visual_rows(content, body.width, true);
+        let last_row = rows.len() - 1;
+        let last_column = rows[last_row]
+            .graphemes
+            .iter()
+            .map(|grapheme| usize::from(grapheme.width.max(1)))
+            .sum::<usize>()
+            - 1;
+        let first = selection_point_at(content, body, 0, 0, 0, 0, true, false).unwrap();
+        let last = selection_point_at(
+            content,
+            body,
+            last_column as u16,
+            last_row as u16,
+            0,
+            0,
+            true,
+            false,
+        )
+        .unwrap();
+        let selection = TextSelection {
+            anchor: first,
+            focus: last,
+        };
+
+        assert_eq!(&content[selection.range()], content);
     }
 
     #[test]

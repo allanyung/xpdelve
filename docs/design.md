@@ -44,13 +44,12 @@ complete Crossplane trace JSON document is accepted.
 The typed trace envelope contains a generic Kubernetes JSON object, optional
 trace error, and recursive children. UI identity is
 `group/kind/namespace/name`; UID is revision and safety metadata. Unknown object
-fields remain available for YAML, describe, diffing, and future Crossplane
+fields remain available for YAML, describe, and future Crossplane
 versions.
 
 Projection is depth-first and preserves hierarchy. Selection and expansion are
 reconciled by identity across snapshots. UID changes indicate recreation.
-Removed nodes are retained briefly, and only current and previous successful
-snapshots remain in memory.
+Only the current successful snapshot remains in memory.
 
 Ordinary resource health preserves xpdig's Ready/Synced priority and its
 Crossplane v2 missing-condition exception. Package and package-revision roots
@@ -64,17 +63,17 @@ Package traces use their Installed/Healthy schema. `OBJECT` and `GROUP` receive
 width priority; transition columns disappear together before either is
 truncated. The composition-resource annotation is not a table column.
 
-Describe and YAML use the full terminal. Events and diff modals use nearly the
-full terminal; confirmation dialogs remain compact. Content views provide local
-search plus vertical navigation. Describe and event content wraps long lines;
-YAML wrapping defaults on and can be toggled. Unwrapped YAML and diff content
-also provide horizontal navigation. YAML, event, detail, and diff content
-receive lightweight semantic highlighting. Normal
+Describe, YAML, and Events use the full terminal; confirmation dialogs remain
+compact. Content views provide local search plus vertical navigation. Describe
+and event content wraps long lines; YAML wrapping defaults on and can be
+toggled. Unwrapped YAML also provides horizontal navigation. YAML, event, and
+detail content receive lightweight semantic highlighting. Normal
 borders use the active theme's lavender swatch, following Sofka's
 focused-content role; destructive confirmation borders use the active theme's
 red swatch. Color is the desired default but symbols and text carry the same
 meaning; `NO_COLOR`, monochrome, theme customization, and ASCII tree lines are
-supported. Mouse capture is not used, preserving normal terminal text selection.
+supported. Mouse capture is enabled in content views so dragging can select and
+copy their underlying text; elsewhere, native terminal selection is preserved.
 
 The theme is resolved once before entering the alternate screen and stored in
 application state. Renderers request semantic styles instead of embedding RGB
@@ -101,7 +100,7 @@ refresh without blocking navigation.
 ## Security
 
 Kubernetes Secret `data` and `stringData` plus `managedFields` are redacted from
-YAML and diff views. Other resources may still contain credential-like values;
+YAML views. Other resources may still contain credential-like values;
 broader recursive redaction and warning-gated reveal remain future work. Text
 from Kubernetes and external commands is sanitized before terminal rendering.
 The application currently has no persistent logging, telemetry, crash upload,

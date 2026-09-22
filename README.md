@@ -105,7 +105,7 @@ context, resource, API group, and name through the variables in `args`.
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
 - `/`: filter; `f`: find; `n`/`N`: next or previous match
-- `d`, `y`, `v`, `i`: describe, live YAML, events, and previous-trace diff
+- `d`, `y`, `v`: describe, live YAML, and events
 - `p`/`u`: pause or unpause the selected Crossplane resource
 - `ctrl+d`: delete with a propagation-policy confirmation
 - `ctrl+x`: selectively remove finalizers after confirmation
@@ -117,12 +117,13 @@ context, resource, API group, and name through the variables in `args`.
 Delete confirmation defaults to foreground propagation. Press `c` in the
 confirmation to cycle through foreground, background, and orphan behavior.
 
-The application does not capture mouse events. Text selection therefore uses
-the terminal emulator's normal behavior, which may require a modifier key.
-Describe and YAML use the full terminal; events and diff views use nearly the
-full terminal. Describe, YAML, and event views wrap long lines. Content views
-support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
-`h`/`l` or Left/Right scroll unwrapped YAML and diff views horizontally.
+The application captures mouse events while Describe, live YAML, or Events is
+open. Drag across content to copy the selected source text on release; visual
+soft wraps are not included as newlines. Outside these content views, text
+selection uses the terminal emulator's normal behavior, which may require a
+modifier key. Describe, YAML, and Events use the full terminal and wrap long
+lines. Content views support `/` search and vertical scrolling. In YAML, `w`
+toggles wrapping; `h`/`l` or Left/Right scroll unwrapped YAML horizontally.
 
 If the root resource can no longer be found, xpdelve clears the stale trace and
 stops automatic polling. Press `r` to retry manually; successful recovery
