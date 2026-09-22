@@ -24,6 +24,15 @@ Edit workflows. See
 
 ## Installation
 
+With [go-task](https://taskfile.dev/) installed, the latest release for the
+current platform can be installed to `~/.local/bin/xpdelve` with:
+
+```console
+task install
+```
+
+The task also removes the Gatekeeper quarantine attribute on macOS.
+
 Download the archive for your platform from the GitHub release:
 
 - `xpdelve_VERSION_Linux_x86_64.tar.gz`
