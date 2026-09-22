@@ -64,9 +64,6 @@ xattr -d com.apple.quarantine ~/.local/bin/xpdelve
 - A C compiler, linker, CMake, and platform development tools
 - [go-task](https://taskfile.dev/) for the recommended contributor workflow
 
-go-task is optional; every task ultimately invokes Cargo and the equivalent
-Cargo commands can be run directly.
-
 ## Usage
 
 ```console
@@ -124,17 +121,21 @@ The application does not capture mouse events. Text selection therefore uses
 the terminal emulator's normal behavior, which may require a modifier key.
 Describe and YAML use the full terminal; events and diff views use nearly the
 full terminal. Content views support `/` search plus vertical and horizontal
-scrolling. All normal borders use Sofka's focused-content Catppuccin lavender
-accent; destructive confirmation borders remain red.
+scrolling.
 
 If the root resource can no longer be found, xpdelve clears the stale trace and
 stops automatic polling. Press `r` to retry manually; successful recovery
 restores the tree and normal refresh behavior.
 
+## Themes
+
 xpdelve supports the same built-in theme catalog as Sofka. Omit `skin.name` to
-select Catppuccin Latte or Mocha from the terminal background, or configure a
-named theme and optional swatch overrides. See
-[`docs/configuration.md`](docs/configuration.md#themes).
+select Catppuccin Latte or Mocha based on the detected terminal background; if
+detection fails, xpdelve defaults to Mocha. You can also configure a named theme
+and optional swatch overrides.
+
+See [`docs/configuration.md`](docs/configuration.md#themes) for available themes
+and configuration options.
 
 ## Safety
 

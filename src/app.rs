@@ -144,6 +144,7 @@ struct App {
     previous: Option<Arc<Snapshot>>,
     selected_identity: Option<Identity>,
     selected_visible: usize,
+    resource_scroll: usize,
     collapsed: HashSet<Identity>,
     mode: InputMode,
     help_scroll: u16,
@@ -181,6 +182,7 @@ impl App {
             previous: None,
             selected_identity: None,
             selected_visible: 0,
+            resource_scroll: 0,
             collapsed: HashSet::new(),
             mode: InputMode::Normal,
             help_scroll: 0,
@@ -261,6 +263,7 @@ impl App {
         self.previous = None;
         self.selected_identity = None;
         self.selected_visible = 0;
+        self.resource_scroll = 0;
         self.collapsed.clear();
         self.modal = None;
         self.refresh_pending = false;
@@ -311,6 +314,26 @@ impl App {
     fn set_selection(&mut self, index: usize) {
         self.selected_visible = index.min(self.visible().len().saturating_sub(1));
         self.sync_selected_identity();
+    }
+
+    fn ensure_selection_visible(&mut self, viewport: usize) {
+        self.resource_scroll = self.resource_view_start(viewport);
+    }
+
+    fn resource_view_start(&self, viewport: usize) -> usize {
+        if viewport == 0 {
+            return 0;
+        }
+        let len = self.visible().len();
+        let mut start = self.resource_scroll.min(len.saturating_sub(viewport));
+        if self.selected_visible < start {
+            start = self.selected_visible;
+        } else if self.selected_visible >= start.saturating_add(viewport) {
+            start = self
+                .selected_visible
+                .saturating_sub(viewport.saturating_sub(1));
+        }
+        start
     }
 
     fn toggle_selected(&mut self) {
@@ -627,6 +650,7 @@ impl App {
                 KeyCode::Char(character) => self.input.push(character),
                 _ => {}
             }
+            self.ensure_selection_visible(page_size);
             return UiAction::None;
         }
 
@@ -801,6 +825,7 @@ impl App {
             (KeyCode::Char('r'), _) => return UiAction::Refresh,
             _ => {}
         }
+        self.ensure_selection_visible(page_size);
         UiAction::None
     }
 
@@ -1384,9 +1409,7 @@ fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let visible = app.visible();
     let package_trace = snapshot.nodes.first().is_some_and(|node| node.is_package);
     let viewport = area.height.saturating_sub(3) as usize;
-    let start = app
-        .selected_visible
-        .saturating_sub(viewport.saturating_sub(1));
+    let start = app.resource_view_start(viewport);
     let plan = TablePlan::new(
         snapshot,
         &visible,
@@ -2385,6 +2408,44 @@ mod tests {
 
         assert_eq!(app.selected_visible, 1);
         assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
+    }
+
+    #[test]
+    fn moving_up_only_scrolls_after_selection_leaves_viewport() {
+        let mut app = app();
+        let children = (0..8)
+            .map(|index| {
+                serde_json::json!({
+                    "object": {
+                        "apiVersion": "v1",
+                        "kind": "Child",
+                        "metadata": { "name": format!("child-{index}") }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let trace = serde_json::json!({
+            "object": {
+                "apiVersion": "v1",
+                "kind": "Root",
+                "metadata": { "name": "root" }
+            },
+            "children": children
+        });
+        app.apply_snapshot(Snapshot::parse(trace.to_string().as_bytes()).unwrap());
+        let area = Rect::new(0, 0, 100, 9);
+
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), area);
+        assert_eq!(app.resource_scroll, 6);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), area);
+        assert_eq!(app.selected_visible, 6);
+        assert_eq!(app.resource_scroll, 6);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), area);
+        assert_eq!(app.selected_visible, 5);
+        assert_eq!(app.resource_scroll, 5);
     }
 
     #[test]
