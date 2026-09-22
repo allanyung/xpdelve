@@ -22,7 +22,6 @@
 - [x] Initialize a kube-rs client and dynamic discovery cache.
 - [x] Add captured describe output, conditions, lazy events, and live YAML.
 - [x] Add pause, unpause, delete, and selective finalizer removal.
-- [ ] Add bounded action result history beyond the current status line.
 - [x] Add action concurrency limits and identity revalidation.
 - [x] Add permanent `kubectl edit`.
 
