@@ -28,7 +28,6 @@
 | `d` | Open captured `kubectl describe` output |
 | `y` | Open redacted live YAML |
 | `v` | Load related Kubernetes events |
-| `i` | Diff against the preceding successful trace |
 | `c` | Copy the canonical resource identifier with OSC 52 |
 
 ## Actions And Session
@@ -49,6 +48,7 @@ propagation. Foreground is always the initial choice.
 
 Content modals use `j`/`k` or Up/Down, PageUp/PageDown, and `g`/`G` for vertical
 navigation. Describe and event content wraps long lines. YAML wraps by default;
-press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped YAML and
-diff content horizontally. `/` starts modal-local search, and `n`/`N` navigate
-matching lines.
+press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped YAML
+horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
+lines. In Describe, live YAML, and Events, drag across text to copy it on mouse
+release; visual soft wraps do not add newlines to the copied text.

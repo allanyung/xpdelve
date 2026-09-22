@@ -15,7 +15,6 @@
 
 - [x] Reconcile selection and expansion by stable identity.
 - [x] Add retry backoff, refresh coalescing, and visible diagnostics.
-- [x] Add selected-resource diffs.
 
 ## Phase 3: Kubernetes inspection and actions
 
