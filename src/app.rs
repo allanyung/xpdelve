@@ -113,6 +113,7 @@ enum Modal {
         title: String,
         content: String,
         kind: ContentKind,
+        wrapped: bool,
         vertical_scroll: u16,
         horizontal_scroll: u16,
         query: String,
@@ -471,6 +472,7 @@ impl App {
                 Modal::Text {
                     content,
                     kind,
+                    wrapped,
                     vertical_scroll,
                     horizontal_scroll,
                     query,
@@ -480,10 +482,9 @@ impl App {
                     let modal_area = content_modal_area(terminal_area, *kind);
                     let body_width = modal_area.width.saturating_sub(2) as usize;
                     let body_height = modal_area.height.saturating_sub(3) as usize;
-                    let wrapped = matches!(kind, ContentKind::Describe | ContentKind::Events);
                     let max_vertical =
-                        modal_max_vertical(content, body_width, body_height, wrapped);
-                    let max_horizontal = if wrapped {
+                        modal_max_vertical(content, body_width, body_height, *wrapped);
+                    let max_horizontal = if *wrapped {
                         0
                     } else {
                         modal_max_horizontal(content, body_width)
@@ -500,7 +501,7 @@ impl App {
                                     vertical_scroll,
                                     false,
                                     body_width,
-                                    wrapped,
+                                    *wrapped,
                                 );
                             }
                             KeyCode::Backspace => {
@@ -532,12 +533,19 @@ impl App {
                             (KeyCode::End | KeyCode::Char('G'), _) => {
                                 *vertical_scroll = max_vertical;
                             }
-                            (KeyCode::Char('h'), KeyModifiers::ALT) => {
+                            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
                                 *horizontal_scroll = horizontal_scroll.saturating_sub(4);
                             }
-                            (KeyCode::Char('l'), KeyModifiers::ALT) => {
+                            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
                                 *horizontal_scroll =
                                     horizontal_scroll.saturating_add(4).min(max_horizontal);
+                            }
+                            (KeyCode::Char('w'), KeyModifiers::NONE)
+                                if *kind == ContentKind::Yaml =>
+                            {
+                                *wrapped = !*wrapped;
+                                *vertical_scroll = 0;
+                                *horizontal_scroll = 0;
                             }
                             (KeyCode::Char('/'), _) => *search_input = Some(query.clone()),
                             (KeyCode::Char('n'), _) => {
@@ -547,7 +555,7 @@ impl App {
                                     vertical_scroll,
                                     false,
                                     body_width,
-                                    wrapped,
+                                    *wrapped,
                                 );
                             }
                             (KeyCode::Char('N'), _) => {
@@ -557,7 +565,7 @@ impl App {
                                     vertical_scroll,
                                     true,
                                     body_width,
-                                    wrapped,
+                                    *wrapped,
                                 );
                             }
                             _ => {}
@@ -772,6 +780,7 @@ impl App {
                         title,
                         content,
                         kind: ContentKind::Diff,
+                        wrapped: false,
                         vertical_scroll: 0,
                         horizontal_scroll: 0,
                         query: String::new(),
@@ -970,19 +979,23 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                         }
                         let succeeded = result.is_ok();
                         match result {
-                            Ok(Some(content)) => app.modal = Some(Modal::Text {
-                                title: label.clone(),
-                                content,
-                                kind: match label.as_str() {
+                            Ok(Some(content)) => {
+                                let kind = match label.as_str() {
                                     label if label.starts_with("YAML:") => ContentKind::Yaml,
                                     label if label.starts_with("Events:") => ContentKind::Events,
                                     _ => ContentKind::Describe,
-                                },
-                                vertical_scroll: 0,
-                                horizontal_scroll: 0,
-                                query: String::new(),
-                                search_input: None,
-                            }),
+                                };
+                                app.modal = Some(Modal::Text {
+                                    title: label.clone(),
+                                    content,
+                                    kind,
+                                    wrapped: content_wraps_by_default(kind),
+                                    vertical_scroll: 0,
+                                    horizontal_scroll: 0,
+                                    query: String::new(),
+                                    search_input: None,
+                                });
+                            }
                             Ok(None) => app.status = format!("{label} succeeded"),
                             Err(error) => {
                                 app.status = text::sanitize(&format!("{label} failed: {error}"));
@@ -1920,6 +1933,7 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             title,
             content,
             kind,
+            wrapped,
             vertical_scroll,
             horizontal_scroll,
             query,
@@ -1936,12 +1950,12 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                 .collect::<Vec<_>>();
             let mut paragraph =
                 Paragraph::new(lines).scroll((*vertical_scroll, *horizontal_scroll));
-            if matches!(kind, ContentKind::Describe | ContentKind::Events) {
+            if *wrapped {
                 paragraph = paragraph.wrap(Wrap { trim: false });
             }
             frame.render_widget(paragraph, regions[0]);
             let footer = search_input.as_ref().map_or_else(
-                || " / find  n/N next/previous  j/k scroll  Alt+h/l horizontal  Esc close".into(),
+                || content_modal_footer(*kind, *wrapped).into(),
                 |input| format!(" Find: {input}_"),
             );
             frame.render_widget(Paragraph::new(footer).style(theme.subtle()), regions[1]);
@@ -2109,6 +2123,26 @@ fn styled_content_line<'a>(
         ContentKind::Describe | ContentKind::Events => Style::default(),
     };
     highlighted_line(line, query, base, theme)
+}
+
+fn content_wraps_by_default(kind: ContentKind) -> bool {
+    matches!(
+        kind,
+        ContentKind::Describe | ContentKind::Yaml | ContentKind::Events
+    )
+}
+
+fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
+    match (kind, wrapped) {
+        (ContentKind::Yaml, true) => {
+            " j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
+        }
+        (ContentKind::Yaml, false) => {
+            " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
+        }
+        (_, true) => " j/k or ↑/↓ vertical  / find  n/N matches  Esc close",
+        (_, false) => " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  / find  n/N matches  Esc close",
+    }
 }
 
 fn yaml_line<'a>(line: &'a str, query: &str, theme: &Theme) -> Line<'a> {
@@ -2498,6 +2532,7 @@ mod tests {
             title: "YAML".into(),
             content: "kind: Root".into(),
             kind: ContentKind::Yaml,
+            wrapped: true,
             vertical_scroll: 0,
             horizontal_scroll: 0,
             query: String::new(),
@@ -2916,6 +2951,7 @@ mod tests {
             title: "YAML: Widget/example".into(),
             content: "kind: Widget".into(),
             kind: ContentKind::Yaml,
+            wrapped: true,
             vertical_scroll: 0,
             horizontal_scroll: 0,
             query: String::new(),
@@ -2931,6 +2967,101 @@ mod tests {
             terminal.backend().buffer().cell((1, 18)).unwrap().fg,
             theme.palette.overlay1
         );
+    }
+
+    #[test]
+    fn content_footer_groups_navigation_before_other_actions() {
+        assert_eq!(
+            content_modal_footer(ContentKind::Yaml, false),
+            " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
+        );
+        assert_eq!(
+            content_modal_footer(ContentKind::Yaml, true),
+            " j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
+        );
+        assert_eq!(
+            content_modal_footer(ContentKind::Diff, false),
+            " j/k or ↑/↓ vertical  h/l or ←/→ horizontal  / find  n/N matches  Esc close"
+        );
+    }
+
+    #[test]
+    fn yaml_modal_wraps_long_lines() {
+        let modal = Modal::Text {
+            title: "YAML: Widget/example".into(),
+            content: "value: abcdefghijklmnopqrstuvwxyz".into(),
+            kind: ContentKind::Yaml,
+            wrapped: true,
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+        };
+        let backend = TestBackend::new(20, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = app().theme;
+
+        terminal
+            .draw(|frame| render_modal(frame, frame.area(), &modal, &theme))
+            .unwrap();
+
+        assert!(terminal.backend().to_string().contains("uvwxyz"));
+    }
+
+    #[test]
+    fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
+        let mut app = app();
+        app.modal = Some(Modal::Text {
+            title: "YAML: Widget/example".into(),
+            content: "value: abcdefghijklmnopqrstuvwxyz".into(),
+            kind: ContentKind::Yaml,
+            wrapped: true,
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+        });
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            Rect::new(0, 0, 20, 8),
+        );
+
+        let Some(Modal::Text {
+            horizontal_scroll, ..
+        }) = app.modal
+        else {
+            panic!("expected text modal");
+        };
+        assert_eq!(horizontal_scroll, 8);
     }
 
     #[test]
