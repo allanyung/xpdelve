@@ -143,6 +143,7 @@ struct SelectionPoint {
 struct TextSelection {
     anchor: SelectionPoint,
     focus: SelectionPoint,
+    dragged: bool,
 }
 
 impl TextSelection {
@@ -517,6 +518,7 @@ impl App {
                 .map(|point| TextSelection {
                     anchor: point,
                     focus: point,
+                    dragged: false,
                 });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -533,10 +535,14 @@ impl App {
                     )
                 {
                     active.focus = point;
+                    active.dragged = true;
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 let mut active = selection.take()?;
+                if !active.dragged {
+                    return None;
+                }
                 if let Some(point) = selection_point_at(
                     content,
                     body,
@@ -550,6 +556,7 @@ impl App {
                     active.focus = point;
                 }
                 let range = active.range();
+                *selection = Some(active);
                 if !range.is_empty() {
                     return Some(content[range].to_owned());
                 }
@@ -3484,7 +3491,57 @@ mod tests {
                 app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area),
                 Some("kind".into())
             );
+            assert!(matches!(
+                &app.modal,
+                Some(Modal::Text {
+                    selection: Some(_),
+                    ..
+                })
+            ));
+
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area);
+            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 0), area);
+            assert!(matches!(
+                &app.modal,
+                Some(Modal::Text {
+                    selection: None,
+                    ..
+                })
+            ));
         }
+    }
+
+    #[test]
+    fn content_mouse_click_does_not_copy_text() {
+        let mut app = app();
+        app.modal = Some(Modal::Text {
+            title: "YAML".into(),
+            content: "kind: Widget".into(),
+            kind: ContentKind::Yaml,
+            wrapped: true,
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+            selection: None,
+        });
+        let area = Rect::new(0, 0, 40, 10);
+        let body = content_modal_body(area, ContentKind::Yaml);
+        let mouse = |kind| MouseEvent {
+            kind,
+            column: body.x,
+            row: body.y,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area),
+            None
+        );
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area),
+            None
+        );
     }
 
     #[test]
@@ -3536,6 +3593,7 @@ mod tests {
         let selection = TextSelection {
             anchor: first,
             focus: last,
+            dragged: true,
         };
 
         assert_eq!(&content[selection.range()], content);
