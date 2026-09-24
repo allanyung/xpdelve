@@ -15,7 +15,6 @@
 | `[` | Collapse every subtree |
 | `]` | Expand every subtree |
 | `z` | Toggle fitted and untruncated table widths |
-| `Alt+h`, `Alt+l` | Scroll an untruncated table horizontally |
 
 ## Discovery
 
@@ -27,6 +26,7 @@
 | `Esc` | Clear find and filter |
 | `d` | Open captured `kubectl describe` output |
 | `y` | Open redacted live YAML |
+| `s` | Show the selected resource status |
 | `v` | Load related Kubernetes events |
 | `c` | Copy the canonical resource identifier with OSC 52 |
 

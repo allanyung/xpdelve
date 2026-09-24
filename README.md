@@ -118,13 +118,13 @@ context, resource, API group, and name through the variables in `args`.
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
 - `/`: filter; `f`: find; `n`/`N`: next or previous match
-- `d`, `y`, `v`: describe, live YAML, and events
+- `d`, `y`, `s`, `v`: describe, live YAML, status, and events
 - `p`/`u`: pause or unpause the selected Crossplane resource
 - `ctrl+d`: delete with a propagation-policy confirmation
 - `ctrl+x`: selectively remove finalizers after confirmation
 - `e`: run `kubectl edit`
 - `c`: copy the canonical resource identifier using OSC 52
-- `z`: toggle fitted/full-width columns; `alt+h`/`alt+l`: horizontal scroll
+- `z`: toggle fitted/full-width columns
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
 Delete confirmation defaults to foreground propagation. Press `c` in the

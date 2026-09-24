@@ -23,7 +23,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use regex::RegexBuilder;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
@@ -55,7 +55,6 @@ const HELP_LINES: &[&str] = &[
     "  [                 collapse all",
     "  ]                 expand all",
     "  z                 toggle fitted / full-width table",
-    "  Alt+h / Alt+l     scroll full-width table",
     "",
     "Discovery",
     "  /                 filter tree",
@@ -69,7 +68,7 @@ const HELP_LINES: &[&str] = &[
     "  q / Ctrl+C        quit",
     "",
     "Actions",
-    "  d / y / v         describe / live YAML / events",
+    "  d / y / s / v     describe / live YAML / status / events",
     "  e                 kubectl edit",
     "  c                 copy resource identifier",
     "  p / u             pause / unpause resource",
@@ -199,7 +198,6 @@ struct App {
     refresh_pending: bool,
     retry_delay: Duration,
     full_width: bool,
-    horizontal_offset: u16,
     resource_missing: bool,
     namespace: Option<String>,
     context: Option<String>,
@@ -237,7 +235,6 @@ impl App {
             refresh_pending: false,
             retry_delay: Duration::from_secs(1),
             full_width,
-            horizontal_offset: 0,
             resource_missing: false,
             namespace: cli.namespace.clone(),
             context: cli.context.clone(),
@@ -887,6 +884,32 @@ impl App {
                     return UiAction::Yaml(target);
                 }
             }
+            (KeyCode::Char('s'), _) => {
+                if let Some(node) = self.selected_node() {
+                    let title = format!("Status: {}", node.identity);
+                    let content = node.object.get("status").map_or_else(
+                        || "No status reported.\n".to_owned(),
+                        |status| {
+                            serde_yaml::to_string(status)
+                                .map(|yaml| text::sanitize(&yaml))
+                                .unwrap_or_else(|error| {
+                                    text::sanitize(&format!("Could not render status: {error}\n"))
+                                })
+                        },
+                    );
+                    self.modal = Some(Modal::Text {
+                        title,
+                        content,
+                        kind: ContentKind::Yaml,
+                        wrapped: true,
+                        vertical_scroll: 0,
+                        horizontal_scroll: 0,
+                        query: String::new(),
+                        search_input: None,
+                        selection: None,
+                    });
+                }
+            }
             (KeyCode::Char('v'), _) => {
                 if let Some(target) = self.selected_target() {
                     return UiAction::Events(target);
@@ -906,18 +929,11 @@ impl App {
             }
             (KeyCode::Char('z'), _) => {
                 self.full_width = !self.full_width;
-                self.horizontal_offset = 0;
                 self.status = if self.full_width {
-                    "Full-width mode; use Alt+h/Alt+l to scroll".into()
+                    "Full-width mode".into()
                 } else {
                     "Fitted column mode".into()
                 };
-            }
-            (KeyCode::Char('h'), KeyModifiers::ALT) => {
-                self.horizontal_offset = self.horizontal_offset.saturating_sub(4);
-            }
-            (KeyCode::Char('l'), KeyModifiers::ALT) => {
-                self.horizontal_offset = self.horizontal_offset.saturating_add(4);
             }
             (KeyCode::Char('p'), _) => {
                 if self.config.read_only {
@@ -1560,16 +1576,13 @@ fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     );
     let mut lines = Vec::with_capacity(viewport + 1);
     lines.push(Line::styled(
-        horizontal_slice(&plan.header(), app.horizontal_offset, plan.available),
+        horizontal_slice(&plan.header(), 0, plan.available),
         Style::default().add_modifier(Modifier::BOLD),
     ));
     for (visible_position, index) in visible.iter().enumerate().skip(start).take(viewport) {
         let node = &snapshot.nodes[*index];
-        let content = horizontal_slice(
-            &plan.row(snapshot, node, &app.collapsed),
-            app.horizontal_offset,
-            plan.available,
-        );
+        let content =
+            horizontal_slice(&plan.row(snapshot, node, &app.collapsed), 0, plan.available);
         let selected = visible_position == app.selected_visible;
         let mut style = if selected {
             app.theme.selected_row()
@@ -1993,7 +2006,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             format!(" Find: {}", app.find)
         }
         InputMode::Normal | InputMode::Help => {
-            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  v events  / filter  z width  ? help"
+            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  s status  v events  / filter  z width  ? help"
                 .into()
         }
         }
@@ -2254,7 +2267,7 @@ fn styled_content_line<'a>(
         ContentKind::Events if line.trim_start().starts_with("Warning") => {
             theme.fg(theme.palette.red).bold()
         }
-        ContentKind::Describe if line.ends_with(':') => theme.fg(theme.palette.teal).bold(),
+        ContentKind::Describe if line.ends_with(':') => theme.syntax_heading(),
         ContentKind::Yaml => return yaml_line(line, query, theme),
         ContentKind::Describe | ContentKind::Events => Style::default(),
     };
@@ -2295,8 +2308,11 @@ fn yaml_line<'a>(line: &'a str, query: &str, theme: &Theme) -> Line<'a> {
     }
     if let Some(colon) = line.find(':') {
         let (key, value) = line.split_at(colon);
+        if value == ":" {
+            return Line::styled(line, theme.syntax_heading());
+        }
         return Line::from(vec![
-            Span::styled(key, theme.fg(theme.palette.teal).bold()),
+            Span::styled(key, theme.syntax_key()),
             Span::styled(":", Style::default().add_modifier(Modifier::DIM)),
             Span::styled(&value[1..], yaml_value_style(value[1..].trim(), theme)),
         ]);
@@ -2666,6 +2682,7 @@ fn modal_max_horizontal(content: &str, width: usize) -> u16 {
 fn bordered_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.border())
         .title_style(theme.title())
         .title(title)
@@ -2674,6 +2691,7 @@ fn bordered_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
 fn destructive_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.danger())
         .title_style(theme.danger())
         .title(title)
@@ -2900,6 +2918,37 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
         assert_eq!(app.filter, "c");
         assert_eq!(app.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn status_shortcut_opens_selected_resource_status() {
+        let mut app = app();
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{"object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"},"status":{"conditions":[{"type":"Ready","status":"True"}],"replicas":2}}}"#,
+            )
+            .unwrap(),
+        );
+        let area = Rect::new(0, 0, 100, 20);
+
+        let action = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), area);
+
+        assert!(matches!(action, UiAction::None));
+        let Some(Modal::Text {
+            title,
+            content,
+            kind,
+            ..
+        }) = &app.modal
+        else {
+            panic!("expected status text modal");
+        };
+        assert_eq!(title, "Status: Root.example.io/root");
+        assert_eq!(*kind, ContentKind::Yaml);
+        assert!(content.contains("conditions:"));
+        assert!(content.contains("type: Ready"));
+        assert!(content.contains("replicas: 2"));
+        assert!(!content.contains("apiVersion"));
     }
 
     #[test]
@@ -3139,6 +3188,10 @@ mod tests {
             .draw(|frame| frame.render_widget(block, frame.area()))
             .unwrap();
         assert_eq!(
+            terminal.backend().buffer().cell((0, 0)).unwrap().symbol(),
+            "╭"
+        );
+        assert_eq!(
             terminal.backend().buffer().cell((0, 0)).unwrap().fg,
             theme.palette.lavender
         );
@@ -3146,6 +3199,21 @@ mod tests {
             terminal.backend().buffer().cell((2, 0)).unwrap().fg,
             theme.palette.teal
         );
+    }
+
+    #[test]
+    fn content_syntax_colors_are_distinct_from_panel_titles() {
+        let theme = app().theme;
+        let yaml = styled_content_line("kind: Widget", ContentKind::Yaml, "", &theme);
+        let yaml_heading = styled_content_line("metadata:", ContentKind::Yaml, "", &theme);
+        let describe_heading =
+            styled_content_line("Containers:", ContentKind::Describe, "", &theme);
+
+        assert_eq!(theme.title().fg, Some(theme.palette.teal));
+        assert_eq!(yaml.spans[0].style.fg, Some(theme.palette.sky));
+        assert_ne!(yaml.spans[0].style.fg, theme.title().fg);
+        assert_eq!(yaml_heading.style.fg, Some(theme.palette.mauve));
+        assert_eq!(describe_heading.style.fg, Some(theme.palette.mauve));
     }
 
     #[test]
@@ -3180,6 +3248,10 @@ mod tests {
         assert!(rendered.contains("Enter Delete"));
         assert!(!rendered.contains("UID"));
         assert!(!rendered.contains("must-not-be-rendered"));
+        assert_eq!(
+            terminal.backend().buffer().cell((10, 4)).unwrap().symbol(),
+            "╭"
+        );
         assert_eq!(
             terminal.backend().buffer().cell((10, 4)).unwrap().fg,
             theme.palette.red
@@ -3273,7 +3345,7 @@ mod tests {
     }
 
     #[test]
-    fn help_modal_scrolls_to_session_and_actions_on_a_standard_terminal() {
+    fn help_modal_scrolls_to_actions_on_a_standard_terminal() {
         let mut app = app();
         app.mode = InputMode::Help;
         let backend = TestBackend::new(80, 24);
@@ -3283,7 +3355,8 @@ mod tests {
 
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Navigation"));
-        assert!(!rendered.contains("Session"));
+        assert!(rendered.contains("Session"));
+        assert!(!rendered.contains("Actions"));
         assert!(rendered.contains("j/k scroll"));
 
         app.handle_key(

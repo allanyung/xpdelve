@@ -213,6 +213,14 @@ impl Theme {
         self.fg(self.palette.teal).bold()
     }
 
+    pub fn syntax_key(&self) -> Style {
+        self.fg(self.palette.sky)
+    }
+
+    pub fn syntax_heading(&self) -> Style {
+        self.fg(self.palette.mauve).bold()
+    }
+
     pub fn border(&self) -> Style {
         self.fg(self.palette.lavender)
     }
