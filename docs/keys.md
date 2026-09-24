@@ -53,4 +53,4 @@ horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
 lines. In Describe, live YAML, and Events, drag across text to copy it on mouse
 release; visual soft wraps do not add newlines to the copied text. The main
 resource table also supports drag-to-copy, while a click without dragging
-selects the clicked resource row.
+selects the clicked resource row and a double-click opens its live YAML.

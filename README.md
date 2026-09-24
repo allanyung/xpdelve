@@ -130,9 +130,10 @@ context, resource, API group, and name through the variables in `args`.
 Delete confirmation defaults to foreground propagation. Press `c` in the
 confirmation to cycle through foreground, background, and orphan behavior.
 
-On the main resource table, click a row to select it, or drag across displayed
-text to highlight and copy it on release. Describe, live YAML, and Events offer
-the same drag-to-copy behavior; visual soft wraps are not included as newlines.
+On the main resource table, click a row to select it, double-click to open its
+live YAML, or drag across displayed text to highlight and copy it on release.
+Describe, live YAML, and Events offer the same drag-to-copy behavior; visual
+soft wraps are not included as newlines.
 Describe, YAML, and Events use the full terminal and wrap long lines. Content
 views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
 `h`/`l` or Left/Right scroll unwrapped YAML horizontally.

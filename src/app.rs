@@ -45,6 +45,7 @@ const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
 const TOAST_DURATION: Duration = Duration::from_millis(1500);
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const HELP_LINES: &[&str] = &[
     "Navigation",
     "  j/k, Up/Down      move selection",
@@ -151,6 +152,12 @@ struct TreeSelection {
     content: String,
 }
 
+#[derive(Clone, Debug)]
+struct TreeClick {
+    identity: Identity,
+    at: Instant,
+}
+
 impl TextSelection {
     fn range(self) -> std::ops::Range<usize> {
         self.anchor.start.min(self.focus.start)..self.anchor.end.max(self.focus.end)
@@ -209,6 +216,7 @@ struct App {
     context: Option<String>,
     toast: Option<Toast>,
     tree_selection: Option<TreeSelection>,
+    last_tree_click: Option<TreeClick>,
 }
 
 impl App {
@@ -247,6 +255,7 @@ impl App {
             context: cli.context.clone(),
             toast: None,
             tree_selection: None,
+            last_tree_click: None,
         }
     }
 
@@ -281,6 +290,7 @@ impl App {
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
         self.tree_selection = None;
+        self.last_tree_click = None;
         let selection_chain = self.selection_chain();
         let snapshot = Arc::new(snapshot);
         self.snapshot = Some(Arc::clone(&snapshot));
@@ -316,6 +326,7 @@ impl App {
         self.resource_missing = true;
         self.status.clear();
         self.tree_selection = None;
+        self.last_tree_click = None;
         self.retry_delay = Duration::from_secs(1);
     }
 
@@ -493,7 +504,7 @@ impl App {
         self.set_selection(self.selected_visible);
     }
 
-    fn handle_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<String> {
+    fn handle_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<MouseAction> {
         if self.modal.is_none() {
             return self.handle_tree_mouse(mouse, terminal_area);
         }
@@ -568,7 +579,7 @@ impl App {
                 let range = active.range();
                 *selection = Some(active);
                 if !range.is_empty() {
-                    return Some(content[range].to_owned());
+                    return Some(MouseAction::Copy(content[range].to_owned()));
                 }
             }
             _ => {}
@@ -576,7 +587,7 @@ impl App {
         None
     }
 
-    fn handle_tree_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<String> {
+    fn handle_tree_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<MouseAction> {
         let tree_area = resource_tree_area(terminal_area)?;
         let body = Block::default().borders(Borders::ALL).inner(tree_area);
         let rendered = rendered_tree(self, tree_area)?;
@@ -612,6 +623,7 @@ impl App {
                 });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                self.last_tree_click = None;
                 if let Some(active) = &mut self.tree_selection
                     && let Some(point) = selection_point_at(
                         &active.content,
@@ -639,6 +651,20 @@ impl App {
                         rendered.row_count,
                     ) {
                         self.set_selection(position);
+                        let identity = self.selected_identity.clone()?;
+                        let now = Instant::now();
+                        let double_click = self.last_tree_click.as_ref().is_some_and(|click| {
+                            click.identity == identity
+                                && now.duration_since(click.at) <= DOUBLE_CLICK_INTERVAL
+                        });
+                        if double_click {
+                            self.last_tree_click = None;
+                            return self
+                                .selected_target()
+                                .map(UiAction::Yaml)
+                                .map(MouseAction::Action);
+                        }
+                        self.last_tree_click = Some(TreeClick { identity, at: now });
                     }
                     return None;
                 }
@@ -655,7 +681,8 @@ impl App {
                     active.text.focus = point;
                 }
                 let range = active.text.range();
-                let value = (!range.is_empty()).then(|| active.content[range].to_owned());
+                let value = (!range.is_empty())
+                    .then(|| MouseAction::Copy(active.content[range].to_owned()));
                 self.tree_selection = Some(active);
                 return value;
             }
@@ -681,6 +708,7 @@ impl App {
         }
         if self.modal.is_none() {
             self.tree_selection = None;
+            self.last_tree_click = None;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
             self.quit = true;
@@ -1085,6 +1113,12 @@ enum UiAction {
     RemoveFinalizers(Target, Vec<String>),
 }
 
+#[derive(Debug)]
+enum MouseAction {
+    Copy(String),
+    Action(UiAction),
+}
+
 pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(anyhow!("xpdelve requires an interactive terminal"));
@@ -1149,11 +1183,15 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                     }
                     TerminalEvent::Mouse(mouse) => {
                         let area = terminal.terminal.size()?;
-                        if let Some(value) = app.handle_mouse(mouse, area.into()) {
-                            match copy_osc52(&value) {
+                        match app.handle_mouse(mouse, area.into()) {
+                            Some(MouseAction::Copy(value)) => match copy_osc52(&value) {
                                 Ok(()) => app.show_toast("● Copied to clipboard"),
                                 Err(error) => app.status = format!("Copy failed: {error}"),
+                            },
+                            Some(MouseAction::Action(action)) => {
+                                start_action(&mut app, action, &sender, cli);
                             }
+                            None => {}
                         }
                     }
                     _ => {}
@@ -3019,6 +3057,14 @@ mod tests {
         app
     }
 
+    fn copied_mouse_text(action: Option<MouseAction>) -> Option<String> {
+        match action {
+            Some(MouseAction::Copy(value)) => Some(value),
+            Some(MouseAction::Action(_)) => panic!("expected no mouse action"),
+            None => None,
+        }
+    }
+
     #[test]
     fn collapse_hides_descendants() {
         let mut app = app();
@@ -3745,15 +3791,21 @@ mod tests {
             };
 
             assert_eq!(
-                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area),
+                copied_mouse_text(
+                    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area)
+                ),
                 None
             );
             assert_eq!(
-                app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area),
+                copied_mouse_text(
+                    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area)
+                ),
                 None
             );
             assert_eq!(
-                app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area),
+                copied_mouse_text(
+                    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area)
+                ),
                 Some("kind".into())
             );
             assert!(matches!(
@@ -3800,11 +3852,13 @@ mod tests {
         };
 
         assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area),
+            copied_mouse_text(
+                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area)
+            ),
             None
         );
         assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area),
+            copied_mouse_text(app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area)),
             None
         );
     }
@@ -3823,15 +3877,21 @@ mod tests {
         };
 
         assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area),
+            copied_mouse_text(
+                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area)
+            ),
             None
         );
         assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area),
+            copied_mouse_text(
+                app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area)
+            ),
             None
         );
         assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area),
+            copied_mouse_text(
+                app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area)
+            ),
             Some("Root".into())
         );
         assert!(app.tree_selection.is_some());
@@ -3851,17 +3911,45 @@ mod tests {
         };
 
         assert_eq!(app.selected_visible, 0);
-        assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area),
-            None
+        assert!(
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area)
+                .is_none()
         );
-        assert_eq!(
-            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area),
-            None
+        assert!(
+            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area)
+                .is_none()
         );
         assert_eq!(app.selected_visible, 1);
         assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
         assert!(app.tree_selection.is_none());
+    }
+
+    #[test]
+    fn tree_mouse_double_click_opens_yaml_for_clicked_resource() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        let tree_area = resource_tree_area(area).unwrap();
+        let body = Block::default().borders(Borders::ALL).inner(tree_area);
+        let mouse = |kind| MouseEvent {
+            kind,
+            column: body.x,
+            row: body.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        for _ in 0..2 {
+            assert!(
+                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area)
+                    .is_none()
+            );
+            let action = app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area);
+            if let Some(MouseAction::Action(UiAction::Yaml(target))) = action {
+                assert_eq!(target.identity.kind, "Child");
+                assert_eq!(target.identity.name, "child");
+                return;
+            }
+        }
+        panic!("second click did not open YAML");
     }
 
     #[test]
