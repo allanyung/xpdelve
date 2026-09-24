@@ -131,6 +131,12 @@ enum Modal {
         selected: HashSet<usize>,
         cursor: usize,
     },
+    ContextMenu {
+        target: Target,
+        column: u16,
+        row: u16,
+        pressed: Option<usize>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -508,6 +514,9 @@ impl App {
         if self.modal.is_none() {
             return self.handle_tree_mouse(mouse, terminal_area);
         }
+        if matches!(self.modal, Some(Modal::ContextMenu { .. })) {
+            return self.handle_context_menu_mouse(mouse, terminal_area);
+        }
         let Some(Modal::Text {
             content,
             kind,
@@ -585,6 +594,60 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    fn handle_context_menu_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        terminal_area: Rect,
+    ) -> Option<MouseAction> {
+        let Some(Modal::ContextMenu {
+            target,
+            column,
+            row,
+            pressed,
+        }) = &self.modal
+        else {
+            return None;
+        };
+        let target = target.clone();
+        let menu = context_menu_area(terminal_area, *column, *row);
+        let inner = Block::default().borders(Borders::ALL).inner(menu);
+        let selected = (mouse.column >= inner.x
+            && mouse.column < inner.x.saturating_add(inner.width)
+            && mouse.row >= inner.y
+            && mouse.row < inner.y.saturating_add(inner.height))
+        .then(|| usize::from(mouse.row - inner.y));
+        let pressed = *pressed;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(Modal::ContextMenu { pressed, .. }) = &mut self.modal {
+                    *pressed = selected;
+                }
+                if selected.is_none() {
+                    self.modal = None;
+                }
+                return None;
+            }
+            MouseEventKind::Up(MouseButton::Left) if selected == pressed => {}
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.modal = None;
+                return None;
+            }
+            _ => return None,
+        }
+        self.modal = None;
+        match selected {
+            Some(0) => Some(MouseAction::Action(UiAction::Yaml(target))),
+            Some(1) if self.config.read_only => {
+                self.status = "Edit is disabled in read-only mode".into();
+                None
+            }
+            Some(1) => Some(MouseAction::Action(UiAction::Edit(target))),
+            Some(2) => Some(MouseAction::Action(UiAction::Events(target))),
+            Some(3) => Some(MouseAction::Action(UiAction::Describe(target))),
+            _ => None,
+        }
     }
 
     fn handle_tree_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<MouseAction> {
@@ -686,6 +749,27 @@ impl App {
                 self.tree_selection = Some(active);
                 return value;
             }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if let Some(position) = clicked_tree_position(
+                    body,
+                    mouse.column,
+                    mouse.row,
+                    rendered.start,
+                    rendered.row_count,
+                ) {
+                    self.set_selection(position);
+                    self.tree_selection = None;
+                    self.last_tree_click = None;
+                    if let Some(target) = self.selected_target() {
+                        self.modal = Some(Modal::ContextMenu {
+                            target,
+                            column: mouse.column,
+                            row: mouse.row,
+                            pressed: None,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
         None
@@ -694,6 +778,7 @@ impl App {
     fn captures_mouse(&self) -> bool {
         match &self.modal {
             Some(Modal::Text { kind, .. }) => kind.supports_mouse_selection(),
+            Some(Modal::ContextMenu { .. }) => true,
             Some(Modal::Delete { .. } | Modal::Finalizers { .. }) => false,
             None => {
                 self.mode != InputMode::Help && self.snapshot.is_some() && !self.resource_missing
@@ -873,6 +958,11 @@ impl App {
                     }
                     _ => {}
                 },
+                Modal::ContextMenu { .. } => {
+                    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                        self.modal = None;
+                    }
+                }
             }
             return UiAction::None;
         }
@@ -1189,7 +1279,19 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                                 Err(error) => app.status = format!("Copy failed: {error}"),
                             },
                             Some(MouseAction::Action(action)) => {
-                                start_action(&mut app, action, &sender, cli);
+                                if let UiAction::Edit(target) = action {
+                                    let success = run_kubectl(&mut terminal, &app, cli, target, "edit").await;
+                                    let should_refresh = success.is_ok();
+                                    app.status = match success {
+                                        Ok(()) => "Edit completed".into(),
+                                        Err(error) => format!("Edit failed: {error}"),
+                                    };
+                                    if should_refresh {
+                                        request_refresh(&mut app, cli, &sender, &mut active, false);
+                                    }
+                                } else {
+                                    start_action(&mut app, action, &sender, cli);
+                                }
                             }
                             None => {}
                         }
@@ -1622,6 +1724,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
                     .saturating_add(10)
                     .clamp(12, 24),
             ),
+            Modal::ContextMenu { column, row, .. } => context_menu_area(area, *column, *row),
         };
         render_modal(frame, modal_area, modal, &app.theme);
     }
@@ -1830,7 +1933,7 @@ fn clicked_tree_position(
         && column < body.x.saturating_add(body.width)
         && row > body.y
         && row < body.y.saturating_add(body.height);
-    let row = inside.then_some(usize::from(row - body.y - 1))?;
+    let row = inside.then(|| usize::from(row - body.y - 1))?;
     (row < row_count).then_some(start + row)
 }
 
@@ -2236,7 +2339,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             format!(" Find: {}", app.find)
         }
         InputMode::Normal | InputMode::Help => {
-            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  s status  v events  / filter  z width  ? help"
+            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  e edit  s status  v events  / filter  z width  ? help"
                 .into()
         }
         }
@@ -2463,6 +2566,28 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                 regions[1],
             );
         }
+        Modal::ContextMenu { pressed, .. } => {
+            let block = bordered_block(" Resource ", theme);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(" YAML", context_menu_item_style(theme, 0, *pressed)),
+                    Line::styled(" Edit", context_menu_item_style(theme, 1, *pressed)),
+                    Line::styled(" Events", context_menu_item_style(theme, 2, *pressed)),
+                    Line::styled(" Describe", context_menu_item_style(theme, 3, *pressed)),
+                ]),
+                inner,
+            );
+        }
+    }
+}
+
+fn context_menu_item_style(theme: &Theme, item: usize, pressed: Option<usize>) -> Style {
+    if pressed == Some(item) {
+        theme.selected_option()
+    } else {
+        theme.fg(theme.palette.text)
     }
 }
 
@@ -2933,6 +3058,24 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+fn context_menu_area(area: Rect, column: u16, row: u16) -> Rect {
+    let width = 14.min(area.width);
+    let height = 6.min(area.height);
+    let max_x = area.right().saturating_sub(width);
+    let below = row.saturating_add(1);
+    let y = if below.saturating_add(height) <= area.bottom() {
+        below
+    } else {
+        row.saturating_sub(height).max(area.y)
+    };
+    Rect::new(
+        column.saturating_add(1).clamp(area.x, max_x),
+        y,
         width,
         height,
     )
@@ -3579,6 +3722,7 @@ mod tests {
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Enter/Space expand/collapse"));
         assert!(rendered.contains("ctrl-d delete"));
+        assert!(rendered.contains("e edit"));
         assert!(!rendered.contains("j/k move"));
     }
 
@@ -3950,6 +4094,129 @@ mod tests {
             }
         }
         panic!("second click did not open YAML");
+    }
+
+    #[test]
+    fn tree_right_click_opens_context_menu_for_clicked_resource() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        let tree_area = resource_tree_area(area).unwrap();
+        let body = Block::default().borders(Borders::ALL).inner(tree_area);
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: body.x + 4,
+            row: body.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert!(app.handle_mouse(mouse, area).is_none());
+        let Some(Modal::ContextMenu {
+            target,
+            column,
+            row,
+            ..
+        }) = &app.modal
+        else {
+            panic!("expected context menu");
+        };
+        assert_eq!(target.identity.kind, "Child");
+        assert_eq!((*column, *row), (mouse.column, mouse.row));
+        assert_eq!(app.selected_visible, 1);
+    }
+
+    #[test]
+    fn context_menu_options_dispatch_matching_actions() {
+        let area = Rect::new(0, 0, 80, 12);
+        for (item, expected) in ["yaml", "edit", "events", "describe"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut app = app();
+            app.modal = Some(Modal::ContextMenu {
+                target: app.selected_target().unwrap(),
+                column: 10,
+                row: 3,
+                pressed: None,
+            });
+            let menu = context_menu_area(area, 10, 3);
+            let inner = Block::default().borders(Borders::ALL).inner(menu);
+            let click = |kind| MouseEvent {
+                kind,
+                column: inner.x,
+                row: inner.y + item as u16,
+                modifiers: KeyModifiers::NONE,
+            };
+            assert!(
+                app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)), area)
+                    .is_none()
+            );
+            let action = app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)), area);
+
+            let (actual, target) = match action {
+                Some(MouseAction::Action(UiAction::Yaml(target))) => ("yaml", target),
+                Some(MouseAction::Action(UiAction::Edit(target))) => ("edit", target),
+                Some(MouseAction::Action(UiAction::Events(target))) => ("events", target),
+                Some(MouseAction::Action(UiAction::Describe(target))) => ("describe", target),
+                _ => panic!("expected context menu action"),
+            };
+            assert_eq!(actual, expected);
+            assert_eq!(target.identity.kind, "Root");
+            assert!(app.modal.is_none());
+        }
+    }
+
+    #[test]
+    fn clicking_outside_context_menu_only_dismisses_it() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        app.modal = Some(Modal::ContextMenu {
+            target: app.selected_target().unwrap(),
+            column: 20,
+            row: 3,
+            pressed: None,
+        });
+        let outside = |kind| MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert!(
+            app.handle_mouse(outside(MouseEventKind::Down(MouseButton::Left)), area)
+                .is_none()
+        );
+        assert!(app.modal.is_none());
+        assert!(!app.quit);
+        assert!(
+            app.handle_mouse(outside(MouseEventKind::Up(MouseButton::Left)), area)
+                .is_none()
+        );
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn context_menu_is_placed_clear_of_clicked_row() {
+        let area = Rect::new(0, 0, 80, 24);
+
+        let below = context_menu_area(area, 10, 5);
+        assert!(below.y > 5);
+
+        let above = context_menu_area(area, 10, 22);
+        assert!(above.bottom() <= 22);
+    }
+
+    #[test]
+    fn context_menu_uses_normal_text_and_selected_option_styles() {
+        let theme = app().theme;
+
+        let normal = context_menu_item_style(&theme, 0, None);
+        assert_eq!(normal.fg, Some(theme.palette.text));
+        assert_ne!(normal.fg, theme.title().fg);
+        assert_eq!(
+            context_menu_item_style(&theme, 1, Some(1)),
+            theme.selected_option()
+        );
     }
 
     #[test]
