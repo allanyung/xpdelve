@@ -130,13 +130,14 @@ context, resource, API group, and name through the variables in `args`.
 Delete confirmation defaults to foreground propagation. Press `c` in the
 confirmation to cycle through foreground, background, and orphan behavior.
 
-The application captures mouse events while Describe, live YAML, or Events is
-open. Drag across content to copy the selected source text on release; visual
-soft wraps are not included as newlines. Outside these content views, text
-selection uses the terminal emulator's normal behavior, which may require a
-modifier key. Describe, YAML, and Events use the full terminal and wrap long
-lines. Content views support `/` search and vertical scrolling. In YAML, `w`
-toggles wrapping; `h`/`l` or Left/Right scroll unwrapped YAML horizontally.
+On the main resource table, click a row to select it, double-click to open its
+live YAML, or drag across displayed text to highlight and copy it on release.
+Right-click a row for YAML, Edit, Events, and Describe actions. Describe, live
+YAML, and Events offer the same drag-to-copy behavior; visual soft wraps are not
+included as newlines.
+Describe, YAML, and Events use the full terminal and wrap long lines. Content
+views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
+`h`/`l` or Left/Right scroll unwrapped YAML horizontally.
 
 If the root resource can no longer be found, xpdelve clears the stale trace and
 stops automatic polling. Press `r` to retry manually; successful recovery

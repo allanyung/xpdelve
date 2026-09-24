@@ -51,4 +51,7 @@ navigation. Describe and event content wraps long lines. YAML wraps by default;
 press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped YAML
 horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
 lines. In Describe, live YAML, and Events, drag across text to copy it on mouse
-release; visual soft wraps do not add newlines to the copied text.
+release; visual soft wraps do not add newlines to the copied text. The main
+resource table also supports drag-to-copy, while a click without dragging
+selects the clicked resource row and a double-click opens its live YAML.
+Right-clicking a resource opens a menu for YAML, Edit, Events, and Describe.
