@@ -145,6 +145,12 @@ struct TextSelection {
     dragged: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TreeSelection {
+    text: TextSelection,
+    content: String,
+}
+
 impl TextSelection {
     fn range(self) -> std::ops::Range<usize> {
         self.anchor.start.min(self.focus.start)..self.anchor.end.max(self.focus.end)
@@ -202,6 +208,7 @@ struct App {
     namespace: Option<String>,
     context: Option<String>,
     toast: Option<Toast>,
+    tree_selection: Option<TreeSelection>,
 }
 
 impl App {
@@ -239,6 +246,7 @@ impl App {
             namespace: cli.namespace.clone(),
             context: cli.context.clone(),
             toast: None,
+            tree_selection: None,
         }
     }
 
@@ -272,6 +280,7 @@ impl App {
     }
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        self.tree_selection = None;
         let selection_chain = self.selection_chain();
         let snapshot = Arc::new(snapshot);
         self.snapshot = Some(Arc::clone(&snapshot));
@@ -306,6 +315,7 @@ impl App {
         self.loading = false;
         self.resource_missing = true;
         self.status.clear();
+        self.tree_selection = None;
         self.retry_delay = Duration::from_secs(1);
     }
 
@@ -484,6 +494,9 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<String> {
+        if self.modal.is_none() {
+            return self.handle_tree_mouse(mouse, terminal_area);
+        }
         let Some(Modal::Text {
             content,
             kind,
@@ -563,10 +576,111 @@ impl App {
         None
     }
 
+    fn handle_tree_mouse(&mut self, mouse: MouseEvent, terminal_area: Rect) -> Option<String> {
+        let tree_area = resource_tree_area(terminal_area)?;
+        let body = Block::default().borders(Borders::ALL).inner(tree_area);
+        let rendered = rendered_tree(self, tree_area)?;
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let content_rows = u16::try_from(rendered.row_count)
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(1);
+                if mouse.row < body.y
+                    || mouse.row >= body.y.saturating_add(content_rows.min(body.height))
+                {
+                    self.tree_selection = None;
+                    return None;
+                }
+                self.tree_selection = selection_point_at(
+                    &rendered.content,
+                    body,
+                    mouse.column,
+                    mouse.row,
+                    0,
+                    0,
+                    false,
+                    false,
+                )
+                .map(|point| TreeSelection {
+                    text: TextSelection {
+                        anchor: point,
+                        focus: point,
+                        dragged: false,
+                    },
+                    content: rendered.content,
+                });
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(active) = &mut self.tree_selection
+                    && let Some(point) = selection_point_at(
+                        &active.content,
+                        body,
+                        mouse.column,
+                        mouse.row,
+                        0,
+                        0,
+                        false,
+                        true,
+                    )
+                {
+                    active.text.focus = point;
+                    active.text.dragged = true;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let mut active = self.tree_selection.take()?;
+                if !active.text.dragged {
+                    if let Some(position) = clicked_tree_position(
+                        body,
+                        mouse.column,
+                        mouse.row,
+                        rendered.start,
+                        rendered.row_count,
+                    ) {
+                        self.set_selection(position);
+                    }
+                    return None;
+                }
+                if let Some(point) = selection_point_at(
+                    &active.content,
+                    body,
+                    mouse.column,
+                    mouse.row,
+                    0,
+                    0,
+                    false,
+                    true,
+                ) {
+                    active.text.focus = point;
+                }
+                let range = active.text.range();
+                let value = (!range.is_empty()).then(|| active.content[range].to_owned());
+                self.tree_selection = Some(active);
+                return value;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn captures_mouse(&self) -> bool {
+        match &self.modal {
+            Some(Modal::Text { kind, .. }) => kind.supports_mouse_selection(),
+            Some(Modal::Delete { .. } | Modal::Finalizers { .. }) => false,
+            None => {
+                self.mode != InputMode::Help && self.snapshot.is_some() && !self.resource_missing
+            }
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent, terminal_area: Rect) -> UiAction {
         let page_size = terminal_area.height.saturating_sub(6) as usize;
         if key.kind != KeyEventKind::Press {
             return UiAction::None;
+        }
+        if self.modal.is_none() {
+            self.tree_selection = None;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
             self.quit = true;
@@ -995,10 +1109,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     request_refresh(&mut app, cli, &sender, &mut active, true);
 
     while !app.quit {
-        terminal.set_mouse_capture(matches!(
-            &app.modal,
-            Some(Modal::Text { kind, .. }) if kind.supports_mouse_selection()
-        ))?;
+        terminal.set_mouse_capture(app.captures_mouse())?;
         terminal.terminal.draw(|frame| render(frame, &app))?;
         let toast_active = app.toast.is_some();
         let toast_delay = app
@@ -1483,6 +1594,23 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
     }
 }
 
+fn resource_tree_area(area: Rect) -> Option<Rect> {
+    if area.width < 32 || area.height < 8 {
+        return None;
+    }
+    Some(
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area)[1],
+    )
+}
+
 fn render_toast(frame: &mut ratatui::Frame<'_>, area: Rect, toast: &Toast, theme: &Theme) {
     let width = u16::try_from(toast.message.width())
         .unwrap_or(u16::MAX)
@@ -1562,27 +1690,23 @@ fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         return;
     };
     let visible = app.visible();
-    let package_trace = snapshot.nodes.first().is_some_and(|node| node.is_package);
-    let viewport = area.height.saturating_sub(3) as usize;
-    let start = app.resource_view_start(viewport);
-    let plan = TablePlan::new(
-        snapshot,
-        &visible,
-        area.width.saturating_sub(2) as usize,
-        package_trace,
-        app.config.ui.short,
-        app.full_width,
-        app.config.ui.ascii,
-    );
-    let mut lines = Vec::with_capacity(viewport + 1);
+    let Some(rendered) = rendered_tree(app, area) else {
+        return;
+    };
+    let mut lines = Vec::with_capacity(rendered.row_count + 1);
     lines.push(Line::styled(
-        horizontal_slice(&plan.header(), 0, plan.available),
+        rendered.lines[0].clone(),
         Style::default().add_modifier(Modifier::BOLD),
     ));
-    for (visible_position, index) in visible.iter().enumerate().skip(start).take(viewport) {
+    for (row, (visible_position, index)) in visible
+        .iter()
+        .enumerate()
+        .skip(rendered.start)
+        .take(rendered.row_count)
+        .enumerate()
+    {
         let node = &snapshot.nodes[*index];
-        let content =
-            horizontal_slice(&plan.row(snapshot, node, &app.collapsed), 0, plan.available);
+        let content = rendered.lines[row + 1].clone();
         let selected = visible_position == app.selected_visible;
         let mut style = if selected {
             app.theme.selected_row()
@@ -1602,6 +1726,74 @@ fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(lines).block(bordered_block(title, &app.theme)),
         area,
     );
+    if let Some(selection) = &app.tree_selection {
+        render_text_selection(
+            frame,
+            Block::default().borders(Borders::ALL).inner(area),
+            &rendered.content,
+            selection.text,
+            0,
+            0,
+            false,
+            &app.theme,
+        );
+    }
+}
+
+struct RenderedTree {
+    lines: Vec<String>,
+    content: String,
+    start: usize,
+    row_count: usize,
+}
+
+fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
+    let snapshot = app.snapshot.as_ref()?;
+    let visible = app.visible();
+    let package_trace = snapshot.nodes.first().is_some_and(|node| node.is_package);
+    let viewport = area.height.saturating_sub(3) as usize;
+    let start = app.resource_view_start(viewport);
+    let plan = TablePlan::new(
+        snapshot,
+        &visible,
+        area.width.saturating_sub(2) as usize,
+        package_trace,
+        app.config.ui.short,
+        app.full_width,
+        app.config.ui.ascii,
+    );
+    let mut lines = Vec::with_capacity(viewport + 1);
+    lines.push(horizontal_slice(&plan.header(), 0, plan.available));
+    lines.extend(visible.iter().skip(start).take(viewport).map(|index| {
+        horizontal_slice(
+            &plan.row(snapshot, &snapshot.nodes[*index], &app.collapsed),
+            0,
+            plan.available,
+        )
+    }));
+    let row_count = lines.len().saturating_sub(1);
+    let content = lines.join("\n");
+    Some(RenderedTree {
+        lines,
+        content,
+        start,
+        row_count,
+    })
+}
+
+fn clicked_tree_position(
+    body: Rect,
+    column: u16,
+    row: u16,
+    start: usize,
+    row_count: usize,
+) -> Option<usize> {
+    let inside = column >= body.x
+        && column < body.x.saturating_add(body.width)
+        && row > body.y
+        && row < body.y.saturating_add(body.height);
+    let row = inside.then_some(usize::from(row - body.y - 1))?;
+    (row < row_count).then_some(start + row)
 }
 
 fn render_resource_missing(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -3615,6 +3807,61 @@ mod tests {
             app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area),
             None
         );
+    }
+
+    #[test]
+    fn tree_mouse_drag_copies_displayed_text() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        let tree_area = resource_tree_area(area).unwrap();
+        let body = Block::default().borders(Borders::ALL).inner(tree_area);
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column: body.x + column,
+            row: body.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area),
+            None
+        );
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area),
+            None
+        );
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area),
+            Some("Root".into())
+        );
+        assert!(app.tree_selection.is_some());
+    }
+
+    #[test]
+    fn tree_mouse_click_selects_resource_row_without_copying() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        let tree_area = resource_tree_area(area).unwrap();
+        let body = Block::default().borders(Borders::ALL).inner(tree_area);
+        let mouse = |kind| MouseEvent {
+            kind,
+            column: body.x,
+            row: body.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert_eq!(app.selected_visible, 0);
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area),
+            None
+        );
+        assert_eq!(
+            app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area),
+            None
+        );
+        assert_eq!(app.selected_visible, 1);
+        assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
+        assert!(app.tree_selection.is_none());
     }
 
     #[test]
