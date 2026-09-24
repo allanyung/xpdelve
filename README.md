@@ -130,6 +130,12 @@ context, resource, API group, and name through the variables in `args`.
 Delete confirmation defaults to foreground propagation. Press `c` in the
 confirmation to cycle through foreground, background, and orphan behavior.
 
+If the root resource can no longer be found, xpdelve clears the stale trace and
+stops automatic polling. Press `r` to retry manually; successful recovery
+restores the tree and normal refresh behavior.
+
+## Mouse Support
+
 On the main resource table, click a row to select it, double-click to open its
 live YAML, or drag across displayed text to highlight and copy it on release.
 Right-click a row for YAML, Edit, Events, and Describe actions. Describe, live
@@ -138,10 +144,6 @@ included as newlines.
 Describe, YAML, and Events use the full terminal and wrap long lines. Content
 views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
 `h`/`l` or Left/Right scroll unwrapped YAML horizontally.
-
-If the root resource can no longer be found, xpdelve clears the stale trace and
-stops automatic polling. Press `r` to retry manually; successful recovery
-restores the tree and normal refresh behavior.
 
 ## Themes
 
