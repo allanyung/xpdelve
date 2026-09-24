@@ -23,7 +23,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use regex::RegexBuilder;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
@@ -2267,7 +2267,7 @@ fn styled_content_line<'a>(
         ContentKind::Events if line.trim_start().starts_with("Warning") => {
             theme.fg(theme.palette.red).bold()
         }
-        ContentKind::Describe if line.ends_with(':') => theme.fg(theme.palette.teal).bold(),
+        ContentKind::Describe if line.ends_with(':') => theme.syntax_heading(),
         ContentKind::Yaml => return yaml_line(line, query, theme),
         ContentKind::Describe | ContentKind::Events => Style::default(),
     };
@@ -2308,8 +2308,11 @@ fn yaml_line<'a>(line: &'a str, query: &str, theme: &Theme) -> Line<'a> {
     }
     if let Some(colon) = line.find(':') {
         let (key, value) = line.split_at(colon);
+        if value == ":" {
+            return Line::styled(line, theme.syntax_heading());
+        }
         return Line::from(vec![
-            Span::styled(key, theme.fg(theme.palette.teal).bold()),
+            Span::styled(key, theme.syntax_key()),
             Span::styled(":", Style::default().add_modifier(Modifier::DIM)),
             Span::styled(&value[1..], yaml_value_style(value[1..].trim(), theme)),
         ]);
@@ -2679,6 +2682,7 @@ fn modal_max_horizontal(content: &str, width: usize) -> u16 {
 fn bordered_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.border())
         .title_style(theme.title())
         .title(title)
@@ -2687,6 +2691,7 @@ fn bordered_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
 fn destructive_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.danger())
         .title_style(theme.danger())
         .title(title)
@@ -3183,6 +3188,10 @@ mod tests {
             .draw(|frame| frame.render_widget(block, frame.area()))
             .unwrap();
         assert_eq!(
+            terminal.backend().buffer().cell((0, 0)).unwrap().symbol(),
+            "╭"
+        );
+        assert_eq!(
             terminal.backend().buffer().cell((0, 0)).unwrap().fg,
             theme.palette.lavender
         );
@@ -3190,6 +3199,21 @@ mod tests {
             terminal.backend().buffer().cell((2, 0)).unwrap().fg,
             theme.palette.teal
         );
+    }
+
+    #[test]
+    fn content_syntax_colors_are_distinct_from_panel_titles() {
+        let theme = app().theme;
+        let yaml = styled_content_line("kind: Widget", ContentKind::Yaml, "", &theme);
+        let yaml_heading = styled_content_line("metadata:", ContentKind::Yaml, "", &theme);
+        let describe_heading =
+            styled_content_line("Containers:", ContentKind::Describe, "", &theme);
+
+        assert_eq!(theme.title().fg, Some(theme.palette.teal));
+        assert_eq!(yaml.spans[0].style.fg, Some(theme.palette.sky));
+        assert_ne!(yaml.spans[0].style.fg, theme.title().fg);
+        assert_eq!(yaml_heading.style.fg, Some(theme.palette.mauve));
+        assert_eq!(describe_heading.style.fg, Some(theme.palette.mauve));
     }
 
     #[test]
@@ -3224,6 +3248,10 @@ mod tests {
         assert!(rendered.contains("Enter Delete"));
         assert!(!rendered.contains("UID"));
         assert!(!rendered.contains("must-not-be-rendered"));
+        assert_eq!(
+            terminal.backend().buffer().cell((10, 4)).unwrap().symbol(),
+            "╭"
+        );
         assert_eq!(
             terminal.backend().buffer().cell((10, 4)).unwrap().fg,
             theme.palette.red
