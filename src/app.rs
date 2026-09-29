@@ -2,7 +2,7 @@
 // internal/bubbles/layout/xpnavigator/model.go.
 // Copyright 2025 Bruno Luiz da Silva. Licensed under Apache-2.0.
 // Translated and substantially modified for xpdelve in 2026. See NOTICE.
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::cli::Cli;
 use crate::config::{self, Config};
 use crate::kubernetes::{DeletePropagation, Kubernetes, Target};
-use crate::model::{Identity, ProjectedNode, Snapshot};
+use crate::model::{Identity, ProjectedNode, ResourceKind, Snapshot};
 use crate::text;
 use crate::theme::Theme;
 use crate::trace::{self, TraceRequest};
@@ -63,6 +63,7 @@ const HELP_LINES: &[&str] = &[
     "",
     "Discovery",
     "  :                 open command palette",
+    "  :exclude          exclude resource kinds",
     "  /                 filter tree",
     "  f                 find text",
     "  n / N             next / previous match",
@@ -116,8 +117,9 @@ enum InputMode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaletteAction {
-    FilterKind(String),
+    FilterKind(ResourceKind),
     ClearKindFilter,
+    OpenExcludePicker,
     OpenSkinPicker,
     Quit,
 }
@@ -159,6 +161,12 @@ enum Modal {
     },
     SkinPicker {
         selected: usize,
+    },
+    ExcludePicker {
+        kinds: Vec<ResourceKind>,
+        excluded: HashSet<ResourceKind>,
+        cursor: usize,
+        scroll: usize,
     },
 }
 
@@ -223,11 +231,12 @@ struct App {
     selected_visible: usize,
     resource_scroll: usize,
     collapsed: HashSet<Identity>,
+    excluded_kinds: HashSet<ResourceKind>,
     mode: InputMode,
     help_scroll: u16,
     input: String,
     filter: String,
-    kind_filter: Option<String>,
+    kind_filter: Option<ResourceKind>,
     palette_selected: usize,
     find: String,
     loading: bool,
@@ -265,6 +274,7 @@ impl App {
             selected_visible: 0,
             resource_scroll: 0,
             collapsed: HashSet::new(),
+            excluded_kinds: HashSet::new(),
             mode: InputMode::Normal,
             help_scroll: 0,
             input: String::new(),
@@ -309,8 +319,9 @@ impl App {
         self.snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
             snapshot.visible_indices(
                 &self.collapsed,
+                &self.excluded_kinds,
                 (!self.filter.is_empty()).then_some(self.filter.as_str()),
-                self.kind_filter.as_deref(),
+                self.kind_filter.as_ref(),
             )
         })
     }
@@ -320,19 +331,30 @@ impl App {
             .snapshot
             .iter()
             .flat_map(|snapshot| snapshot.nodes.iter())
-            .map(|node| node.identity.kind.clone())
+            .map(|node| node.resource_kind.clone())
             .collect::<Vec<_>>();
-        kinds.sort_by_key(|kind| kind.to_lowercase());
+        kinds.sort_by(|left, right| {
+            left.kind
+                .to_lowercase()
+                .cmp(&right.kind.to_lowercase())
+                .then_with(|| left.group.to_lowercase().cmp(&right.group.to_lowercase()))
+        });
         kinds.dedup();
+        let kind_counts = kinds.iter().fold(HashMap::new(), |mut counts, kind| {
+            *counts.entry(kind.kind.clone()).or_insert(0usize) += 1;
+            counts
+        });
         let query = self.input.trim();
         let mut entries = kinds
             .into_iter()
             .filter_map(|kind| {
-                fuzzy_score(&kind, query).map(|score| {
+                let qualified = kind_counts.get(kind.kind.as_str()).copied().unwrap_or(0) > 1;
+                let label = resource_kind_label(&kind, qualified);
+                fuzzy_score(&label, query).map(|score| {
                     (
                         score,
                         PaletteEntry {
-                            label: kind.clone(),
+                            label,
                             action: PaletteAction::FilterKind(kind),
                         },
                     )
@@ -347,6 +369,17 @@ impl App {
                 PaletteEntry {
                     label: "clear".into(),
                     action: PaletteAction::ClearKindFilter,
+                },
+            ));
+        }
+        if !query.is_empty()
+            && let Some(score) = fuzzy_score("exclude", query)
+        {
+            entries.push((
+                score,
+                PaletteEntry {
+                    label: "exclude".into(),
+                    action: PaletteAction::OpenExcludePicker,
                 },
             ));
         }
@@ -380,16 +413,60 @@ impl App {
         entries.into_iter().map(|(_, entry)| entry).collect()
     }
 
+    fn kind_filter_label(&self, kind: &ResourceKind) -> String {
+        let groups = self
+            .snapshot
+            .iter()
+            .flat_map(|snapshot| snapshot.nodes.iter())
+            .filter(|node| node.resource_kind.kind == kind.kind)
+            .map(|node| node.resource_kind.group.as_str())
+            .collect::<HashSet<_>>();
+        resource_kind_label(kind, groups.len() > 1)
+    }
+
     fn open_palette(&mut self) {
         self.mode = InputMode::Command;
         self.input.clear();
         self.palette_selected = 0;
     }
 
+    fn exclusion_kinds(&self) -> Vec<ResourceKind> {
+        let mut kinds = self.excluded_kinds.clone();
+        kinds.extend(
+            self.snapshot
+                .iter()
+                .flat_map(|snapshot| snapshot.nodes.iter())
+                .map(|node| node.resource_kind.clone()),
+        );
+        let mut kinds = kinds.into_iter().collect::<Vec<_>>();
+        kinds.sort_by(|left, right| {
+            (left.kind != "Usage")
+                .cmp(&(right.kind != "Usage"))
+                .then_with(|| left.kind.to_lowercase().cmp(&right.kind.to_lowercase()))
+                .then_with(|| left.group.to_lowercase().cmp(&right.group.to_lowercase()))
+        });
+        kinds
+    }
+
+    fn open_exclude_picker(&mut self) {
+        self.mode = InputMode::Normal;
+        self.input.clear();
+        self.modal = Some(Modal::ExcludePicker {
+            kinds: self.exclusion_kinds(),
+            excluded: self.excluded_kinds.clone(),
+            cursor: 0,
+            scroll: 0,
+        });
+    }
+
     fn execute_palette_action(&mut self, action: PaletteAction) {
         match action {
             PaletteAction::FilterKind(kind) => self.kind_filter = Some(kind),
             PaletteAction::ClearKindFilter => self.kind_filter = None,
+            PaletteAction::OpenExcludePicker => {
+                self.open_exclude_picker();
+                return;
+            }
             PaletteAction::OpenSkinPicker => {
                 self.mode = InputMode::Normal;
                 self.input.clear();
@@ -1020,9 +1097,12 @@ impl App {
         match &self.modal {
             Some(Modal::Text { kind, .. }) => kind.supports_mouse_selection(),
             Some(Modal::ContextMenu { .. }) => true,
-            Some(Modal::Delete { .. } | Modal::Finalizers { .. } | Modal::SkinPicker { .. }) => {
-                false
-            }
+            Some(
+                Modal::Delete { .. }
+                | Modal::Finalizers { .. }
+                | Modal::SkinPicker { .. }
+                | Modal::ExcludePicker { .. },
+            ) => false,
             None => {
                 !matches!(self.mode, InputMode::Help | InputMode::Command)
                     && self.snapshot.is_some()
@@ -1215,6 +1295,80 @@ impl App {
                     }
                     _ => {}
                 },
+                Modal::ExcludePicker {
+                    kinds,
+                    excluded,
+                    cursor,
+                    scroll,
+                } => {
+                    let viewport = usize::from(
+                        exclude_picker_area(terminal_area, kinds.len())
+                            .height
+                            .saturating_sub(3),
+                    )
+                    .max(1);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            self.modal = None;
+                            return UiAction::None;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') if !kinds.is_empty() => {
+                            *cursor = (*cursor + 1) % kinds.len();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') if !kinds.is_empty() => {
+                            *cursor = cursor.checked_sub(1).unwrap_or(kinds.len() - 1);
+                        }
+                        KeyCode::PageDown if !kinds.is_empty() => {
+                            *cursor = cursor
+                                .saturating_add(viewport)
+                                .min(kinds.len().saturating_sub(1));
+                        }
+                        KeyCode::PageUp if !kinds.is_empty() => {
+                            *cursor = cursor.saturating_sub(viewport);
+                        }
+                        KeyCode::Home | KeyCode::Char('g') if !kinds.is_empty() => *cursor = 0,
+                        KeyCode::End | KeyCode::Char('G') if !kinds.is_empty() => {
+                            *cursor = kinds.len() - 1;
+                        }
+                        KeyCode::Char(' ') => {
+                            if let Some(kind) = kinds.get(*cursor)
+                                && !excluded.remove(kind)
+                            {
+                                excluded.insert(kind.clone());
+                            }
+                        }
+                        KeyCode::Char('a') => excluded.clear(),
+                        KeyCode::Char('x') => {
+                            excluded.extend(kinds.iter().cloned());
+                        }
+                        KeyCode::Char('o') => {
+                            if let Some(visible) = kinds.get(*cursor).cloned() {
+                                excluded.extend(kinds.iter().cloned());
+                                excluded.remove(&visible);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            self.excluded_kinds.clone_from(excluded);
+                            let count = self.excluded_kinds.len();
+                            self.status = match count {
+                                0 => "All resource kinds shown".into(),
+                                1 => "1 resource kind excluded".into(),
+                                _ => format!("{count} resource kinds excluded"),
+                            };
+                            self.modal = None;
+                            self.set_selection(self.selected_visible);
+                            return UiAction::None;
+                        }
+                        _ => {}
+                    }
+                    if !kinds.is_empty() {
+                        if *cursor < *scroll {
+                            *scroll = *cursor;
+                        } else if *cursor >= scroll.saturating_add(viewport) {
+                            *scroll = cursor.saturating_add(1).saturating_sub(viewport);
+                        }
+                    }
+                }
             }
             return UiAction::None;
         }
@@ -1989,6 +2143,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
                     .unwrap_or(u16::MAX)
                     .saturating_add(2),
             ),
+            Modal::ExcludePicker { kinds, .. } => exclude_picker_area(area, kinds.len()),
         };
         render_modal(frame, modal_area, modal, &app.theme);
     }
@@ -2232,6 +2387,18 @@ fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
         previous = Some(index);
     }
     Some(score.saturating_sub(candidate.len()))
+}
+
+fn resource_kind_label(kind: &ResourceKind, qualified: bool) -> String {
+    if !qualified {
+        return kind.kind.clone();
+    }
+    let group = if kind.group.is_empty() {
+        "core"
+    } else {
+        &kind.group
+    };
+    format!("{}.{group}", kind.kind)
 }
 
 fn render_resource_missing(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -2654,11 +2821,27 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         InputMode::Filter => format!(" Filter: {}_", app.input),
         InputMode::Find => format!(" Find: {}_", app.input),
         InputMode::Normal | InputMode::Help
-            if app.kind_filter.is_some() || !app.filter.is_empty() || !app.find.is_empty() =>
+            if app.kind_filter.is_some()
+                || !app.excluded_kinds.is_empty()
+                || !app.filter.is_empty()
+                || !app.find.is_empty() =>
         {
             let mut active = Vec::new();
             if let Some(kind) = &app.kind_filter {
-                active.push(format!("Kind: {kind}"));
+                active.push(format!("Kind: {}", app.kind_filter_label(kind)));
+            }
+            if !app.excluded_kinds.is_empty() {
+                let mut excluded = app
+                    .excluded_kinds
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                excluded.sort_by_key(|kind| kind.to_lowercase());
+                active.push(if excluded.len() <= 2 {
+                    format!("Excluded: {}", excluded.join(", "))
+                } else {
+                    format!("Excluded kinds: {}", excluded.len())
+                });
             }
             if !app.filter.is_empty() {
                 active.push(format!("Filter: {}", app.filter));
@@ -2702,16 +2885,17 @@ fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 fn palette_list_item<'a>(entry: &'a PaletteEntry, theme: &Theme) -> ListItem<'a> {
     match &entry.action {
         PaletteAction::FilterKind(_) => ListItem::new(format!("  {}", entry.label)),
-        PaletteAction::ClearKindFilter | PaletteAction::OpenSkinPicker | PaletteAction::Quit => {
-            ListItem::new(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!(":{}", entry.label),
-                    Style::default().fg(theme.palette.peach),
-                ),
-                Span::styled("  cmd", theme.subtle()),
-            ]))
-        }
+        PaletteAction::ClearKindFilter
+        | PaletteAction::OpenExcludePicker
+        | PaletteAction::OpenSkinPicker
+        | PaletteAction::Quit => ListItem::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!(":{}", entry.label),
+                Style::default().fg(theme.palette.peach),
+            ),
+            Span::styled("  cmd", theme.subtle()),
+        ])),
     }
 }
 
@@ -2731,6 +2915,17 @@ fn palette_area(area: Rect, entry_count: usize) -> Rect {
             .saturating_add(area.height.saturating_sub(height).saturating_sub(3)),
         width,
         height,
+    )
+}
+
+fn exclude_picker_area(area: Rect, kind_count: usize) -> Rect {
+    centered(
+        area,
+        80,
+        u16::try_from(kind_count)
+            .unwrap_or(u16::MAX)
+            .saturating_add(3)
+            .clamp(8, 24),
     )
 }
 
@@ -2986,6 +3181,54 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                 ))
                 .highlight_style(theme.selected_row());
             frame.render_stateful_widget(list, area, &mut state);
+        }
+        Modal::ExcludePicker {
+            kinds,
+            excluded,
+            cursor,
+            scroll,
+        } => {
+            let block = bordered_block(" Exclude resource kinds ", theme);
+            let inner = block.inner(area);
+            frame.render_widget(Clear, area);
+            frame.render_widget(block, area);
+            let regions =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+            let visible_count = usize::from(regions[0].height);
+            let end = scroll.saturating_add(visible_count).min(kinds.len());
+            let items = kinds[*scroll..end]
+                .iter()
+                .map(|kind| {
+                    let hidden = excluded.contains(kind);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            if hidden { " [x] " } else { " [ ] " },
+                            if hidden {
+                                theme.danger()
+                            } else {
+                                theme.subtle()
+                            },
+                        ),
+                        Span::raw(kind.to_string()),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            let mut state = ListState::default();
+            if !kinds.is_empty() {
+                state.select(Some(cursor.saturating_sub(*scroll)));
+            }
+            frame.render_stateful_widget(
+                List::new(items).highlight_style(theme.selected_row()),
+                regions[0],
+                &mut state,
+            );
+            frame.render_widget(
+                Paragraph::new(
+                    " Space:toggle  a:show all  x:hide all  o:show only  Enter:apply  Esc:cancel",
+                )
+                .style(theme.subtle()),
+                regions[1],
+            );
         }
     }
 }
@@ -3591,6 +3834,13 @@ mod tests {
         app_with_theme("catppuccin-mocha", crate::config::ColorMode::Always)
     }
 
+    fn resource_kind(group: &str, kind: &str) -> ResourceKind {
+        ResourceKind {
+            group: group.into(),
+            kind: kind.into(),
+        }
+    }
+
     fn app_with_theme(name: &str, color: crate::config::ColorMode) -> App {
         let cli = Cli::parse_from(["xpdelve", "Root/root"]);
         let mut config = Config::default();
@@ -3836,6 +4086,40 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_qualifies_duplicate_kinds_by_group() {
+        let mut app = app();
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{
+                    "object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
+                    "children":[
+                        {"object":{"apiVersion":"alpha.example.io/v1","kind":"Widget","metadata":{"name":"alpha"}}},
+                        {"object":{"apiVersion":"beta.example.io/v1","kind":"Widget","metadata":{"name":"beta"}}}
+                    ]
+                }"#,
+            )
+            .unwrap(),
+        );
+
+        let entries = app.palette_entries();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Root", "Widget.alpha.example.io", "Widget.beta.example.io"]
+        );
+
+        app.execute_palette_action(entries[2].action.clone());
+        assert_eq!(
+            app.kind_filter,
+            Some(resource_kind("beta.example.io", "Widget"))
+        );
+        assert_eq!(app.visible(), vec![2]);
+        assert_eq!(app.selected_node().unwrap().identity.name, "beta");
+    }
+
+    #[test]
     fn typing_narrows_the_command_palette_and_enter_filters_by_kind() {
         let mut app = app();
         let area = Rect::new(0, 0, 100, 20);
@@ -3847,7 +4131,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
         assert_eq!(app.mode, InputMode::Normal);
-        assert_eq!(app.kind_filter.as_deref(), Some("Child"));
+        assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
         assert_eq!(app.visible(), vec![1]);
         assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
     }
@@ -3855,7 +4139,7 @@ mod tests {
     #[test]
     fn kind_filtered_rows_are_rendered_without_tree_prefixes() {
         let mut app = app();
-        app.kind_filter = Some("Child".into());
+        app.kind_filter = Some(resource_kind("", "Child"));
 
         let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
 
@@ -3871,7 +4155,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
-        assert_eq!(app.kind_filter.as_deref(), Some("Root"));
+        assert_eq!(app.kind_filter, Some(resource_kind("", "Root")));
         assert_eq!(app.visible(), vec![0]);
     }
 
@@ -3879,7 +4163,7 @@ mod tests {
     fn clear_palette_command_removes_the_kind_filter() {
         let mut app = app();
         let area = Rect::new(0, 0, 100, 20);
-        app.kind_filter = Some("Child".into());
+        app.kind_filter = Some(resource_kind("", "Child"));
         for key in [':', 'c', 'l', 'e', 'a', 'r'] {
             app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
         }
@@ -3914,6 +4198,121 @@ mod tests {
         assert!(rendered.contains("Skins"));
         assert!(rendered.contains("catppuccin-mocha"));
         assert!(rendered.contains("nord"));
+    }
+
+    #[test]
+    fn exclude_palette_puts_usage_first_and_applies_hidden_kinds() {
+        let mut app = app();
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{
+                    "object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
+                    "children":[
+                        {"object":{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"app"}}},
+                        {"object":{"apiVersion":"protection.crossplane.io/v1beta1","kind":"Usage","metadata":{"name":"usage"}}}
+                    ]
+                }"#,
+            )
+            .unwrap(),
+        );
+        let area = Rect::new(0, 0, 100, 24);
+        for key in [':', 'e', 'x', 'c', 'l', 'u', 'd', 'e'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        }
+
+        let entries = app.palette_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, PaletteAction::OpenExcludePicker);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        let Some(Modal::ExcludePicker { kinds, .. }) = &app.modal else {
+            panic!("expected exclusion picker");
+        };
+        assert_eq!(kinds[0].to_string(), "Usage.protection.crossplane.io");
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .to_string()
+                .contains("[ ] Usage.protection.crossplane.io")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .to_string()
+                .contains("[x] Usage.protection.crossplane.io")
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert!(app.modal.is_none());
+        assert!(app.excluded_kinds.contains(&ResourceKind {
+            group: "protection.crossplane.io".into(),
+            kind: "Usage".into(),
+        }));
+        assert_eq!(
+            app.visible()
+                .into_iter()
+                .map(|index| app.snapshot.as_ref().unwrap().nodes[index]
+                    .identity
+                    .kind
+                    .as_str())
+                .collect::<Vec<_>>(),
+            ["Root", "Deployment"]
+        );
+
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{"object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},"children":[{"object":{"apiVersion":"protection.crossplane.io/v1beta1","kind":"Usage","metadata":{"name":"new-usage"}}},{"object":{"apiVersion":"v1","kind":"Service","metadata":{"name":"new-kind"}}}]}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(app.visible(), vec![0, 2]);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        assert_eq!(app.excluded_kinds.len(), 1);
+
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{"object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}}}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            app.exclusion_kinds()[0].to_string(),
+            "Usage.protection.crossplane.io"
+        );
+    }
+
+    #[test]
+    fn exclude_picker_can_cancel_show_all_hide_all_and_show_only() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 24);
+
+        app.open_exclude_picker();
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), area);
+        assert!(app.excluded_kinds.is_empty());
+
+        app.open_exclude_picker();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        assert!(app.visible().is_empty());
+
+        app.open_exclude_picker();
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        assert_eq!(app.visible(), vec![0, 1]);
+
+        app.open_exclude_picker();
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        assert_eq!(app.visible(), vec![0]);
     }
 
     #[test]
@@ -4014,13 +4413,13 @@ mod tests {
     fn escape_cancels_the_palette_then_clears_an_active_kind_filter() {
         let mut app = app();
         let area = Rect::new(0, 0, 100, 20);
-        app.kind_filter = Some("Child".into());
+        app.kind_filter = Some(resource_kind("", "Child"));
         app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
 
         assert_eq!(app.mode, InputMode::Normal);
-        assert_eq!(app.kind_filter.as_deref(), Some("Child"));
+        assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
         assert!(app.kind_filter.is_none());
