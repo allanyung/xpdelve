@@ -91,12 +91,15 @@ The `:` command palette is backed by typed actions rather than raw command
 strings. Its initial catalog contains the unique resource kinds in the current
 snapshot; fuzzy selection applies an exact kind filter without retaining
 non-matching ancestors. The typed `:clear` action removes the kind constraint
-without changing the independent text or find queries. The typed `:skin` action
-opens a built-in-theme picker; accepting a choice applies it to the live theme
-and atomically persists `skin.name` without replacing unrelated configuration.
-The typed `:quit` action exits through the normal application shutdown path.
-This action-based catalog leaves room for commands such as reload without coupling
-them to popup input or rendering.
+without changing the independent text or find queries. The typed `:exclude`
+action opens a session-only group/kind picker. Checked kinds and their complete
+subtrees are omitted; exclusions survive snapshot refreshes, and newly observed
+kinds remain visible by default. Usage kinds receive priority in the picker.
+The typed `:skin` action opens a built-in-theme picker; accepting a choice
+applies it to the live theme and atomically persists `skin.name` without
+replacing unrelated configuration. The typed `:quit` action exits through the
+normal application shutdown path. This action-based catalog leaves room for
+commands such as reload without coupling them to popup input or rendering.
 
 ## Kubernetes operations
 

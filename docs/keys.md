@@ -37,7 +37,7 @@ names or table columns.
 | `v` | Load related Kubernetes events |
 | `c` | Copy the canonical resource identifier with OSC 52 |
 
-## Command Palette And Kind Filtering
+## Command Palette, Kind Filtering, And Exclusion
 
 Press `:` (`::command` in the main-view legend) to open the command palette. It
 lists each unique resource kind in the current trace. Type to fuzzy-filter the
@@ -70,12 +70,21 @@ is a separate exact-match filter and does not retain non-matching ancestors.
 | Command | Action |
 | --- | --- |
 | `:clear` | Remove the active kind filter; an independent `/` text filter remains active |
+| `:exclude` | Choose resource kinds to hide for the current session |
 | `:skin` | Open the built-in theme picker; applying a theme also saves it to the active configuration file |
 | `:quit` | Exit xpdelve through the normal shutdown path |
 
 Esc while the palette is open closes it without changing the current kind.
 Esc from the main view clears the kind filter, `/` text filter, and find query
-together.
+together; it does not reset excluded kinds.
+
+The exclusion picker identifies entries by API group and kind, with `Usage`
+kinds listed first. Checked entries are hidden. Use Up/Down or `j`/`k` to move,
+Space to toggle an entry, `a` to show all kinds, `x` to hide all kinds, and `o`
+to show only the highlighted kind. Enter applies the staged choices; Esc or `q`
+cancels them. Hiding a kind also hides the complete subtree below each matching
+resource. Exclusions survive trace refreshes but last only for the current
+xpdelve session.
 
 In the theme picker, Up/Down or `j`/`k` changes the selection, Enter applies and
 saves it, and Esc or `q` cancels. The active configuration file defaults to

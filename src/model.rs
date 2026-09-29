@@ -32,6 +32,12 @@ pub struct Identity {
     pub name: String,
 }
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ResourceKind {
+    pub group: String,
+    pub kind: String,
+}
+
 impl PartialEq for Identity {
     fn eq(&self, other: &Self) -> bool {
         self.group == other.group
@@ -79,6 +85,7 @@ struct ConditionProjection<'a> {
 #[derive(Clone, Debug)]
 pub struct ProjectedNode {
     pub identity: Identity,
+    pub resource_kind: ResourceKind,
     pub uid: Option<String>,
     pub depth: usize,
     pub parent: Option<usize>,
@@ -124,6 +131,25 @@ impl fmt::Display for Identity {
     }
 }
 
+impl Identity {
+    fn resource_kind(&self) -> ResourceKind {
+        ResourceKind {
+            group: self.group.clone(),
+            kind: self.kind.clone(),
+        }
+    }
+}
+
+impl fmt::Display for ResourceKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.group.is_empty() {
+            formatter.write_str(&self.kind)
+        } else {
+            write!(formatter, "{}.{}", self.kind, self.group)
+        }
+    }
+}
+
 impl Snapshot {
     pub fn parse(input: &[u8]) -> Result<Self, ModelError> {
         let root: TraceNode = serde_json::from_slice(input)?;
@@ -150,6 +176,7 @@ impl Snapshot {
     pub fn visible_indices(
         &self,
         collapsed: &HashSet<Identity>,
+        excluded: &HashSet<ResourceKind>,
         filter: Option<&str>,
         kind: Option<&str>,
     ) -> Vec<usize> {
@@ -180,6 +207,10 @@ impl Snapshot {
             }
             hidden_depth = None;
 
+            if excluded.contains(&node.resource_kind) {
+                hidden_depth = Some(node.depth);
+                continue;
+            }
             if query.is_none() && collapsed.contains(&node.identity) {
                 hidden_depth = Some(node.depth);
             }
@@ -261,8 +292,10 @@ fn project_node(
         package_reference.map_or((None, None), |reference| split_image_reference(&reference));
     let child_count = node.children.len();
     let index = projected.len();
+    let resource_kind = identity.resource_kind();
     projected.push(ProjectedNode {
         identity,
+        resource_kind,
         uid,
         depth,
         parent,
@@ -616,23 +649,75 @@ mod tests {
     #[test]
     fn filter_retains_ancestors() {
         let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
-        let visible = snapshot.visible_indices(&HashSet::new(), Some("kind:secret"), None);
+        let visible =
+            snapshot.visible_indices(&HashSet::new(), &HashSet::new(), Some("kind:secret"), None);
         assert_eq!(visible, vec![0, 1]);
     }
 
     #[test]
     fn kind_filter_only_retains_exact_kind_matches() {
         let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
-        let visible = snapshot.visible_indices(&HashSet::new(), None, Some("Secret"));
+        let visible =
+            snapshot.visible_indices(&HashSet::new(), &HashSet::new(), None, Some("Secret"));
         assert_eq!(visible, vec![1]);
     }
 
     #[test]
     fn kind_filter_does_not_restore_non_matching_text_filter_ancestors() {
         let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
-        let visible =
-            snapshot.visible_indices(&HashSet::new(), Some("kind:secret"), Some("Secret"));
+        let visible = snapshot.visible_indices(
+            &HashSet::new(),
+            &HashSet::new(),
+            Some("kind:secret"),
+            Some("Secret"),
+        );
         assert_eq!(visible, vec![1]);
+    }
+
+    #[test]
+    fn excluded_kind_hides_its_entire_subtree() {
+        let snapshot = Snapshot::parse(
+            br#"{
+                "object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
+                "children":[
+                    {"object":{"apiVersion":"protection.crossplane.io/v1beta1","kind":"Usage","metadata":{"name":"usage"}},"children":[
+                        {"object":{"apiVersion":"v1","kind":"Secret","metadata":{"name":"hidden-child"}}}
+                    ]},
+                    {"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"visible-sibling"}}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let excluded = HashSet::from([ResourceKind {
+            group: "protection.crossplane.io".into(),
+            kind: "Usage".into(),
+        }]);
+
+        let visible = snapshot.visible_indices(&HashSet::new(), &excluded, None, None);
+
+        assert_eq!(visible, vec![0, 3]);
+    }
+
+    #[test]
+    fn excluded_kind_is_scoped_by_api_group() {
+        let snapshot = Snapshot::parse(
+            br#"{
+                "object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
+                "children":[
+                    {"object":{"apiVersion":"protection.crossplane.io/v1beta1","kind":"Usage","metadata":{"name":"hidden"}}},
+                    {"object":{"apiVersion":"other.example.io/v1","kind":"Usage","metadata":{"name":"visible"}}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let excluded = HashSet::from([ResourceKind {
+            group: "protection.crossplane.io".into(),
+            kind: "Usage".into(),
+        }]);
+
+        let visible = snapshot.visible_indices(&HashSet::new(), &excluded, None, None);
+
+        assert_eq!(visible, vec![0, 2]);
     }
 
     #[test]

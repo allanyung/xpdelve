@@ -145,7 +145,7 @@ context, resource, API group, and name through the variables in `args`.
 - `z`: toggle fitted/full-width columns
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
-### Command palette and kind filtering
+### Command palette, filtering, and exclusion
 
 Press `:`—shown as `::command` in the main-view legend—to open the command
 palette. It lists the unique resource kinds in the current trace. Type to
@@ -157,7 +157,14 @@ To restore the full tree, open the palette, type `clear`, and select the
 `:clear` entry. `:clear` removes only the selected kind, so an independent
 `/` text filter remains active. Esc closes an open palette without changing the
 selection; Esc from the main view clears the kind, text, and find filters
-together.
+together without changing excluded kinds.
+
+Enter `:exclude` to hide resource kinds from the tree for the current session.
+The picker distinguishes kinds by API group and lists `Usage` kinds first.
+Checked entries are hidden, along with their complete subtrees. Use Space to
+toggle an entry, `a` to show all, `x` to hide all, or `o` to show only the
+highlighted kind, then press Enter to apply. Exclusions remain active across
+trace refreshes but are not written to configuration.
 
 Enter `:skin` to open the theme picker. Use Up/Down to choose a built-in theme
 and Enter to apply it. The choice takes effect immediately and is saved as
