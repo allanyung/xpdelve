@@ -204,11 +204,15 @@ enum ContentKind {
     Describe,
     Yaml,
     Events,
+    Error,
 }
 
 impl ContentKind {
     fn supports_mouse_selection(self) -> bool {
-        matches!(self, Self::Describe | Self::Yaml | Self::Events)
+        matches!(
+            self,
+            Self::Describe | Self::Yaml | Self::Events | Self::Error
+        )
     }
 }
 
@@ -464,6 +468,61 @@ impl App {
         });
     }
 
+    fn finish_action(
+        &mut self,
+        label: &str,
+        identity: Option<Identity>,
+        result: Result<Option<String>, String>,
+    ) -> bool {
+        if let Some(identity) = &identity {
+            self.active_mutations.remove(identity);
+        }
+        match result {
+            Ok(Some(content)) => {
+                let kind = match label {
+                    label if label.starts_with("YAML:") => ContentKind::Yaml,
+                    label if label.starts_with("Events:") => ContentKind::Events,
+                    _ => ContentKind::Describe,
+                };
+                self.modal = Some(Modal::Text {
+                    title: label.to_owned(),
+                    content,
+                    kind,
+                    wrapped: content_wraps_by_default(kind),
+                    vertical_scroll: 0,
+                    horizontal_scroll: 0,
+                    query: String::new(),
+                    search_input: None,
+                    selection: None,
+                });
+                true
+            }
+            Ok(None) => {
+                self.status = format!("{label} succeeded");
+                true
+            }
+            Err(error) => {
+                if let Some(identity) = identity {
+                    self.status = format!("{label} failed");
+                    self.modal = Some(Modal::Text {
+                        title: format!("{label} failed"),
+                        content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n")),
+                        kind: ContentKind::Error,
+                        wrapped: true,
+                        vertical_scroll: 0,
+                        horizontal_scroll: 0,
+                        query: String::new(),
+                        search_input: None,
+                        selection: None,
+                    });
+                } else {
+                    self.status = text::sanitize(&format!("{label} failed: {error}"));
+                }
+                false
+            }
+        }
+    }
+
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
         self.tree_selection = None;
         self.last_tree_click = None;
@@ -496,7 +555,15 @@ impl App {
         self.selected_visible = 0;
         self.resource_scroll = 0;
         self.collapsed.clear();
-        self.modal = None;
+        if !matches!(
+            self.modal,
+            Some(Modal::Text {
+                kind: ContentKind::Error,
+                ..
+            })
+        ) {
+            self.modal = None;
+        }
         self.refresh_pending = false;
         self.loading = false;
         self.resource_missing = true;
@@ -977,16 +1044,6 @@ impl App {
             self.quit = true;
             return UiAction::None;
         }
-        if self.resource_missing {
-            return match key.code {
-                KeyCode::Char('q') => {
-                    self.quit = true;
-                    UiAction::None
-                }
-                KeyCode::Char('r') => UiAction::Refresh,
-                _ => UiAction::None,
-            };
-        }
         if let Some(modal) = &mut self.modal {
             match modal {
                 Modal::Text {
@@ -1160,6 +1217,16 @@ impl App {
                 },
             }
             return UiAction::None;
+        }
+        if self.resource_missing {
+            return match key.code {
+                KeyCode::Char('q') => {
+                    self.quit = true;
+                    UiAction::None
+                }
+                KeyCode::Char('r') => UiAction::Refresh,
+                _ => UiAction::None,
+            };
         }
         if self.mode == InputMode::Help {
             let area = centered(terminal_area, 72, 20);
@@ -1549,34 +1616,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                         }
                     },
                     AppEvent::ActionFinished { label, identity, result, refresh } => {
-                        if let Some(identity) = identity {
-                            app.active_mutations.remove(&identity);
-                        }
-                        let succeeded = result.is_ok();
-                        match result {
-                            Ok(Some(content)) => {
-                                let kind = match label.as_str() {
-                                    label if label.starts_with("YAML:") => ContentKind::Yaml,
-                                    label if label.starts_with("Events:") => ContentKind::Events,
-                                    _ => ContentKind::Describe,
-                                };
-                                app.modal = Some(Modal::Text {
-                                    title: label.clone(),
-                                    content,
-                                    kind,
-                                    wrapped: content_wraps_by_default(kind),
-                                    vertical_scroll: 0,
-                                    horizontal_scroll: 0,
-                                    query: String::new(),
-                                    search_input: None,
-                                    selection: None,
-                                });
-                            }
-                            Ok(None) => app.status = format!("{label} succeeded"),
-                            Err(error) => {
-                                app.status = text::sanitize(&format!("{label} failed: {error}"));
-                            }
-                        }
+                        let succeeded = app.finish_action(&label, identity, result);
                         if refresh && succeeded {
                             request_refresh(&mut app, cli, &sender, &mut active, false);
                             app.status = format!("{label} succeeded; refreshing trace...");
@@ -1684,7 +1724,7 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
             ),
             UiAction::None | UiAction::Refresh | UiAction::Edit(_) | UiAction::Copy(_) => return,
         };
-        let result = result.map_err(|error| error.to_string());
+        let result = result.map_err(|error| format!("{error:#}"));
         let _ = sender
             .send(AppEvent::ActionFinished {
                 label,
@@ -2738,7 +2778,12 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             search_input,
             selection,
         } => {
-            let block = bordered_block(format!(" {} ", text::sanitize(title)), theme);
+            let title = format!(" {} ", text::sanitize(title));
+            let block = if *kind == ContentKind::Error {
+                destructive_block(title, theme)
+            } else {
+                bordered_block(title, theme)
+            };
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let regions =
@@ -2965,7 +3010,7 @@ fn styled_content_line<'a>(
         }
         ContentKind::Describe if line.ends_with(':') => theme.syntax_heading(),
         ContentKind::Yaml => return yaml_line(line, query, theme),
-        ContentKind::Describe | ContentKind::Events => Style::default(),
+        ContentKind::Describe | ContentKind::Events | ContentKind::Error => Style::default(),
     };
     highlighted_line(line, query, base, theme)
 }
@@ -2973,7 +3018,7 @@ fn styled_content_line<'a>(
 fn content_wraps_by_default(kind: ContentKind) -> bool {
     matches!(
         kind,
-        ContentKind::Describe | ContentKind::Yaml | ContentKind::Events
+        ContentKind::Describe | ContentKind::Yaml | ContentKind::Events | ContentKind::Error
     )
 }
 
@@ -2985,10 +3030,10 @@ fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
         (ContentKind::Yaml, false) => {
             " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:find  n/N:matches  Esc:close"
         }
-        (ContentKind::Describe | ContentKind::Events, true) => {
+        (ContentKind::Describe | ContentKind::Events | ContentKind::Error, true) => {
             " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
         }
-        (ContentKind::Describe | ContentKind::Events, false) => {
+        (ContentKind::Describe | ContentKind::Events | ContentKind::Error, false) => {
             " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  /:find  n/N:matches  Esc:close"
         }
     }
@@ -3425,6 +3470,11 @@ fn context_menu_area(area: Rect, column: u16, row: u16) -> Rect {
 fn content_modal_area(area: Rect, kind: ContentKind) -> Rect {
     match kind {
         ContentKind::Describe | ContentKind::Yaml | ContentKind::Events => area,
+        ContentKind::Error => centered(
+            area,
+            area.width.saturating_mul(90) / 100,
+            area.height.saturating_mul(80) / 100,
+        ),
     }
 }
 
@@ -3547,6 +3597,84 @@ mod tests {
             Some(MouseAction::Action(_)) => panic!("expected no mouse action"),
             None => None,
         }
+    }
+
+    #[test]
+    fn mutation_failure_opens_persistent_error_modal() {
+        let mut app = app();
+        let identity = app.selected_node().unwrap().identity.clone();
+        app.active_mutations.insert(identity.clone());
+
+        let succeeded = app.finish_action(
+            "Delete (Foreground)",
+            Some(identity.clone()),
+            Err("API request failed: admission webhook denied the request".into()),
+        );
+
+        assert!(!succeeded);
+        assert!(!app.active_mutations.contains(&identity));
+        assert_eq!(app.status, "Delete (Foreground) failed");
+        let Some(Modal::Text {
+            title,
+            content,
+            kind,
+            wrapped,
+            ..
+        }) = &app.modal
+        else {
+            panic!("expected persistent mutation error modal");
+        };
+        assert_eq!(title, "Delete (Foreground) failed");
+        assert!(content.contains(&format!("Resource: {identity}")));
+        assert!(content.contains("admission webhook denied the request"));
+        assert_eq!(*kind, ContentKind::Error);
+        assert!(*wrapped);
+
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}}}"#,
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Text {
+                kind: ContentKind::Error,
+                ..
+            })
+        ));
+
+        app.apply_resource_not_found();
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Text {
+                kind: ContentKind::Error,
+                ..
+            })
+        ));
+        app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Rect::new(0, 0, 80, 20),
+        );
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn inspection_failure_remains_in_status_line() {
+        let mut app = app();
+
+        let succeeded = app.finish_action(
+            "Events: Root/root",
+            None,
+            Err("request was forbidden".into()),
+        );
+
+        assert!(!succeeded);
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.status,
+            "Events: Root/root failed: request was forbidden"
+        );
     }
 
     #[test]
@@ -4144,11 +4272,21 @@ mod tests {
     }
 
     #[test]
-    fn content_views_use_the_full_terminal() {
+    fn inspection_content_views_use_the_full_terminal() {
         let area = Rect::new(0, 0, 100, 40);
         assert_eq!(content_modal_area(area, ContentKind::Yaml), area);
         assert_eq!(content_modal_area(area, ContentKind::Describe), area);
         assert_eq!(content_modal_area(area, ContentKind::Events), area);
+    }
+
+    #[test]
+    fn mutation_error_view_is_large_and_centered() {
+        let area = Rect::new(0, 0, 100, 40);
+
+        assert_eq!(
+            content_modal_area(area, ContentKind::Error),
+            Rect::new(5, 4, 90, 32)
+        );
     }
 
     #[test]
@@ -4416,6 +4554,10 @@ mod tests {
             content_modal_footer(ContentKind::Events, true),
             " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
         );
+        assert_eq!(
+            content_modal_footer(ContentKind::Error, true),
+            " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
+        );
     }
 
     #[test]
@@ -4439,6 +4581,38 @@ mod tests {
             .draw(|frame| render_modal(frame, frame.area(), &modal, &theme))
             .unwrap();
 
+        assert!(terminal.backend().to_string().contains("uvwxyz"));
+    }
+
+    #[test]
+    fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
+        let modal = Modal::Text {
+            title: "Delete (Foreground) failed".into(),
+            content:
+                "Resource: Widget/example\n\nadmission webhook rejected abcdefghijklmnopqrstuvwxyz"
+                    .into(),
+            kind: ContentKind::Error,
+            wrapped: true,
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+            selection: None,
+        };
+        let backend = TestBackend::new(24, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = app().theme;
+
+        terminal
+            .draw(|frame| {
+                let area = content_modal_area(frame.area(), ContentKind::Error);
+                render_modal(frame, area, &modal, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let area = content_modal_area(Rect::new(0, 0, 24, 16), ContentKind::Error);
+        assert_eq!(buffer.cell((area.x, area.y)).unwrap().fg, theme.palette.red);
         assert!(terminal.backend().to_string().contains("uvwxyz"));
     }
 
@@ -4506,6 +4680,7 @@ mod tests {
             ContentKind::Describe,
             ContentKind::Yaml,
             ContentKind::Events,
+            ContentKind::Error,
         ] {
             let mut app = app();
             app.modal = Some(Modal::Text {
