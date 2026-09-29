@@ -23,7 +23,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use regex::RegexBuilder;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
@@ -58,10 +60,11 @@ const HELP_LINES: &[&str] = &[
     "  z                 toggle fitted / full-width table",
     "",
     "Discovery",
+    "  :                 open command palette",
     "  /                 filter tree",
     "  f                 find text",
     "  n / N             next / previous match",
-    "  Esc               clear find and filter",
+    "  Esc               clear find, text filter, and kind",
     "",
     "Session",
     "  r                 refresh now",
@@ -103,9 +106,22 @@ enum TraceResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InputMode {
     Normal,
+    Command,
     Filter,
     Find,
     Help,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PaletteAction {
+    FilterKind(String),
+    ClearKindFilter,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PaletteEntry {
+    label: String,
+    action: PaletteAction,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +216,8 @@ struct App {
     help_scroll: u16,
     input: String,
     filter: String,
+    kind_filter: Option<String>,
+    palette_selected: usize,
     find: String,
     loading: bool,
     paused: bool,
@@ -239,6 +257,8 @@ impl App {
             help_scroll: 0,
             input: String::new(),
             filter: String::new(),
+            kind_filter: None,
+            palette_selected: 0,
             find: String::new(),
             loading: false,
             paused: false,
@@ -277,8 +297,68 @@ impl App {
             snapshot.visible_indices(
                 &self.collapsed,
                 (!self.filter.is_empty()).then_some(self.filter.as_str()),
+                self.kind_filter.as_deref(),
             )
         })
+    }
+
+    fn palette_entries(&self) -> Vec<PaletteEntry> {
+        let mut kinds = self
+            .snapshot
+            .iter()
+            .flat_map(|snapshot| snapshot.nodes.iter())
+            .map(|node| node.identity.kind.clone())
+            .collect::<Vec<_>>();
+        kinds.sort_by_key(|kind| kind.to_lowercase());
+        kinds.dedup();
+        let query = self.input.trim();
+        let mut entries = kinds
+            .into_iter()
+            .filter_map(|kind| {
+                fuzzy_score(&kind, query).map(|score| {
+                    (
+                        score,
+                        PaletteEntry {
+                            label: kind.clone(),
+                            action: PaletteAction::FilterKind(kind),
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if !query.is_empty()
+            && let Some(score) = fuzzy_score("clear", query)
+        {
+            entries.push((
+                score,
+                PaletteEntry {
+                    label: "clear".into(),
+                    action: PaletteAction::ClearKindFilter,
+                },
+            ));
+        }
+        entries.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+        });
+        entries.into_iter().map(|(_, entry)| entry).collect()
+    }
+
+    fn open_palette(&mut self) {
+        self.mode = InputMode::Command;
+        self.input.clear();
+        self.palette_selected = 0;
+    }
+
+    fn execute_palette_action(&mut self, action: PaletteAction) {
+        match action {
+            PaletteAction::FilterKind(kind) => self.kind_filter = Some(kind),
+            PaletteAction::ClearKindFilter => self.kind_filter = None,
+        }
+        self.mode = InputMode::Normal;
+        self.input.clear();
+        self.set_selection(0);
     }
 
     fn selected_node(&self) -> Option<&ProjectedNode> {
@@ -292,6 +372,39 @@ impl App {
             identity: node.identity.clone(),
             expected_uid: node.uid.clone(),
         })
+    }
+
+    fn show_status(&mut self, identity: &Identity) {
+        let Some(node) = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .by_identity
+                .get(identity)
+                .map(|index| &snapshot.nodes[*index])
+        }) else {
+            return;
+        };
+        let title = format!("Status: {}", node.identity);
+        let content = node.object.get("status").map_or_else(
+            || "No status reported.\n".to_owned(),
+            |status| {
+                serde_yaml::to_string(status)
+                    .map(|yaml| text::sanitize(&yaml))
+                    .unwrap_or_else(|error| {
+                        text::sanitize(&format!("Could not render status: {error}\n"))
+                    })
+            },
+        );
+        self.modal = Some(Modal::Text {
+            title,
+            content,
+            kind: ContentKind::Yaml,
+            wrapped: true,
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+            selection: None,
+        });
     }
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
@@ -503,7 +616,7 @@ impl App {
                 self.find = self.input.trim().to_owned();
                 self.find_next(false);
             }
-            InputMode::Normal | InputMode::Help => {}
+            InputMode::Normal | InputMode::Command | InputMode::Help => {}
         }
         self.mode = InputMode::Normal;
         self.input.clear();
@@ -644,8 +757,12 @@ impl App {
                 None
             }
             Some(1) => Some(MouseAction::Action(UiAction::Edit(target))),
-            Some(2) => Some(MouseAction::Action(UiAction::Events(target))),
-            Some(3) => Some(MouseAction::Action(UiAction::Describe(target))),
+            Some(2) => {
+                self.show_status(&target.identity);
+                None
+            }
+            Some(3) => Some(MouseAction::Action(UiAction::Events(target))),
+            Some(4) => Some(MouseAction::Action(UiAction::Describe(target))),
             _ => None,
         }
     }
@@ -781,7 +898,9 @@ impl App {
             Some(Modal::ContextMenu { .. }) => true,
             Some(Modal::Delete { .. } | Modal::Finalizers { .. }) => false,
             None => {
-                self.mode != InputMode::Help && self.snapshot.is_some() && !self.resource_missing
+                !matches!(self.mode, InputMode::Help | InputMode::Command)
+                    && self.snapshot.is_some()
+                    && !self.resource_missing
             }
         }
     }
@@ -992,6 +1111,44 @@ impl App {
             }
             return UiAction::None;
         }
+        if self.mode == InputMode::Command {
+            let entries = self.palette_entries();
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = InputMode::Normal;
+                    self.input.clear();
+                }
+                KeyCode::Enter => {
+                    let selected = self.palette_selected.min(entries.len().saturating_sub(1));
+                    if let Some(entry) = entries.get(selected) {
+                        self.execute_palette_action(entry.action.clone());
+                    }
+                }
+                KeyCode::Down => {
+                    if !entries.is_empty() {
+                        self.palette_selected = (self.palette_selected + 1) % entries.len();
+                    }
+                }
+                KeyCode::Up => {
+                    if !entries.is_empty() {
+                        self.palette_selected = self
+                            .palette_selected
+                            .checked_sub(1)
+                            .unwrap_or(entries.len() - 1);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.input.pop();
+                    self.palette_selected = 0;
+                }
+                KeyCode::Char(character) => {
+                    self.input.push(character);
+                    self.palette_selected = 0;
+                }
+                _ => {}
+            }
+            return UiAction::None;
+        }
         if matches!(self.mode, InputMode::Filter | InputMode::Find) {
             match key.code {
                 KeyCode::Esc => {
@@ -1083,6 +1240,7 @@ impl App {
                 self.mode = InputMode::Filter;
                 self.input.clone_from(&self.filter);
             }
+            (KeyCode::Char(':'), _) => self.open_palette(),
             (KeyCode::Char('f'), _) => {
                 self.mode = InputMode::Find;
                 self.input.clone_from(&self.find);
@@ -1092,6 +1250,7 @@ impl App {
             (KeyCode::Esc, _) => {
                 self.filter.clear();
                 self.find.clear();
+                self.kind_filter = None;
                 self.set_selection(self.selected_visible);
             }
             (KeyCode::Char('?'), _) => {
@@ -1117,29 +1276,8 @@ impl App {
                 }
             }
             (KeyCode::Char('s'), _) => {
-                if let Some(node) = self.selected_node() {
-                    let title = format!("Status: {}", node.identity);
-                    let content = node.object.get("status").map_or_else(
-                        || "No status reported.\n".to_owned(),
-                        |status| {
-                            serde_yaml::to_string(status)
-                                .map(|yaml| text::sanitize(&yaml))
-                                .unwrap_or_else(|error| {
-                                    text::sanitize(&format!("Could not render status: {error}\n"))
-                                })
-                        },
-                    );
-                    self.modal = Some(Modal::Text {
-                        title,
-                        content,
-                        kind: ContentKind::Yaml,
-                        wrapped: true,
-                        vertical_scroll: 0,
-                        horizontal_scroll: 0,
-                        query: String::new(),
-                        search_input: None,
-                        selection: None,
-                    });
+                if let Some(identity) = self.selected_identity.clone() {
+                    self.show_status(&identity);
                 }
             }
             (KeyCode::Char('v'), _) => {
@@ -1709,6 +1847,9 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
     render_tree(frame, chunks[1], app);
     render_prompt(frame, chunks[2], app);
     render_status(frame, chunks[3], app);
+    if app.mode == InputMode::Command {
+        render_palette(frame, area, app);
+    }
     if app.mode == InputMode::Help {
         render_help(frame, centered(area, 72, 20), app.help_scroll, &app.theme);
     }
@@ -1761,7 +1902,7 @@ fn render_toast(frame: &mut ratatui::Frame<'_>, area: Rect, toast: &Toast, theme
     let popup = Rect::new(
         area.x.saturating_add(area.width.saturating_sub(width) / 2),
         area.y
-            .saturating_add(area.height.saturating_sub(height).saturating_sub(2)),
+            .saturating_add(area.height.saturating_sub(height).saturating_sub(3)),
         width,
         height,
     );
@@ -1907,7 +2048,7 @@ fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
     lines.push(horizontal_slice(&plan.header(), 0, plan.available));
     lines.extend(visible.iter().skip(start).take(viewport).map(|index| {
         horizontal_slice(
-            &plan.row(snapshot, &snapshot.nodes[*index], &app.collapsed),
+            &plan.row(snapshot, &snapshot.nodes[*index], app.kind_filter.is_none()),
             0,
             plan.available,
         )
@@ -1935,6 +2076,33 @@ fn clicked_tree_position(
         && row < body.y.saturating_add(body.height);
     let row = inside.then(|| usize::from(row - body.y - 1))?;
     (row < row_count).then_some(start + row)
+}
+
+fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
+    let candidate = candidate.to_lowercase();
+    let query = query.to_lowercase();
+    if query.is_empty() {
+        return Some(0);
+    }
+    if candidate == query {
+        return Some(10_000);
+    }
+    if candidate.starts_with(&query) {
+        return Some(5_000usize.saturating_sub(candidate.len()));
+    }
+
+    let mut score = 0usize;
+    let mut previous = None;
+    let mut candidates = candidate.char_indices();
+    for wanted in query.chars() {
+        let (index, _) = candidates.find(|(_, character)| *character == wanted)?;
+        score += 10;
+        if previous.is_some_and(|previous| index == previous + 1) {
+            score += 5;
+        }
+        previous = Some(index);
+    }
+    Some(score.saturating_sub(candidate.len()))
 }
 
 fn render_resource_missing(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -2139,13 +2307,8 @@ impl TablePlan {
         }
     }
 
-    fn row(
-        &self,
-        snapshot: &Snapshot,
-        node: &ProjectedNode,
-        _collapsed: &HashSet<Identity>,
-    ) -> String {
-        let object = object_cell_with_state(snapshot, node, self.ascii);
+    fn row(&self, snapshot: &Snapshot, node: &ProjectedNode, show_tree_prefix: bool) -> String {
+        let object = object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix);
         let group = group_cell(node);
         if self.package {
             let object = compact_object(&object, self.object);
@@ -2195,7 +2358,20 @@ fn object_cell(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool) -> String
 }
 
 fn object_cell_with_state(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool) -> String {
-    let prefix = tree_prefix(snapshot, node, ascii);
+    object_cell_with_tree_state(snapshot, node, ascii, true)
+}
+
+fn object_cell_with_tree_state(
+    snapshot: &Snapshot,
+    node: &ProjectedNode,
+    ascii: bool,
+    show_tree_prefix: bool,
+) -> String {
+    let prefix = if show_tree_prefix {
+        tree_prefix(snapshot, node, ascii)
+    } else {
+        String::new()
+    };
     let paused = if node.paused { " (paused)" } else { "" };
     format!(
         "{prefix}{}/{}{paused}",
@@ -2327,24 +2503,89 @@ fn tree_prefix(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool) -> String
 
 fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let line = if app.resource_missing {
-        " r retry  q quit".into()
+        " r:retry  q:quit".into()
     } else {
         match app.mode {
+        InputMode::Command => format!(":{}▏", app.input),
         InputMode::Filter => format!(" Filter: {}_", app.input),
         InputMode::Find => format!(" Find: {}_", app.input),
-        InputMode::Normal | InputMode::Help if !app.filter.is_empty() => {
-            format!(" Filter: {}", app.filter)
-        }
-        InputMode::Normal | InputMode::Help if !app.find.is_empty() => {
-            format!(" Find: {}", app.find)
+        InputMode::Normal | InputMode::Help
+            if app.kind_filter.is_some() || !app.filter.is_empty() || !app.find.is_empty() =>
+        {
+            let mut active = Vec::new();
+            if let Some(kind) = &app.kind_filter {
+                active.push(format!("Kind: {kind}"));
+            }
+            if !app.filter.is_empty() {
+                active.push(format!("Filter: {}", app.filter));
+            }
+            if !app.find.is_empty() {
+                active.push(format!("Find: {}", app.find));
+            }
+            format!(" {}", active.join("  |  "))
         }
         InputMode::Normal | InputMode::Help => {
-            " Enter/Space expand/collapse  ctrl-d delete  d describe  y YAML  e edit  s status  v events  / filter  z width  ? help"
+            " Enter/Space:expand/collapse  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  v:events  z:width"
                 .into()
         }
         }
     };
     frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), area);
+}
+
+fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let entries = app.palette_entries();
+    let popup = palette_area(area, entries.len());
+    frame.render_widget(Clear, popup);
+    let items = if entries.is_empty() {
+        vec![ListItem::new("  No matching resource kinds")]
+    } else {
+        entries
+            .iter()
+            .map(|entry| palette_list_item(entry, &app.theme))
+            .collect()
+    };
+    let mut state = ListState::default();
+    if !entries.is_empty() {
+        state.select(Some(app.palette_selected.min(entries.len() - 1)));
+    }
+    let list = List::new(items)
+        .block(bordered_block(
+            " commands & resource kinds (↑/↓:select, Enter:apply) ",
+            &app.theme,
+        ))
+        .highlight_style(app.theme.selected_row());
+    frame.render_stateful_widget(list, popup, &mut state);
+}
+
+fn palette_list_item<'a>(entry: &'a PaletteEntry, theme: &Theme) -> ListItem<'a> {
+    match &entry.action {
+        PaletteAction::FilterKind(_) => ListItem::new(format!("  {}", entry.label)),
+        PaletteAction::ClearKindFilter => ListItem::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!(":{}", entry.label),
+                Style::default().fg(theme.palette.peach),
+            ),
+            Span::styled("  cmd", theme.subtle()),
+        ])),
+    }
+}
+
+fn palette_area(area: Rect, entry_count: usize) -> Rect {
+    let width = area.width.saturating_sub(4).min(48);
+    let item_count = entry_count.clamp(1, 12);
+    let height = u16::try_from(item_count)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(area.height.saturating_sub(3));
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(area.height.saturating_sub(height).saturating_sub(3)),
+        width,
+        height,
+    )
 }
 
 fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -2392,7 +2633,7 @@ fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, scroll: u16, theme: &
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), regions[0]);
     frame.render_widget(
-        Paragraph::new("j/k scroll  PgUp/PgDn page  g/G top/bottom  Esc/q/? close")
+        Paragraph::new("j/k:scroll  PgUp/PgDn:page  g/G:top/bottom  Esc/q/?:close")
             .style(theme.subtle()),
         regions[1],
     );
@@ -2498,9 +2739,9 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(" c", selected_style),
-                    Span::styled(" Change propagation   ", subtle_style),
-                    Span::styled("Enter Delete", delete_style),
-                    Span::styled("   Esc Cancel ", subtle_style),
+                    Span::styled(":Change propagation   ", subtle_style),
+                    Span::styled("Enter:Delete", delete_style),
+                    Span::styled("   Esc:Cancel ", subtle_style),
                 ])),
                 regions[1],
             );
@@ -2557,11 +2798,11 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(" j/k", selected_style),
-                    Span::styled(" Select   ", subtle_style),
+                    Span::styled(":Select   ", subtle_style),
                     Span::styled("Space", selected_style),
-                    Span::styled(" Toggle   ", subtle_style),
-                    Span::styled("Enter Remove", remove_style),
-                    Span::styled("   Esc Cancel ", subtle_style),
+                    Span::styled(":Toggle   ", subtle_style),
+                    Span::styled("Enter:Remove", remove_style),
+                    Span::styled("   Esc:Cancel ", subtle_style),
                 ])),
                 regions[1],
             );
@@ -2574,8 +2815,9 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                 Paragraph::new(vec![
                     Line::styled(" YAML", context_menu_item_style(theme, 0, *pressed)),
                     Line::styled(" Edit", context_menu_item_style(theme, 1, *pressed)),
-                    Line::styled(" Events", context_menu_item_style(theme, 2, *pressed)),
-                    Line::styled(" Describe", context_menu_item_style(theme, 3, *pressed)),
+                    Line::styled(" Status", context_menu_item_style(theme, 2, *pressed)),
+                    Line::styled(" Events", context_menu_item_style(theme, 3, *pressed)),
+                    Line::styled(" Describe", context_menu_item_style(theme, 4, *pressed)),
                 ]),
                 inner,
             );
@@ -2639,16 +2881,16 @@ fn content_wraps_by_default(kind: ContentKind) -> bool {
 fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
     match (kind, wrapped) {
         (ContentKind::Yaml, true) => {
-            " drag to copy  j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  w:unwrap  /:find  n/N:matches  Esc:close"
         }
         (ContentKind::Yaml, false) => {
-            " drag to copy  j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:find  n/N:matches  Esc:close"
         }
         (ContentKind::Describe | ContentKind::Events, true) => {
-            " drag to copy  j/k or ↑/↓ vertical  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
         }
         (ContentKind::Describe | ContentKind::Events, false) => {
-            " drag to copy  j/k or ↑/↓ vertical  h/l or ←/→ horizontal  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  /:find  n/N:matches  Esc:close"
         }
     }
 }
@@ -3065,7 +3307,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 fn context_menu_area(area: Rect, column: u16, row: u16) -> Rect {
     let width = 14.min(area.width);
-    let height = 6.min(area.height);
+    let height = 7.min(area.height);
     let max_x = area.right().saturating_sub(width);
     let below = row.saturating_add(1);
     let y = if below.saturating_add(height) <= area.bottom() {
@@ -3302,6 +3544,189 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_lists_unique_snapshot_kinds() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE), area);
+
+        assert_eq!(app.mode, InputMode::Command);
+        assert_eq!(
+            app.palette_entries()
+                .into_iter()
+                .map(|entry| entry.label)
+                .collect::<Vec<_>>(),
+            ["Child", "Root"]
+        );
+    }
+
+    #[test]
+    fn typing_narrows_the_command_palette_and_enter_filters_by_kind() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+        for key in [':', 'c', 'h'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        }
+
+        assert_eq!(app.palette_entries().len(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert_eq!(app.mode, InputMode::Normal);
+        assert_eq!(app.kind_filter.as_deref(), Some("Child"));
+        assert_eq!(app.visible(), vec![1]);
+        assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
+    }
+
+    #[test]
+    fn kind_filtered_rows_are_rendered_without_tree_prefixes() {
+        let mut app = app();
+        app.kind_filter = Some("Child".into());
+
+        let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
+
+        assert!(rendered.lines[1].starts_with("Child/child"));
+        assert!(!rendered.lines[1].contains("└─"));
+    }
+
+    #[test]
+    fn command_palette_navigation_executes_the_highlighted_action() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert_eq!(app.kind_filter.as_deref(), Some("Root"));
+        assert_eq!(app.visible(), vec![0]);
+    }
+
+    #[test]
+    fn clear_palette_command_removes_the_kind_filter() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+        app.kind_filter = Some("Child".into());
+        for key in [':', 'c', 'l', 'e', 'a', 'r'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        }
+
+        let entries = app.palette_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, PaletteAction::ClearKindFilter);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert!(app.kind_filter.is_none());
+        assert_eq!(app.visible(), vec![0, 1]);
+    }
+
+    #[test]
+    fn palette_command_uses_sofka_command_styling() {
+        let mut app = app();
+        app.open_palette();
+        app.input = "c".into();
+        let entries = app.palette_entries();
+        let clear_index = entries
+            .iter()
+            .position(|entry| entry.action == PaletteAction::ClearKindFilter)
+            .unwrap();
+        assert!(entries.len() > 1);
+        app.palette_selected = (clear_index + 1) % entries.len();
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let popup = palette_area(Rect::new(0, 0, 80, 16), entries.len());
+        let row = popup.y + 1 + u16::try_from(clear_index).unwrap();
+        let command_column = popup.x + 3;
+        let tag_column = command_column + 8;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((command_column, row)).unwrap().symbol(), ":");
+        assert_eq!(
+            buffer.cell((command_column, row)).unwrap().fg,
+            app.theme.palette.peach
+        );
+        assert_eq!(buffer.cell((tag_column, row)).unwrap().symbol(), "c");
+        assert_eq!(
+            buffer.cell((tag_column, row)).unwrap().fg,
+            app.theme.palette.overlay1
+        );
+
+        app.palette_selected = clear_index;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer.cell((command_column, row)).unwrap().fg,
+            app.theme.palette.base
+        );
+        assert_eq!(
+            buffer.cell((tag_column, row)).unwrap().fg,
+            app.theme.palette.base
+        );
+        assert_eq!(
+            buffer.cell((command_column, row)).unwrap().bg,
+            app.theme.palette.lavender
+        );
+    }
+
+    #[test]
+    fn escape_cancels_the_palette_then_clears_an_active_kind_filter() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+        app.kind_filter = Some("Child".into());
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+
+        assert_eq!(app.mode, InputMode::Normal);
+        assert_eq!(app.kind_filter.as_deref(), Some("Child"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        assert!(app.kind_filter.is_none());
+        assert_eq!(app.visible().len(), 2);
+    }
+
+    #[test]
+    fn command_palette_renders_over_the_resource_view() {
+        let mut app = app();
+        app.open_palette();
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("commands & resource kinds"));
+        assert!(rendered.contains("Child"));
+        assert!(rendered.contains("Root"));
+        assert!(rendered.contains(":"));
+
+        let popup = palette_area(Rect::new(0, 0, 80, 16), 2);
+        let lower_border = resource_tree_area(Rect::new(0, 0, 80, 16))
+            .unwrap()
+            .bottom()
+            .saturating_sub(1);
+        assert_eq!(popup.x, 1);
+        assert_eq!(
+            lower_border.saturating_sub(popup.bottom().saturating_sub(1)),
+            1
+        );
+        let selected_row = popup.y + 1;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer.cell((popup.x + 3, selected_row)).unwrap().symbol(),
+            "C"
+        );
+        assert_eq!(
+            buffer.cell((popup.x + 3, selected_row)).unwrap().bg,
+            app.theme.palette.lavender
+        );
+        assert_eq!(
+            buffer.cell((popup.right() - 2, selected_row)).unwrap().bg,
+            app.theme.palette.lavender
+        );
+    }
+
+    #[test]
     fn status_shortcut_opens_selected_resource_status() {
         let mut app = app();
         app.apply_snapshot(
@@ -3405,7 +3830,7 @@ mod tests {
         assert!(rendered.contains("Widget/example could not be found in namespace apps."));
         assert!(rendered.contains("It may have been deleted"));
         assert!(rendered.contains("Context: development"));
-        assert!(rendered.contains("r retry  q quit"));
+        assert!(rendered.contains("r:retry  q:quit"));
         assert!(!rendered.contains("Root/root"));
     }
 
@@ -3625,8 +4050,8 @@ mod tests {
         assert!(rendered.contains("○ Background"));
         assert!(rendered.contains("○ Orphan"));
         assert!(rendered.contains("Dependents are deleted before the resource."));
-        assert!(rendered.contains("c Change propagation"), "{rendered}");
-        assert!(rendered.contains("Enter Delete"));
+        assert!(rendered.contains("c:Change propagation"), "{rendered}");
+        assert!(rendered.contains("Enter:Delete"));
         assert!(!rendered.contains("UID"));
         assert!(!rendered.contains("must-not-be-rendered"));
         assert_eq!(
@@ -3692,8 +4117,8 @@ mod tests {
             rendered.contains("› ○ kubernetes.io/foregroundDeletion"),
             "{rendered}"
         );
-        assert!(rendered.contains("Space Toggle"), "{rendered}");
-        assert!(rendered.contains("Enter Remove"), "{rendered}");
+        assert!(rendered.contains("Space:Toggle"), "{rendered}");
+        assert!(rendered.contains("Enter:Remove"), "{rendered}");
         assert!(!rendered.contains("must-not-be-rendered"));
         assert_eq!(
             terminal.backend().buffer().cell((10, 4)).unwrap().fg,
@@ -3720,10 +4145,11 @@ mod tests {
             app.theme.palette.overlay1
         );
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Enter/Space expand/collapse"));
-        assert!(rendered.contains("ctrl-d delete"));
-        assert!(rendered.contains("e edit"));
-        assert!(!rendered.contains("j/k move"));
+        assert!(rendered.contains("Enter/Space:expand/collapse"));
+        assert!(rendered.contains("ctrl-d:delete"));
+        assert!(rendered.contains("e:edit"));
+        assert!(rendered.contains("::command"));
+        assert!(!rendered.contains("j/k:move"));
     }
 
     #[test]
@@ -3737,9 +4163,9 @@ mod tests {
 
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Navigation"));
-        assert!(rendered.contains("Session"));
+        assert!(rendered.contains("Discovery"));
         assert!(!rendered.contains("Actions"));
-        assert!(rendered.contains("j/k scroll"));
+        assert!(rendered.contains("j/k:scroll"));
 
         app.handle_key(
             KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
@@ -3752,7 +4178,7 @@ mod tests {
         assert!(rendered.contains("refresh now"));
         assert!(rendered.contains("Actions"));
         assert!(rendered.contains("remove all finalizers"));
-        assert!(rendered.contains("Esc/q/? close"));
+        assert!(rendered.contains("Esc/q/?:close"));
     }
 
     #[test]
@@ -3813,15 +4239,15 @@ mod tests {
     fn content_footer_groups_navigation_before_other_actions() {
         assert_eq!(
             content_modal_footer(ContentKind::Yaml, false),
-            " drag to copy  j/k or ↑/↓ vertical  h/l or ←/→ horizontal  w wrap  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:find  n/N:matches  Esc:close"
         );
         assert_eq!(
             content_modal_footer(ContentKind::Yaml, true),
-            " drag to copy  j/k or ↑/↓ vertical  w unwrap  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  w:unwrap  /:find  n/N:matches  Esc:close"
         );
         assert_eq!(
             content_modal_footer(ContentKind::Events, true),
-            " drag to copy  j/k or ↑/↓ vertical  / find  n/N matches  Esc close"
+            " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
         );
     }
 
@@ -4127,10 +4553,7 @@ mod tests {
     #[test]
     fn context_menu_options_dispatch_matching_actions() {
         let area = Rect::new(0, 0, 80, 12);
-        for (item, expected) in ["yaml", "edit", "events", "describe"]
-            .into_iter()
-            .enumerate()
-        {
+        for (item, expected) in [(0, "yaml"), (1, "edit"), (3, "events"), (4, "describe")] {
             let mut app = app();
             app.modal = Some(Modal::ContextMenu {
                 target: app.selected_target().unwrap(),
@@ -4163,6 +4586,40 @@ mod tests {
             assert_eq!(target.identity.kind, "Root");
             assert!(app.modal.is_none());
         }
+    }
+
+    #[test]
+    fn context_menu_status_opens_the_status_modal() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        app.modal = Some(Modal::ContextMenu {
+            target: app.selected_target().unwrap(),
+            column: 10,
+            row: 3,
+            pressed: None,
+        });
+        let menu = context_menu_area(area, 10, 3);
+        let inner = Block::default().borders(Borders::ALL).inner(menu);
+        let click = |kind| MouseEvent {
+            kind,
+            column: inner.x,
+            row: inner.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert!(
+            app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)), area)
+                .is_none()
+        );
+        assert!(
+            app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)), area)
+                .is_none()
+        );
+        let Some(Modal::Text { title, content, .. }) = &app.modal else {
+            panic!("expected status modal");
+        };
+        assert_eq!(title, "Status: Root/root");
+        assert_eq!(content, "No status reported.\n");
     }
 
     #[test]

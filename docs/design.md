@@ -85,6 +85,14 @@ Find highlights and navigates without hiding rows. Filter limits rows while
 retaining ancestor paths. Field-qualified filters initially include kind,
 group, namespace, status, ready, and synced.
 
+The `:` command palette is backed by typed actions rather than raw command
+strings. Its initial catalog contains the unique resource kinds in the current
+snapshot; fuzzy selection applies an exact kind filter without retaining
+non-matching ancestors. The typed `:clear` action removes the kind constraint
+without changing the independent text or find queries. This action-based catalog
+leaves room for commands such as skin selection and reload without coupling them
+to popup input or rendering.
+
 ## Kubernetes operations
 
 Kube-rs discovery resolves dynamic resources. Native APIs provide live YAML,
