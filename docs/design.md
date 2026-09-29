@@ -73,7 +73,9 @@ focused-content role; destructive confirmation borders use the active theme's
 red swatch. Color is the desired default but symbols and text carry the same
 meaning; `NO_COLOR`, monochrome, theme customization, and ASCII tree lines are
 supported. Mouse capture is enabled in content views so dragging can select and
-copy their underlying text; elsewhere, native terminal selection is preserved.
+copy their underlying text. The main resource table also captures mouse input
+for row selection, drag-to-copy, double-click, and context-menu actions. Views
+that do not provide mouse interaction preserve native terminal selection.
 
 The theme is resolved once before entering the alternate screen and stored in
 application state. Renderers request semantic styles instead of embedding RGB
@@ -89,9 +91,12 @@ The `:` command palette is backed by typed actions rather than raw command
 strings. Its initial catalog contains the unique resource kinds in the current
 snapshot; fuzzy selection applies an exact kind filter without retaining
 non-matching ancestors. The typed `:clear` action removes the kind constraint
-without changing the independent text or find queries. This action-based catalog
-leaves room for commands such as skin selection and reload without coupling them
-to popup input or rendering.
+without changing the independent text or find queries. The typed `:skin` action
+opens a built-in-theme picker; accepting a choice applies it to the live theme
+and atomically persists `skin.name` without replacing unrelated configuration.
+The typed `:quit` action exits through the normal application shutdown path.
+This action-based catalog leaves room for commands such as reload without coupling
+them to popup input or rendering.
 
 ## Kubernetes operations
 

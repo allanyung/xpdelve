@@ -4,6 +4,7 @@
 // Translated and substantially modified for xpdelve in 2026. See NOTICE.
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,7 +36,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cli::Cli;
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::kubernetes::{DeletePropagation, Kubernetes, Target};
 use crate::model::{Identity, ProjectedNode, Snapshot};
 use crate::text;
@@ -48,6 +49,7 @@ const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
 const TOAST_DURATION: Duration = Duration::from_millis(1500);
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+const PALETTE_TITLE: &str = " commands & resources (↑/↓:select, Enter:apply) ";
 const HELP_LINES: &[&str] = &[
     "Navigation",
     "  j/k, Up/Down      move selection",
@@ -116,6 +118,8 @@ enum InputMode {
 enum PaletteAction {
     FilterKind(String),
     ClearKindFilter,
+    OpenSkinPicker,
+    Quit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +156,9 @@ enum Modal {
         column: u16,
         row: u16,
         pressed: Option<usize>,
+    },
+    SkinPicker {
+        selected: usize,
     },
 }
 
@@ -226,6 +233,7 @@ struct App {
     status: String,
     quit: bool,
     config: Config,
+    config_path: PathBuf,
     no_watch: bool,
     theme: Theme,
     kubernetes: Option<Arc<Kubernetes>>,
@@ -267,6 +275,7 @@ impl App {
             status: "Starting trace...".into(),
             quit: false,
             config,
+            config_path: cli.config.clone().unwrap_or_else(config::default_path),
             no_watch: cli.no_watch,
             theme,
             kubernetes: None,
@@ -337,6 +346,28 @@ impl App {
                 },
             ));
         }
+        if !query.is_empty()
+            && let Some(score) = fuzzy_score("skin", query)
+        {
+            entries.push((
+                score,
+                PaletteEntry {
+                    label: "skin".into(),
+                    action: PaletteAction::OpenSkinPicker,
+                },
+            ));
+        }
+        if !query.is_empty()
+            && let Some(score) = fuzzy_score("quit", query)
+        {
+            entries.push((
+                score,
+                PaletteEntry {
+                    label: "quit".into(),
+                    action: PaletteAction::Quit,
+                },
+            ));
+        }
         entries.sort_by(|(left_score, left), (right_score, right)| {
             right_score
                 .cmp(left_score)
@@ -355,10 +386,36 @@ impl App {
         match action {
             PaletteAction::FilterKind(kind) => self.kind_filter = Some(kind),
             PaletteAction::ClearKindFilter => self.kind_filter = None,
+            PaletteAction::OpenSkinPicker => {
+                self.mode = InputMode::Normal;
+                self.input.clear();
+                self.modal = Some(Modal::SkinPicker { selected: 0 });
+                return;
+            }
+            PaletteAction::Quit => self.quit = true,
         }
         self.mode = InputMode::Normal;
         self.input.clear();
         self.set_selection(0);
+    }
+
+    fn apply_skin(&mut self, name: &str) {
+        let mut skin = self.config.skin.clone();
+        skin.name = Some(name.to_owned());
+        let theme = match Theme::resolve(&skin, self.config.ui.color) {
+            Ok(theme) => theme,
+            Err(error) => {
+                self.status = format!("Could not apply skin: {error}");
+                return;
+            }
+        };
+        if let Err(error) = config::persist_skin(&self.config_path, name) {
+            self.status = format!("Could not save skin: {error:#}");
+            return;
+        }
+        self.config.skin = skin;
+        self.theme = theme;
+        self.status = format!("Skin: {name}");
     }
 
     fn selected_node(&self) -> Option<&ProjectedNode> {
@@ -896,7 +953,9 @@ impl App {
         match &self.modal {
             Some(Modal::Text { kind, .. }) => kind.supports_mouse_selection(),
             Some(Modal::ContextMenu { .. }) => true,
-            Some(Modal::Delete { .. } | Modal::Finalizers { .. }) => false,
+            Some(Modal::Delete { .. } | Modal::Finalizers { .. } | Modal::SkinPicker { .. }) => {
+                false
+            }
             None => {
                 !matches!(self.mode, InputMode::Help | InputMode::Command)
                     && self.snapshot.is_some()
@@ -1082,6 +1141,23 @@ impl App {
                         self.modal = None;
                     }
                 }
+                Modal::SkinPicker { selected } => match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        *selected = (*selected + 1) % crate::theme::BUILTIN_NAMES.len();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        *selected = selected
+                            .checked_sub(1)
+                            .unwrap_or(crate::theme::BUILTIN_NAMES.len() - 1);
+                    }
+                    KeyCode::Enter => {
+                        let name = crate::theme::BUILTIN_NAMES[*selected].to_owned();
+                        self.modal = None;
+                        self.apply_skin(&name);
+                    }
+                    _ => {}
+                },
             }
             return UiAction::None;
         }
@@ -1866,6 +1942,13 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
                     .clamp(12, 24),
             ),
             Modal::ContextMenu { column, row, .. } => context_menu_area(area, *column, *row),
+            Modal::SkinPicker { .. } => centered(
+                area,
+                58,
+                u16::try_from(crate::theme::BUILTIN_NAMES.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(2),
+            ),
         };
         render_modal(frame, modal_area, modal, &app.theme);
     }
@@ -2550,10 +2633,7 @@ fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         state.select(Some(app.palette_selected.min(entries.len() - 1)));
     }
     let list = List::new(items)
-        .block(bordered_block(
-            " commands & resource kinds (↑/↓:select, Enter:apply) ",
-            &app.theme,
-        ))
+        .block(bordered_block(PALETTE_TITLE, &app.theme))
         .highlight_style(app.theme.selected_row());
     frame.render_stateful_widget(list, popup, &mut state);
 }
@@ -2561,19 +2641,24 @@ fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 fn palette_list_item<'a>(entry: &'a PaletteEntry, theme: &Theme) -> ListItem<'a> {
     match &entry.action {
         PaletteAction::FilterKind(_) => ListItem::new(format!("  {}", entry.label)),
-        PaletteAction::ClearKindFilter => ListItem::new(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!(":{}", entry.label),
-                Style::default().fg(theme.palette.peach),
-            ),
-            Span::styled("  cmd", theme.subtle()),
-        ])),
+        PaletteAction::ClearKindFilter | PaletteAction::OpenSkinPicker | PaletteAction::Quit => {
+            ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!(":{}", entry.label),
+                    Style::default().fg(theme.palette.peach),
+                ),
+                Span::styled("  cmd", theme.subtle()),
+            ]))
+        }
     }
 }
 
 fn palette_area(area: Rect, entry_count: usize) -> Rect {
-    let width = area.width.saturating_sub(4).min(48);
+    let minimum_width = u16::try_from(PALETTE_TITLE.width())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    let width = 48.max(minimum_width).min(area.width.saturating_sub(2));
     let item_count = entry_count.clamp(1, 12);
     let height = u16::try_from(item_count)
         .unwrap_or(u16::MAX)
@@ -2821,6 +2906,20 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                 ]),
                 inner,
             );
+        }
+        Modal::SkinPicker { selected } => {
+            let mut state = ListState::default().with_selected(Some(*selected));
+            let items = crate::theme::BUILTIN_NAMES
+                .iter()
+                .map(|name| ListItem::new(format!("  {name}")))
+                .collect::<Vec<_>>();
+            let list = List::new(items)
+                .block(bordered_block(
+                    " Skins (↑/↓:select, Enter:apply, Esc:cancel) ",
+                    theme,
+                ))
+                .highlight_style(theme.selected_row());
+            frame.render_stateful_widget(list, area, &mut state);
         }
     }
 }
@@ -3619,6 +3718,73 @@ mod tests {
     }
 
     #[test]
+    fn skin_palette_command_opens_the_skin_picker() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 24);
+        for key in [':', 's', 'k', 'i', 'n'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        }
+
+        let entries = app.palette_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, PaletteAction::OpenSkinPicker);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert!(matches!(app.modal, Some(Modal::SkinPicker { selected: 0 })));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Skins"));
+        assert!(rendered.contains("catppuccin-mocha"));
+        assert!(rendered.contains("nord"));
+    }
+
+    #[test]
+    fn quit_palette_command_exits_the_application() {
+        let mut app = app();
+        let area = Rect::new(0, 0, 100, 20);
+        for key in [':', 'q', 'u', 'i', 't'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        }
+
+        let entries = app.palette_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, PaletteAction::Quit);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert!(app.quit);
+        assert_eq!(app.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn selecting_a_skin_applies_and_persists_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("xpdelve/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "# preserved\nschema_version = 1\n\n[skin]\nname = 'catppuccin-mocha'\n",
+        )
+        .unwrap();
+        let mut app = app();
+        app.config_path = path.clone();
+        app.modal = Some(Modal::SkinPicker { selected: 0 });
+        let area = Rect::new(0, 0, 100, 24);
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert!(app.modal.is_none());
+        assert_eq!(app.theme.resolved_name, "catppuccin-latte");
+        assert_eq!(app.config.skin.name.as_deref(), Some("catppuccin-latte"));
+        assert_eq!(app.status, "Skin: catppuccin-latte");
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.contains("# preserved"));
+        assert!(saved.contains("name = \"catppuccin-latte\""));
+    }
+
+    #[test]
     fn palette_command_uses_sofka_command_styling() {
         let mut app = app();
         app.open_palette();
@@ -3695,7 +3861,7 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("commands & resource kinds"));
+        assert!(rendered.contains("commands & resources"));
         assert!(rendered.contains("Child"));
         assert!(rendered.contains("Root"));
         assert!(rendered.contains(":"));
@@ -3706,6 +3872,7 @@ mod tests {
             .bottom()
             .saturating_sub(1);
         assert_eq!(popup.x, 1);
+        assert!(usize::from(popup.width.saturating_sub(2)) >= PALETTE_TITLE.width());
         assert_eq!(
             lower_border.saturating_sub(popup.bottom().saturating_sub(1)),
             1

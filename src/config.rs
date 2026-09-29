@@ -203,6 +203,114 @@ pub fn default_path() -> PathBuf {
         .join(".config/xpdelve/config.toml")
 }
 
+pub fn persist_skin(path: &Path, name: &str) -> Result<()> {
+    crate::theme::validate_skin(&SkinConfig {
+        name: Some(name.to_owned()),
+        colors: HashMap::new(),
+    })?;
+    let source = if path.exists() {
+        fs::read_to_string(path)
+            .with_context(|| format!("failed to read configuration {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let updated = update_skin_name(&source, name);
+    toml::from_str::<Config>(&updated)
+        .with_context(|| format!("updated configuration {} is invalid", path.display()))?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create configuration directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    let temporary = path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()));
+    fs::write(&temporary, updated)
+        .with_context(|| format!("failed to write configuration {}", temporary.display()))?;
+    fs::rename(&temporary, path).with_context(|| {
+        let _ = fs::remove_file(&temporary);
+        format!("failed to replace configuration {}", path.display())
+    })
+}
+
+fn update_skin_name(source: &str, name: &str) -> String {
+    let quoted = toml::Value::String(name.to_owned()).to_string();
+    let mut lines = source.lines().map(str::to_owned).collect::<Vec<_>>();
+    let mut current_table = "";
+    let mut skin_header = None;
+    let mut skin_end = lines.len();
+    let mut nested_skin_header = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let declaration = trimmed.split('#').next().unwrap_or_default().trim();
+        if declaration.starts_with('[') && declaration.ends_with(']') {
+            if skin_header.is_some() && skin_end == lines.len() {
+                skin_end = index;
+            }
+            current_table = declaration;
+            if declaration == "[skin]" {
+                skin_header = Some(index);
+                skin_end = lines.len();
+            } else if declaration.starts_with("[skin.") && nested_skin_header.is_none() {
+                nested_skin_header = Some(index);
+            }
+            continue;
+        }
+        let Some((key, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if (current_table.is_empty() && key.trim() == "skin.name")
+            || (current_table == "[skin]" && key.trim() == "name")
+        {
+            let indent = line.len() - line.trim_start().len();
+            let comment = line.find('#').map_or("", |comment| &line[comment..]);
+            lines[index] = format!(
+                "{}{}name = {quoted}{}{}",
+                " ".repeat(indent),
+                if current_table.is_empty() {
+                    "skin."
+                } else {
+                    ""
+                },
+                if comment.is_empty() { "" } else { " " },
+                comment
+            );
+            return finish_config(lines, source);
+        }
+    }
+
+    if let Some(header) = skin_header {
+        lines.insert((header + 1).min(skin_end), format!("name = {quoted}"));
+    } else {
+        let insertion = nested_skin_header.unwrap_or(lines.len());
+        let mut block = vec![
+            "[skin]".to_owned(),
+            format!("name = {quoted}"),
+            String::new(),
+        ];
+        if insertion == lines.len() && lines.last().is_some_and(|line| !line.is_empty()) {
+            block.insert(0, String::new());
+        }
+        lines.splice(insertion..insertion, block);
+    }
+    finish_config(lines, source)
+}
+
+fn finish_config(lines: Vec<String>, source: &str) -> String {
+    let mut result = lines.join("\n");
+    if source.ends_with('\n') || !result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +337,28 @@ mod tests {
         let invalid =
             toml::from_str::<Config>("schema_version = 1\n[skin]\nname = 'missing'").unwrap();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn updates_skin_without_discarding_other_configuration() {
+        let source = "# keep me\nread_only = true\n\n[skin]\n# skin comment\nname = 'nord' # choice\n\n[skin.colors]\nred = '#ff0000'\n";
+        let updated = update_skin_name(source, "dracula");
+        assert!(updated.contains("# keep me"));
+        assert!(updated.contains("name = \"dracula\" # choice"));
+        assert!(updated.contains("red = '#ff0000'"));
+        let config: Config = toml::from_str(&updated).unwrap();
+        assert_eq!(config.skin.name.as_deref(), Some("dracula"));
+    }
+
+    #[test]
+    fn adds_skin_before_an_existing_colors_table() {
+        let source = "[skin.colors]\nred = '#ff0000'\n";
+        let updated = update_skin_name(source, "nord");
+        let config: Config = toml::from_str(&updated).unwrap();
+        assert_eq!(config.skin.name.as_deref(), Some("nord"));
+        assert_eq!(
+            config.skin.colors.get("red").map(String::as_str),
+            Some("#ff0000")
+        );
     }
 }
