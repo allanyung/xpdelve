@@ -12,6 +12,10 @@ workflow. Use `--readonly` or `read_only = true` to disable mutation bindings.
 - A conflict is reported instead of silently overwriting concurrent changes.
 - Only one mutation per resource and four mutations globally may run at once.
 
+Mutation failures open in a large, wrapped, scrollable error view that remains
+visible across trace refreshes until dismissed. The full message can be searched
+or copied instead of being truncated to the status line.
+
 Delete requires confirmation and defaults to foreground propagation. Press `c`
 to cycle to background or orphan propagation. The application submits the
 request and follows progress through subsequent traces rather than blocking

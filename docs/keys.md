@@ -92,13 +92,17 @@ saves it, and Esc or `q` cancels. The active configuration file defaults to
 Within delete confirmation, `c` cycles foreground, background, and orphan
 propagation. Foreground is always the initial choice.
 
+If a delete, pause, unpause, or finalizer-removal operation fails, xpdelve opens
+a large, persistent error view instead of placing the full message in the status
+line. The view remains open across trace refreshes until Esc or `q` closes it.
+
 Content modals use `j`/`k` or Up/Down, PageUp/PageDown, and `g`/`G` for vertical
-navigation. Describe and event content wraps long lines. YAML wraps by default;
-press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped YAML
-horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
-lines. In Describe, live YAML, and Events, drag across text to copy it on mouse
-release; visual soft wraps do not add newlines to the copied text. The main
-resource table also supports drag-to-copy, while a click without dragging
-selects the clicked resource row and a double-click opens its live YAML.
+navigation. Describe, event, and error content wraps long lines. YAML wraps by
+default; press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped
+YAML horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
+lines. In Describe, live YAML, Events, and mutation errors, drag across text to
+copy it on mouse release; visual soft wraps do not add newlines to the copied
+text. The main resource table also supports drag-to-copy, while a click without
+dragging selects the clicked resource row and a double-click opens its live YAML.
 Right-clicking a resource opens a menu for YAML, Edit, Status, Events, and
 Describe.
