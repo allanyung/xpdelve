@@ -17,6 +17,11 @@
 | `]` | Expand every subtree |
 | `z` | Toggle fitted and untruncated table widths |
 
+Expandable rows reserve a fixed disclosure slot immediately before the resource
+name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-` and
+`+`. Leaves keep the same slot blank, so toggling a row never shifts resource
+names or table columns.
+
 ## Discovery
 
 | Key | Action |
