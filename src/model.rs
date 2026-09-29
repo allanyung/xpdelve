@@ -151,6 +151,7 @@ impl Snapshot {
         &self,
         collapsed: &HashSet<Identity>,
         filter: Option<&str>,
+        kind: Option<&str>,
     ) -> Vec<usize> {
         let query = filter.map(str::trim).filter(|value| !value.is_empty());
         let direct_matches: HashSet<usize> = query.map_or_else(HashSet::new, |query| {
@@ -182,7 +183,8 @@ impl Snapshot {
             if query.is_none() && collapsed.contains(&node.identity) {
                 hidden_depth = Some(node.depth);
             }
-            if query.is_none() || retained.contains(&index) {
+            let matches_kind = kind.is_none_or(|kind| node.identity.kind == kind);
+            if matches_kind && (query.is_none() || retained.contains(&index)) {
                 visible.push(index);
             }
         }
@@ -614,8 +616,23 @@ mod tests {
     #[test]
     fn filter_retains_ancestors() {
         let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
-        let visible = snapshot.visible_indices(&HashSet::new(), Some("kind:secret"));
+        let visible = snapshot.visible_indices(&HashSet::new(), Some("kind:secret"), None);
         assert_eq!(visible, vec![0, 1]);
+    }
+
+    #[test]
+    fn kind_filter_only_retains_exact_kind_matches() {
+        let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
+        let visible = snapshot.visible_indices(&HashSet::new(), None, Some("Secret"));
+        assert_eq!(visible, vec![1]);
+    }
+
+    #[test]
+    fn kind_filter_does_not_restore_non_matching_text_filter_ancestors() {
+        let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
+        let visible =
+            snapshot.visible_indices(&HashSet::new(), Some("kind:secret"), Some("Secret"));
+        assert_eq!(visible, vec![1]);
     }
 
     #[test]

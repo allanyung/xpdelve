@@ -20,15 +20,33 @@
 
 | Key | Action |
 | --- | --- |
+| `:` | Open the resource-kind command palette |
 | `/` | Filter rows while retaining matching ancestor paths |
 | `f` | Find text without hiding rows |
 | `n`, `N` | Select the next or previous find match |
-| `Esc` | Clear find and filter |
+| `Esc` | Clear find, text filter, and kind filter |
 | `d` | Open captured `kubectl describe` output |
 | `y` | Open redacted live YAML |
 | `s` | Show the selected resource status |
 | `v` | Load related Kubernetes events |
 | `c` | Copy the canonical resource identifier with OSC 52 |
+
+## Command Palette And Kind Filtering
+
+Press `:` (`::command` in the main-view legend) to open the command palette. It
+lists each unique resource kind in the current trace. Type to fuzzy-filter the
+list, use Up/Down to move the selection, and press Enter to show only resources
+whose kind exactly matches the selection. Non-matching resources, including
+ancestor rows, are hidden.
+
+The selected kind is shown as `Kind: <name>` below the tree and remains active
+across trace refreshes. To remove only the kind selection, press `:`, type
+`clear`, and select the `:clear  cmd` entry. This restores the full tree unless a
+separate `/` text filter is active.
+
+Esc while the palette is open closes it without changing the current kind.
+Esc from the main view clears the kind filter, `/` text filter, and find query
+together.
 
 ## Actions And Session
 
@@ -54,4 +72,5 @@ lines. In Describe, live YAML, and Events, drag across text to copy it on mouse
 release; visual soft wraps do not add newlines to the copied text. The main
 resource table also supports drag-to-copy, while a click without dragging
 selects the clicked resource row and a double-click opens its live YAML.
-Right-clicking a resource opens a menu for YAML, Edit, Events, and Describe.
+Right-clicking a resource opens a menu for YAML, Edit, Status, Events, and
+Describe.

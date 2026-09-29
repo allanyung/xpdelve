@@ -117,7 +117,7 @@ context, resource, API group, and name through the variables in `args`.
 - `Right`: expand or select the first child
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
-- `/`: filter; `f`: find; `n`/`N`: next or previous match
+- `:`: choose a resource kind; `/`: filter; `f`: find; `n`/`N`: next or previous match
 - `d`, `y`, `s`, `v`: describe, live YAML, status, and events
 - `p`/`u`: pause or unpause the selected Crossplane resource
 - `ctrl+d`: delete with a propagation-policy confirmation
@@ -126,6 +126,23 @@ context, resource, API group, and name through the variables in `args`.
 - `c`: copy the canonical resource identifier using OSC 52
 - `z`: toggle fitted/full-width columns
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
+
+### Command palette and kind filtering
+
+Press `:`—shown as `::command` in the main-view legend—to open the command
+palette. It lists the unique resource kinds in the current trace. Type to
+fuzzy-filter the list, use Up/Down to select a kind, and press Enter to show only
+resources of that exact kind. Non-matching resources and ancestors are hidden,
+and the kind selection remains active across trace refreshes.
+
+To restore the full tree, open the palette, type `clear`, and select the
+`:clear  cmd` entry. `:clear` removes only the selected kind, so an independent
+`/` text filter remains active. Esc closes an open palette without changing the
+selection; Esc from the main view clears the kind, text, and find filters
+together.
+
+See [the full keybinding and filtering guide](docs/keys.md) for palette controls
+and the distinction between kind filtering, text filtering, and find.
 
 Delete confirmation defaults to foreground propagation. Press `c` in the
 confirmation to cycle through foreground, background, and orphan behavior.
@@ -138,9 +155,9 @@ restores the tree and normal refresh behavior.
 
 On the main resource table, click a row to select it, double-click to open its
 live YAML, or drag across displayed text to highlight and copy it on release.
-Right-click a row for YAML, Edit, Events, and Describe actions. Describe, live
-YAML, and Events offer the same drag-to-copy behavior; visual soft wraps are not
-included as newlines.
+Right-click a row for YAML, Edit, Status, Events, and Describe actions. Describe,
+live YAML, and Events offer the same drag-to-copy behavior; visual soft wraps are
+not included as newlines.
 Describe, YAML, and Events use the full terminal and wrap long lines. Content
 views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
 `h`/`l` or Left/Right scroll unwrapped YAML horizontally.
