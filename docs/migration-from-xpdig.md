@@ -20,4 +20,3 @@ Notable behavior changes:
 - Kubernetes inspection and mutations use native APIs, except for permanent
   `kubectl edit` and captured `kubectl describe` integration.
 - Mutations validate live UID/resourceVersion data before acting.
-- Stdin trace input is not supported.

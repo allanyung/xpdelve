@@ -10,7 +10,8 @@
 | `PageUp`, `Ctrl+B` | Move up one page |
 | `g`, Home | Select first resource |
 | `G`, End | Select last resource |
-| `Enter`, `Space`, Right | Toggle the selected subtree |
+| `Enter`, `Space` | Toggle the selected subtree |
+| Right | Expand the selected subtree or select its first child |
 | Left | Collapse the subtree or select its parent |
 | `[` | Collapse every subtree |
 | `]` | Expand every subtree |
@@ -40,13 +41,40 @@ whose kind exactly matches the selection. Non-matching resources, including
 ancestor rows, are hidden.
 
 The selected kind is shown as `Kind: <name>` below the tree and remains active
-across trace refreshes. To remove only the kind selection, press `:`, type
-`clear`, and select the `:clear  cmd` entry. This restores the full tree unless a
-separate `/` text filter is active.
+across trace refreshes.
+
+The `/` text filter supports plain text and field-qualified queries. Plain text
+matches the resource identifier or status. Field names and values are
+case-insensitive:
+
+| Field | Example |
+| --- | --- |
+| `kind` | `kind:secret` |
+| `group` | `group:example.io` |
+| `namespace` | `namespace:default` |
+| `status` | `status:waiting` |
+| `ready` | `ready:true` |
+| `synced` | `synced:unknown` |
+
+The `ready` and `synced` fields accept `true`, `false`, or `unknown`. Text-filter
+matches retain their ancestor paths. The kind selected from the command palette
+is a separate exact-match filter and does not retain non-matching ancestors.
+
+### Palette Commands
+
+| Command | Action |
+| --- | --- |
+| `:clear` | Remove the active kind filter; an independent `/` text filter remains active |
+| `:skin` | Open the built-in theme picker; applying a theme also saves it to the active configuration file |
+| `:quit` | Exit xpdelve through the normal shutdown path |
 
 Esc while the palette is open closes it without changing the current kind.
 Esc from the main view clears the kind filter, `/` text filter, and find query
 together.
+
+In the theme picker, Up/Down or `j`/`k` changes the selection, Enter applies and
+saves it, and Esc or `q` cancels. The active configuration file defaults to
+`~/.config/xpdelve/config.toml`.
 
 ## Actions And Session
 

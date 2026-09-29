@@ -85,8 +85,26 @@ xpdelve --namespace default ObjectStorage example
 xpdelve --context development ObjectStorage/example
 ```
 
-Configuration is read from `~/.config/xpdelve/config.toml`. See
+By default, configuration is read from `~/.config/xpdelve/config.toml`; use
+`--config PATH` to select another file. See
 [`docs/configuration.md`](docs/configuration.md).
+
+### Common options
+
+| Option | Purpose |
+| --- | --- |
+| `--config PATH` | Read configuration from a different file |
+| `--context NAME` | Use a specific Kubernetes context |
+| `-n`, `--namespace NAME` | Trace a resource in a specific namespace |
+| `--kubeconfig PATH` | Use a specific kubeconfig for trace and Kubernetes operations |
+| `--readonly` | Disable mutating actions |
+| `--short` | Hide condition transition-time columns |
+| `--no-watch` | Start with automatic refresh disabled |
+| `--watch-interval SECONDS` | Set the automatic refresh interval |
+| `--cmd COMMAND` | Override the trace command prefix without invoking a shell |
+
+Run `xpdelve --help` for the complete CLI reference. Shell completions can be
+generated with `xpdelve completion SHELL`.
 
 ### Sofka Integration
 
@@ -136,13 +154,22 @@ resources of that exact kind. Non-matching resources and ancestors are hidden,
 and the kind selection remains active across trace refreshes.
 
 To restore the full tree, open the palette, type `clear`, and select the
-`:clear  cmd` entry. `:clear` removes only the selected kind, so an independent
+`:clear` entry. `:clear` removes only the selected kind, so an independent
 `/` text filter remains active. Esc closes an open palette without changing the
 selection; Esc from the main view clears the kind, text, and find filters
 together.
 
+Enter `:skin` to open the theme picker. Use Up/Down to choose a built-in theme
+and Enter to apply it. The choice takes effect immediately and is saved as
+`skin.name` in the active configuration file (normally
+`~/.config/xpdelve/config.toml`).
+
+Enter `:quit` to close xpdelve from the command palette.
+
 See [the full keybinding and filtering guide](docs/keys.md) for palette controls
 and the distinction between kind filtering, text filtering, and find.
+
+## Deletion and trace recovery
 
 Delete confirmation defaults to foreground propagation. Press `c` in the
 confirmation to cycle through foreground, background, and orphan behavior.
@@ -167,7 +194,8 @@ views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
 xpdelve supports the same built-in theme catalog as Sofka. Omit `skin.name` to
 select Catppuccin Latte or Mocha based on the detected terminal background; if
 detection fails, xpdelve defaults to Mocha. You can also configure a named theme
-and optional swatch overrides.
+and optional swatch overrides, or select and persist a theme interactively with
+`:skin`.
 
 See [`docs/configuration.md`](docs/configuration.md#themes) for available themes
 and configuration options.
