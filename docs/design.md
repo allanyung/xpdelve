@@ -90,8 +90,10 @@ group, namespace, status, ready, and synced.
 The `:` command palette is backed by typed actions rather than raw command
 strings. Its initial catalog contains the unique resource kinds in the current
 snapshot; fuzzy selection applies an exact kind filter without retaining
-non-matching ancestors. The typed `:clear` action removes the kind constraint
-without changing the independent text or find queries. The typed `:exclude`
+non-matching ancestors. Kinds that collide across API groups appear as separate
+`Kind.group` entries, and the filter retains the group as part of its identity.
+The typed `:clear` action removes the kind constraint without changing the
+independent text or find queries. The typed `:exclude`
 action opens a session-only group/kind picker. Checked kinds and their complete
 subtrees are omitted; exclusions survive snapshot refreshes, and newly observed
 kinds remain visible by default. Usage kinds receive priority in the picker.

@@ -43,7 +43,8 @@ Press `:` (`::command` in the main-view legend) to open the command palette. It
 lists each unique resource kind in the current trace. Type to fuzzy-filter the
 list, use Up/Down to move the selection, and press Enter to show only resources
 whose kind exactly matches the selection. Non-matching resources, including
-ancestor rows, are hidden.
+ancestor rows, are hidden. If the same kind occurs in more than one API group,
+each entry is qualified as `Kind.group` and filters only that group.
 
 The selected kind is shown as `Kind: <name>` below the tree and remains active
 across trace refreshes.

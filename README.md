@@ -151,7 +151,9 @@ Press `:`—shown as `::command` in the main-view legend—to open the command
 palette. It lists the unique resource kinds in the current trace. Type to
 fuzzy-filter the list, use Up/Down to select a kind, and press Enter to show only
 resources of that exact kind. Non-matching resources and ancestors are hidden,
-and the kind selection remains active across trace refreshes.
+and the kind selection remains active across trace refreshes. Duplicate kind
+names from different API groups appear as separate `Kind.group` entries and are
+filtered independently.
 
 To restore the full tree, open the palette, type `clear`, and select the
 `:clear` entry. `:clear` removes only the selected kind, so an independent

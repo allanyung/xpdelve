@@ -2,7 +2,7 @@
 // internal/bubbles/layout/xpnavigator/model.go.
 // Copyright 2025 Bruno Luiz da Silva. Licensed under Apache-2.0.
 // Translated and substantially modified for xpdelve in 2026. See NOTICE.
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -117,7 +117,7 @@ enum InputMode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PaletteAction {
-    FilterKind(String),
+    FilterKind(ResourceKind),
     ClearKindFilter,
     OpenExcludePicker,
     OpenSkinPicker,
@@ -236,7 +236,7 @@ struct App {
     help_scroll: u16,
     input: String,
     filter: String,
-    kind_filter: Option<String>,
+    kind_filter: Option<ResourceKind>,
     palette_selected: usize,
     find: String,
     loading: bool,
@@ -321,7 +321,7 @@ impl App {
                 &self.collapsed,
                 &self.excluded_kinds,
                 (!self.filter.is_empty()).then_some(self.filter.as_str()),
-                self.kind_filter.as_deref(),
+                self.kind_filter.as_ref(),
             )
         })
     }
@@ -331,19 +331,30 @@ impl App {
             .snapshot
             .iter()
             .flat_map(|snapshot| snapshot.nodes.iter())
-            .map(|node| node.identity.kind.clone())
+            .map(|node| node.resource_kind.clone())
             .collect::<Vec<_>>();
-        kinds.sort_by_key(|kind| kind.to_lowercase());
+        kinds.sort_by(|left, right| {
+            left.kind
+                .to_lowercase()
+                .cmp(&right.kind.to_lowercase())
+                .then_with(|| left.group.to_lowercase().cmp(&right.group.to_lowercase()))
+        });
         kinds.dedup();
+        let kind_counts = kinds.iter().fold(HashMap::new(), |mut counts, kind| {
+            *counts.entry(kind.kind.clone()).or_insert(0usize) += 1;
+            counts
+        });
         let query = self.input.trim();
         let mut entries = kinds
             .into_iter()
             .filter_map(|kind| {
-                fuzzy_score(&kind, query).map(|score| {
+                let qualified = kind_counts.get(kind.kind.as_str()).copied().unwrap_or(0) > 1;
+                let label = resource_kind_label(&kind, qualified);
+                fuzzy_score(&label, query).map(|score| {
                     (
                         score,
                         PaletteEntry {
-                            label: kind.clone(),
+                            label,
                             action: PaletteAction::FilterKind(kind),
                         },
                     )
@@ -400,6 +411,17 @@ impl App {
                 .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
         });
         entries.into_iter().map(|(_, entry)| entry).collect()
+    }
+
+    fn kind_filter_label(&self, kind: &ResourceKind) -> String {
+        let groups = self
+            .snapshot
+            .iter()
+            .flat_map(|snapshot| snapshot.nodes.iter())
+            .filter(|node| node.resource_kind.kind == kind.kind)
+            .map(|node| node.resource_kind.group.as_str())
+            .collect::<HashSet<_>>();
+        resource_kind_label(kind, groups.len() > 1)
     }
 
     fn open_palette(&mut self) {
@@ -2367,6 +2389,18 @@ fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
     Some(score.saturating_sub(candidate.len()))
 }
 
+fn resource_kind_label(kind: &ResourceKind, qualified: bool) -> String {
+    if !qualified {
+        return kind.kind.clone();
+    }
+    let group = if kind.group.is_empty() {
+        "core"
+    } else {
+        &kind.group
+    };
+    format!("{}.{group}", kind.kind)
+}
+
 fn render_resource_missing(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let scope = app.namespace.as_deref().map_or_else(
         || "the current namespace".to_owned(),
@@ -2794,7 +2828,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         {
             let mut active = Vec::new();
             if let Some(kind) = &app.kind_filter {
-                active.push(format!("Kind: {kind}"));
+                active.push(format!("Kind: {}", app.kind_filter_label(kind)));
             }
             if !app.excluded_kinds.is_empty() {
                 let mut excluded = app
@@ -3800,6 +3834,13 @@ mod tests {
         app_with_theme("catppuccin-mocha", crate::config::ColorMode::Always)
     }
 
+    fn resource_kind(group: &str, kind: &str) -> ResourceKind {
+        ResourceKind {
+            group: group.into(),
+            kind: kind.into(),
+        }
+    }
+
     fn app_with_theme(name: &str, color: crate::config::ColorMode) -> App {
         let cli = Cli::parse_from(["xpdelve", "Root/root"]);
         let mut config = Config::default();
@@ -4045,6 +4086,40 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_qualifies_duplicate_kinds_by_group() {
+        let mut app = app();
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{
+                    "object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
+                    "children":[
+                        {"object":{"apiVersion":"alpha.example.io/v1","kind":"Widget","metadata":{"name":"alpha"}}},
+                        {"object":{"apiVersion":"beta.example.io/v1","kind":"Widget","metadata":{"name":"beta"}}}
+                    ]
+                }"#,
+            )
+            .unwrap(),
+        );
+
+        let entries = app.palette_entries();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Root", "Widget.alpha.example.io", "Widget.beta.example.io"]
+        );
+
+        app.execute_palette_action(entries[2].action.clone());
+        assert_eq!(
+            app.kind_filter,
+            Some(resource_kind("beta.example.io", "Widget"))
+        );
+        assert_eq!(app.visible(), vec![2]);
+        assert_eq!(app.selected_node().unwrap().identity.name, "beta");
+    }
+
+    #[test]
     fn typing_narrows_the_command_palette_and_enter_filters_by_kind() {
         let mut app = app();
         let area = Rect::new(0, 0, 100, 20);
@@ -4056,7 +4131,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
         assert_eq!(app.mode, InputMode::Normal);
-        assert_eq!(app.kind_filter.as_deref(), Some("Child"));
+        assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
         assert_eq!(app.visible(), vec![1]);
         assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
     }
@@ -4064,7 +4139,7 @@ mod tests {
     #[test]
     fn kind_filtered_rows_are_rendered_without_tree_prefixes() {
         let mut app = app();
-        app.kind_filter = Some("Child".into());
+        app.kind_filter = Some(resource_kind("", "Child"));
 
         let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
 
@@ -4080,7 +4155,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
-        assert_eq!(app.kind_filter.as_deref(), Some("Root"));
+        assert_eq!(app.kind_filter, Some(resource_kind("", "Root")));
         assert_eq!(app.visible(), vec![0]);
     }
 
@@ -4088,7 +4163,7 @@ mod tests {
     fn clear_palette_command_removes_the_kind_filter() {
         let mut app = app();
         let area = Rect::new(0, 0, 100, 20);
-        app.kind_filter = Some("Child".into());
+        app.kind_filter = Some(resource_kind("", "Child"));
         for key in [':', 'c', 'l', 'e', 'a', 'r'] {
             app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
         }
@@ -4338,13 +4413,13 @@ mod tests {
     fn escape_cancels_the_palette_then_clears_an_active_kind_filter() {
         let mut app = app();
         let area = Rect::new(0, 0, 100, 20);
-        app.kind_filter = Some("Child".into());
+        app.kind_filter = Some(resource_kind("", "Child"));
         app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
 
         assert_eq!(app.mode, InputMode::Normal);
-        assert_eq!(app.kind_filter.as_deref(), Some("Child"));
+        assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
         assert!(app.kind_filter.is_none());
