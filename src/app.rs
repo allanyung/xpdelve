@@ -2170,8 +2170,14 @@ fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
     let mut lines = Vec::with_capacity(viewport + 1);
     lines.push(horizontal_slice(&plan.header(), 0, plan.available));
     lines.extend(visible.iter().skip(start).take(viewport).map(|index| {
+        let node = &snapshot.nodes[*index];
         horizontal_slice(
-            &plan.row(snapshot, &snapshot.nodes[*index], app.kind_filter.is_none()),
+            &plan.row(
+                snapshot,
+                node,
+                app.kind_filter.is_none(),
+                app.collapsed.contains(&node.identity),
+            ),
             0,
             plan.available,
         )
@@ -2430,8 +2436,15 @@ impl TablePlan {
         }
     }
 
-    fn row(&self, snapshot: &Snapshot, node: &ProjectedNode, show_tree_prefix: bool) -> String {
-        let object = object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix);
+    fn row(
+        &self,
+        snapshot: &Snapshot,
+        node: &ProjectedNode,
+        show_tree_prefix: bool,
+        collapsed: bool,
+    ) -> String {
+        let object =
+            object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix, collapsed);
         let group = group_cell(node);
         if self.package {
             let object = compact_object(&object, self.object);
@@ -2481,7 +2494,7 @@ fn object_cell(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool) -> String
 }
 
 fn object_cell_with_state(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool) -> String {
-    object_cell_with_tree_state(snapshot, node, ascii, true)
+    object_cell_with_tree_state(snapshot, node, ascii, true, false)
 }
 
 fn object_cell_with_tree_state(
@@ -2489,15 +2502,23 @@ fn object_cell_with_tree_state(
     node: &ProjectedNode,
     ascii: bool,
     show_tree_prefix: bool,
+    collapsed: bool,
 ) -> String {
     let prefix = if show_tree_prefix {
         tree_prefix(snapshot, node, ascii)
     } else {
         String::new()
     };
+    let disclosure = match (node.child_count > 0, collapsed, ascii) {
+        (false, _, _) => "  ",
+        (true, true, true) => "+ ",
+        (true, false, true) => "- ",
+        (true, true, false) => "▸ ",
+        (true, false, false) => "▾ ",
+    };
     let paused = if node.paused { " (paused)" } else { "" };
     format!(
-        "{prefix}{}/{}{paused}",
+        "{prefix}{disclosure}{}/{}{paused}",
         text::sanitize(&node.identity.kind),
         text::sanitize(&node.identity.name)
     )
@@ -3748,15 +3769,42 @@ mod tests {
 
     #[test]
     fn unicode_tree_uses_disconnected_xpdig_indentation() {
-        let app = app();
+        let mut app = app();
         let snapshot = app.snapshot.as_ref().unwrap();
         let child = &snapshot.nodes[1];
         let cell = object_cell_with_state(snapshot, child, false);
-        assert!(cell.starts_with("└─ Child/child"));
+        assert!(cell.starts_with("└─   Child/child"));
 
         let root = &snapshot.nodes[0];
         let cell = object_cell_with_state(snapshot, root, false);
-        assert!(cell.starts_with("Root/root"));
+        assert!(cell.starts_with("▾ Root/root"));
+
+        app.toggle_selected();
+        let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
+        assert!(rendered.lines[1].starts_with("▸ Root/root"));
+        assert_eq!(
+            cell.split_once("Root/root").unwrap().0.width(),
+            rendered.lines[1].split_once("Root/root").unwrap().0.width(),
+            "collapse state must not move the resource name"
+        );
+    }
+
+    #[test]
+    fn ascii_tree_uses_fixed_width_disclosure_indicators() {
+        let mut app = app();
+        app.config.ui.ascii = true;
+
+        let expanded = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
+        assert!(expanded.lines[1].starts_with("- Root/root"));
+        assert!(expanded.lines[2].starts_with("`-   Child/child"));
+
+        app.toggle_selected();
+        let collapsed = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
+        assert!(collapsed.lines[1].starts_with("+ Root/root"));
+        assert_eq!(
+            expanded.lines[1].find("Root/root"),
+            collapsed.lines[1].find("Root/root")
+        );
     }
 
     #[test]
@@ -3811,7 +3859,7 @@ mod tests {
 
         let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
 
-        assert!(rendered.lines[1].starts_with("Child/child"));
+        assert!(rendered.lines[1].starts_with("  Child/child"));
         assert!(!rendered.lines[1].contains("└─"));
     }
 
@@ -4790,19 +4838,19 @@ mod tests {
 
         assert_eq!(
             copied_mouse_text(
-                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0), area)
+                app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2), area)
             ),
             None
         );
         assert_eq!(
             copied_mouse_text(
-                app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 3), area)
+                app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5), area)
             ),
             None
         );
         assert_eq!(
             copied_mouse_text(
-                app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 3), area)
+                app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5), area)
             ),
             Some("Root".into())
         );
