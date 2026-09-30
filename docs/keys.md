@@ -13,7 +13,7 @@
 | `Enter`, `Space` | Toggle the selected subtree |
 | Right | Expand the selected subtree or select its first child |
 | Left | Collapse the subtree or select its parent |
-| `[` | Collapse every subtree |
+| `[` | Collapse every subtree below the root, leaving the root expanded |
 | `]` | Expand every subtree |
 | `z` | Toggle fitted and untruncated table widths |
 
