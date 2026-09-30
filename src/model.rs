@@ -64,6 +64,24 @@ pub enum Health {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HealthFilter {
+    #[default]
+    All,
+    Unhealthy,
+    Healthy,
+}
+
+impl HealthFilter {
+    pub fn matches(self, health: Health) -> bool {
+        match self {
+            Self::All => true,
+            Self::Unhealthy => health != Health::Healthy,
+            Self::Healthy => health == Health::Healthy,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConditionState {
     True,
@@ -179,17 +197,26 @@ impl Snapshot {
         excluded: &HashSet<ResourceKind>,
         filter: Option<&str>,
         kind: Option<&ResourceKind>,
+        health: HealthFilter,
     ) -> Vec<usize> {
         let query = filter.map(str::trim).filter(|value| !value.is_empty());
-        let direct_matches: HashSet<usize> = query.map_or_else(HashSet::new, |query| {
-            self.nodes
-                .iter()
-                .enumerate()
-                .filter_map(|(index, node)| matches_query(node, query).then_some(index))
-                .collect()
-        });
-        let mut retained = direct_matches.clone();
-        if query.is_some() {
+        let health_filtering = health != HealthFilter::All;
+        let direct_matches: HashSet<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let text_matches = query.is_none_or(|query| matches_query(node, query));
+                let kind_matches = kind.is_none_or(|kind| &node.resource_kind == kind);
+                (text_matches && kind_matches && health.matches(node.health)).then_some(index)
+            })
+            .collect();
+        let mut retained = if query.is_some() || health_filtering {
+            direct_matches.clone()
+        } else {
+            HashSet::new()
+        };
+        if query.is_some() || health_filtering {
             for index in &direct_matches {
                 let mut parent = self.nodes[*index].parent;
                 while let Some(parent_index) = parent {
@@ -211,8 +238,14 @@ impl Snapshot {
                 hidden_depth = Some(node.depth);
                 continue;
             }
-            if query.is_none() && collapsed.contains(&node.identity) {
+            if query.is_none() && !health_filtering && collapsed.contains(&node.identity) {
                 hidden_depth = Some(node.depth);
+            }
+            if health_filtering {
+                if retained.contains(&index) {
+                    visible.push(index);
+                }
+                continue;
             }
             let matches_kind = kind.is_none_or(|kind| &node.resource_kind == kind);
             if matches_kind && (query.is_none() || retained.contains(&index)) {
@@ -636,6 +669,19 @@ mod tests {
       "children": [{"object": {"apiVersion":"v1","kind":"Secret","metadata":{"name":"child","namespace":"default"},"status":{"conditions":[{"type":"Ready","status":"False","reason":"Waiting"},{"type":"Synced","status":"True"}]}}}]
     }"#;
 
+    fn condition_object(kind: &str, name: &str, status: &str, reason: Option<&str>) -> Value {
+        serde_json::json!({
+            "apiVersion": "example.io/v1",
+            "kind": kind,
+            "metadata": {"name": name},
+            "status": {"conditions": [{"type": "Ready", "status": status, "reason": reason}]}
+        })
+    }
+
+    fn healthy_object(kind: &str, name: &str) -> Value {
+        condition_object(kind, name, "True", None)
+    }
+
     #[test]
     fn projects_depth_first_with_core_identity() {
         let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
@@ -649,8 +695,13 @@ mod tests {
     #[test]
     fn filter_retains_ancestors() {
         let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
-        let visible =
-            snapshot.visible_indices(&HashSet::new(), &HashSet::new(), Some("kind:secret"), None);
+        let visible = snapshot.visible_indices(
+            &HashSet::new(),
+            &HashSet::new(),
+            Some("kind:secret"),
+            None,
+            HealthFilter::All,
+        );
         assert_eq!(visible, vec![0, 1]);
     }
 
@@ -661,7 +712,13 @@ mod tests {
             group: String::new(),
             kind: "Secret".into(),
         };
-        let visible = snapshot.visible_indices(&HashSet::new(), &HashSet::new(), None, Some(&kind));
+        let visible = snapshot.visible_indices(
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            Some(&kind),
+            HealthFilter::All,
+        );
         assert_eq!(visible, vec![1]);
     }
 
@@ -677,8 +734,66 @@ mod tests {
             &HashSet::new(),
             Some("kind:secret"),
             Some(&kind),
+            HealthFilter::All,
         );
         assert_eq!(visible, vec![1]);
+    }
+
+    #[test]
+    fn health_filter_retains_ancestors_and_treats_nonhealthy_states_as_unhealthy() {
+        let trace = serde_json::json!({
+            "object": healthy_object("Root", "root"),
+            "children": [
+                {
+                    "object": healthy_object("Branch", "branch"),
+                    "children": [{
+                        "object": condition_object("Broken", "broken", "False", None)
+                    }]
+                },
+                {"object": condition_object("Warning", "warning", "False", Some("Warning"))},
+                {"object": {"apiVersion":"example.io/v1","kind":"Unknown","metadata":{"name":"unknown"}}},
+                {"object": healthy_object("Healthy", "healthy")}
+            ]
+        });
+        let snapshot = Snapshot::parse(trace.to_string().as_bytes()).unwrap();
+        let collapsed = HashSet::from([snapshot.nodes[0].identity.clone()]);
+
+        let unhealthy = snapshot.visible_indices(
+            &collapsed,
+            &HashSet::new(),
+            None,
+            None,
+            HealthFilter::Unhealthy,
+        );
+        let healthy = snapshot.visible_indices(
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            None,
+            HealthFilter::Healthy,
+        );
+
+        assert_eq!(unhealthy, vec![0, 1, 2, 3, 4]);
+        assert_eq!(healthy, vec![0, 1, 5]);
+    }
+
+    #[test]
+    fn health_filter_combines_with_kind_before_retaining_ancestors() {
+        let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
+        let kind = ResourceKind {
+            group: String::new(),
+            kind: "Secret".into(),
+        };
+
+        let visible = snapshot.visible_indices(
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            Some(&kind),
+            HealthFilter::Unhealthy,
+        );
+
+        assert_eq!(visible, vec![0, 1]);
     }
 
     #[test]
@@ -700,7 +815,8 @@ mod tests {
             kind: "Usage".into(),
         }]);
 
-        let visible = snapshot.visible_indices(&HashSet::new(), &excluded, None, None);
+        let visible =
+            snapshot.visible_indices(&HashSet::new(), &excluded, None, None, HealthFilter::All);
 
         assert_eq!(visible, vec![0, 3]);
     }
@@ -722,7 +838,8 @@ mod tests {
             kind: "Usage".into(),
         }]);
 
-        let visible = snapshot.visible_indices(&HashSet::new(), &excluded, None, None);
+        let visible =
+            snapshot.visible_indices(&HashSet::new(), &excluded, None, None, HealthFilter::All);
 
         assert_eq!(visible, vec![0, 2]);
     }
