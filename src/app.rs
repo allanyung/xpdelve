@@ -57,7 +57,7 @@ const HELP_LINES: &[&str] = &[
     "  Enter/Space       toggle expand or collapse",
     "  Right             expand or select first child",
     "  Left              collapse or select parent",
-    "  [                 collapse all",
+    "  [                 collapse all below root",
     "  ]                 expand all",
     "  z                 toggle fitted / full-width table",
     "",
@@ -1523,13 +1523,12 @@ impl App {
             (KeyCode::Char(']'), _) => self.collapsed.clear(),
             (KeyCode::Char('['), _) => {
                 if let Some(snapshot) = &self.snapshot {
-                    self.collapsed.extend(
-                        snapshot
-                            .nodes
-                            .iter()
-                            .filter(|node| node.child_count > 0)
-                            .map(|node| node.identity.clone()),
-                    );
+                    self.collapsed = snapshot
+                        .nodes
+                        .iter()
+                        .filter(|node| node.parent.is_some() && node.child_count > 0)
+                        .map(|node| node.identity.clone())
+                        .collect();
                 }
                 self.set_selection(0);
             }
@@ -3954,6 +3953,30 @@ mod tests {
         assert_eq!(app.visible().len(), 2);
         app.toggle_selected();
         assert_eq!(app.visible().len(), 1);
+    }
+
+    #[test]
+    fn collapse_all_keeps_root_expanded() {
+        let mut app = app();
+        app.apply_snapshot(
+            Snapshot::parse(
+                br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},"children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"child"}},"children":[{"object":{"apiVersion":"v1","kind":"Grandchild","metadata":{"name":"grandchild"}}}]}]}"#,
+            )
+            .unwrap(),
+        );
+        let root = app.snapshot.as_ref().unwrap().nodes[0].identity.clone();
+        let child = app.snapshot.as_ref().unwrap().nodes[1].identity.clone();
+        app.collapsed.insert(root.clone());
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+            Rect::new(0, 0, 100, 20),
+        );
+
+        assert!(!app.collapsed.contains(&root));
+        assert!(app.collapsed.contains(&child));
+        assert_eq!(app.visible(), vec![0, 1]);
+        assert_eq!(app.selected_visible, 0);
     }
 
     #[test]
