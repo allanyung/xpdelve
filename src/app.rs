@@ -38,7 +38,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::cli::Cli;
 use crate::config::{self, Config};
 use crate::kubernetes::{DeletePropagation, Kubernetes, Target};
-use crate::model::{Identity, ProjectedNode, ResourceKind, Snapshot};
+use crate::model::{HealthFilter, Identity, ProjectedNode, ResourceKind, Snapshot};
 use crate::text;
 use crate::theme::Theme;
 use crate::trace::{self, TraceRequest};
@@ -50,6 +50,11 @@ const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
 const TOAST_DURATION: Duration = Duration::from_millis(1500);
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const PALETTE_TITLE: &str = " commands & resources (↑/↓:select, Enter:apply) ";
+const HEALTH_FILTERS: [HealthFilter; 3] = [
+    HealthFilter::All,
+    HealthFilter::Unhealthy,
+    HealthFilter::Healthy,
+];
 const HELP_LINES: &[&str] = &[
     "Navigation",
     "  j/k, Up/Down      move selection",
@@ -64,6 +69,7 @@ const HELP_LINES: &[&str] = &[
     "Discovery",
     "  :                 open command palette",
     "  :exclude          exclude resource kinds",
+    "  :health           filter by resource health",
     "  /                 filter tree",
     "  f                 find text",
     "  n / N             next / previous match",
@@ -120,6 +126,7 @@ enum PaletteAction {
     FilterKind(ResourceKind),
     ClearKindFilter,
     OpenExcludePicker,
+    OpenHealthPicker,
     OpenSkinPicker,
     Quit,
 }
@@ -160,6 +167,9 @@ enum Modal {
         pressed: Option<usize>,
     },
     SkinPicker {
+        selected: usize,
+    },
+    HealthPicker {
         selected: usize,
     },
     ExcludePicker {
@@ -237,6 +247,7 @@ struct App {
     input: String,
     filter: String,
     kind_filter: Option<ResourceKind>,
+    health_filter: HealthFilter,
     palette_selected: usize,
     find: String,
     loading: bool,
@@ -280,6 +291,7 @@ impl App {
             input: String::new(),
             filter: String::new(),
             kind_filter: None,
+            health_filter: HealthFilter::All,
             palette_selected: 0,
             find: String::new(),
             loading: false,
@@ -322,6 +334,7 @@ impl App {
                 &self.excluded_kinds,
                 (!self.filter.is_empty()).then_some(self.filter.as_str()),
                 self.kind_filter.as_ref(),
+                self.health_filter,
             )
         })
     }
@@ -380,6 +393,17 @@ impl App {
                 PaletteEntry {
                     label: "exclude".into(),
                     action: PaletteAction::OpenExcludePicker,
+                },
+            ));
+        }
+        if !query.is_empty()
+            && let Some(score) = fuzzy_score("health", query)
+        {
+            entries.push((
+                score,
+                PaletteEntry {
+                    label: "health".into(),
+                    action: PaletteAction::OpenHealthPicker,
                 },
             ));
         }
@@ -465,6 +489,16 @@ impl App {
             PaletteAction::ClearKindFilter => self.kind_filter = None,
             PaletteAction::OpenExcludePicker => {
                 self.open_exclude_picker();
+                return;
+            }
+            PaletteAction::OpenHealthPicker => {
+                self.mode = InputMode::Normal;
+                self.input.clear();
+                let selected = HEALTH_FILTERS
+                    .iter()
+                    .position(|filter| *filter == self.health_filter)
+                    .unwrap_or_default();
+                self.modal = Some(Modal::HealthPicker { selected });
                 return;
             }
             PaletteAction::OpenSkinPicker => {
@@ -1101,6 +1135,7 @@ impl App {
                 Modal::Delete { .. }
                 | Modal::Finalizers { .. }
                 | Modal::SkinPicker { .. }
+                | Modal::HealthPicker { .. }
                 | Modal::ExcludePicker { .. },
             ) => false,
             None => {
@@ -1292,6 +1327,23 @@ impl App {
                         let name = crate::theme::BUILTIN_NAMES[*selected].to_owned();
                         self.modal = None;
                         self.apply_skin(&name);
+                    }
+                    _ => {}
+                },
+                Modal::HealthPicker { selected } => match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        *selected = (*selected + 1) % HEALTH_FILTERS.len();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        *selected = selected.checked_sub(1).unwrap_or(HEALTH_FILTERS.len() - 1);
+                    }
+                    KeyCode::Enter => {
+                        self.health_filter = HEALTH_FILTERS[*selected];
+                        self.status =
+                            format!("Health filter: {}", health_filter_label(self.health_filter));
+                        self.modal = None;
+                        self.set_selection(0);
                     }
                     _ => {}
                 },
@@ -1547,6 +1599,7 @@ impl App {
                 self.filter.clear();
                 self.find.clear();
                 self.kind_filter = None;
+                self.health_filter = HealthFilter::All;
                 self.set_selection(self.selected_visible);
             }
             (KeyCode::Char('?'), _) => {
@@ -2142,6 +2195,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
                     .unwrap_or(u16::MAX)
                     .saturating_add(2),
             ),
+            Modal::HealthPicker { .. } => centered(area, 58, 5),
             Modal::ExcludePicker { kinds, .. } => exclude_picker_area(area, kinds.len()),
         };
         render_modal(frame, modal_area, modal, &app.theme);
@@ -2280,6 +2334,17 @@ fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
         lines.push(Line::styled(content, style));
     }
+    if visible.is_empty() {
+        let message = if app.health_filter == HealthFilter::All {
+            "No resources match the active filters".to_owned()
+        } else {
+            format!(
+                "No resources match Health: {}",
+                health_filter_label(app.health_filter)
+            )
+        };
+        lines.push(Line::styled(message, app.theme.subtle()));
+    }
     let title = format!(" Resources ({}/{}) ", visible.len(), snapshot.nodes.len());
     frame.render_widget(
         Paragraph::new(lines).block(bordered_block(title, &app.theme)),
@@ -2329,7 +2394,7 @@ fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
             &plan.row(
                 snapshot,
                 node,
-                app.kind_filter.is_none(),
+                app.kind_filter.is_none() || app.health_filter != HealthFilter::All,
                 app.collapsed.contains(&node.identity),
             ),
             0,
@@ -2398,6 +2463,14 @@ fn resource_kind_label(kind: &ResourceKind, qualified: bool) -> String {
         &kind.group
     };
     format!("{}.{group}", kind.kind)
+}
+
+fn health_filter_label(filter: HealthFilter) -> &'static str {
+    match filter {
+        HealthFilter::All => "All",
+        HealthFilter::Unhealthy => "Unhealthy",
+        HealthFilter::Healthy => "Healthy",
+    }
 }
 
 fn render_resource_missing(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -2821,6 +2894,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         InputMode::Find => format!(" Find: {}_", app.input),
         InputMode::Normal | InputMode::Help
             if app.kind_filter.is_some()
+                || app.health_filter != HealthFilter::All
                 || !app.excluded_kinds.is_empty()
                 || !app.filter.is_empty()
                 || !app.find.is_empty() =>
@@ -2828,6 +2902,12 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             let mut active = Vec::new();
             if let Some(kind) = &app.kind_filter {
                 active.push(format!("Kind: {}", app.kind_filter_label(kind)));
+            }
+            if app.health_filter != HealthFilter::All {
+                active.push(format!(
+                    "Health: {}",
+                    health_filter_label(app.health_filter)
+                ));
             }
             if !app.excluded_kinds.is_empty() {
                 let mut excluded = app
@@ -2886,6 +2966,7 @@ fn palette_list_item<'a>(entry: &'a PaletteEntry, theme: &Theme) -> ListItem<'a>
         PaletteAction::FilterKind(_) => ListItem::new(format!("  {}", entry.label)),
         PaletteAction::ClearKindFilter
         | PaletteAction::OpenExcludePicker
+        | PaletteAction::OpenHealthPicker
         | PaletteAction::OpenSkinPicker
         | PaletteAction::Quit => ListItem::new(Line::from(vec![
             Span::raw("  "),
@@ -3178,6 +3259,21 @@ fn render_modal(frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal, theme
                     " Skins (↑/↓:select, Enter:apply, Esc:cancel) ",
                     theme,
                 ))
+                .highlight_style(theme.selected_row());
+            frame.render_stateful_widget(list, area, &mut state);
+        }
+        Modal::HealthPicker { selected } => {
+            let mut state = ListState::default().with_selected(Some(*selected));
+            let items = HEALTH_FILTERS
+                .iter()
+                .map(|filter| ListItem::new(format!("  {}", health_filter_label(*filter))))
+                .collect::<Vec<_>>();
+            let list = List::new(items)
+                .block(bordered_block(
+                    " Health filter (↑/↓:select, Enter:apply, Esc:cancel) ",
+                    theme,
+                ))
+                .highlight_symbol("● ")
                 .highlight_style(theme.selected_row());
             frame.render_stateful_widget(list, area, &mut state);
         }
@@ -4221,6 +4317,52 @@ mod tests {
         assert!(rendered.contains("Skins"));
         assert!(rendered.contains("catppuccin-mocha"));
         assert!(rendered.contains("nord"));
+    }
+
+    #[test]
+    fn health_palette_command_filters_unhealthy_resources_with_ancestors() {
+        let mut app = app();
+        let trace = serde_json::json!({
+            "object": {
+                "apiVersion": "v1", "kind": "Root", "metadata": {"name": "root"},
+                "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+            },
+            "children": [
+                {"object": {
+                    "apiVersion": "v1", "kind": "Broken", "metadata": {"name": "broken"},
+                    "status": {"conditions": [{"type": "Ready", "status": "False"}]}
+                }},
+                {"object": {
+                    "apiVersion": "v1", "kind": "Healthy", "metadata": {"name": "healthy"},
+                    "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+                }}
+            ]
+        });
+        app.apply_snapshot(Snapshot::parse(trace.to_string().as_bytes()).unwrap());
+        let area = Rect::new(0, 0, 100, 24);
+        for key in [':', 'h', 'e', 'a', 'l', 't', 'h'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        }
+
+        let entries = app.palette_entries();
+        assert_eq!(entries[0].action, PaletteAction::OpenHealthPicker);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        assert!(matches!(
+            app.modal,
+            Some(Modal::HealthPicker { selected: 0 })
+        ));
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+        assert_eq!(app.health_filter, HealthFilter::Unhealthy);
+        assert_eq!(app.visible(), vec![0, 1]);
+        assert_eq!(app.selected_visible, 0);
+        assert!(app.modal.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        assert_eq!(app.health_filter, HealthFilter::All);
+        assert_eq!(app.visible(), vec![0, 1, 2]);
     }
 
     #[test]

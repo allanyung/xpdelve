@@ -72,6 +72,7 @@ is a separate exact-match filter and does not retain non-matching ancestors.
 | --- | --- |
 | `:clear` | Remove the active kind filter; an independent `/` text filter remains active |
 | `:exclude` | Choose resource kinds to hide for the current session |
+| `:health` | Show all resources, only healthy resources, or resources requiring attention |
 | `:skin` | Open the built-in theme picker; applying a theme also saves it to the active configuration file |
 | `:quit` | Exit xpdelve through the normal shutdown path |
 
@@ -86,6 +87,12 @@ to show only the highlighted kind. Enter applies the staged choices; Esc or `q`
 cancels them. Hiding a kind also hides the complete subtree below each matching
 resource. Exclusions survive trace refreshes but last only for the current
 xpdelve session.
+
+The health picker offers `All`, `Unhealthy`, and `Healthy`. `Unhealthy` includes
+warning and unknown states so resources requiring attention are not omitted.
+Matching resources retain their ancestor paths for tree context. Health filters
+combine with text and kind filters, remain active across trace refreshes, and
+are cleared with the other filters by Esc from the main view.
 
 In the theme picker, Up/Down or `j`/`k` changes the selection, Enter applies and
 saves it, and Esc or `q` cancels. The active configuration file defaults to
