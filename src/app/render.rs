@@ -607,12 +607,18 @@ pub(super) fn object_cell_with_tree_state(
     show_tree_prefix: bool,
     collapsed: bool,
 ) -> String {
-    let prefix = if show_tree_prefix {
+    let mut prefix = if show_tree_prefix {
         tree_prefix(snapshot, node, ascii)
     } else {
         String::new()
     };
+    let leaf_with_tree_prefix = node.child_count == 0 && !prefix.is_empty();
+    if leaf_with_tree_prefix {
+        prefix.pop();
+    }
     let disclosure = match (node.child_count > 0, collapsed, ascii) {
+        (false, _, true) if leaf_with_tree_prefix => "-- ",
+        (false, _, false) if leaf_with_tree_prefix => "── ",
         (false, _, _) => "  ",
         (true, true, true) => "+ ",
         (true, false, true) => "- ",

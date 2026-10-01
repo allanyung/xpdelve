@@ -224,7 +224,7 @@ fn unicode_tree_uses_disconnected_xpdig_indentation() {
     let snapshot = app.snapshot.as_ref().unwrap();
     let child = &snapshot.nodes[1];
     let cell = object_cell_with_state(snapshot, child, false);
-    assert!(cell.starts_with("└─   Child/child"));
+    assert!(cell.starts_with("└─── Child/child"));
 
     let root = &snapshot.nodes[0];
     let cell = object_cell_with_state(snapshot, root, false);
@@ -247,7 +247,7 @@ fn ascii_tree_uses_fixed_width_disclosure_indicators() {
 
     let expanded = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
     assert!(expanded.lines[1].starts_with("- Root/root"));
-    assert!(expanded.lines[2].starts_with("`-   Child/child"));
+    assert!(expanded.lines[2].starts_with("`--- Child/child"));
 
     app.toggle_selected();
     let collapsed = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
