@@ -19,8 +19,9 @@
 
 Expandable rows reserve a fixed disclosure slot immediately before the resource
 name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-` and
-`+`. Leaves keep the same slot blank, so toggling a row never shifts resource
-names or table columns.
+`+`. A leaf's tree branch extends through the same slot, so toggling a row never
+shifts resource names or table columns while leaf rows remain visually connected
+to the tree.
 
 ## Discovery
 
