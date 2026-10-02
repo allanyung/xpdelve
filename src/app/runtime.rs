@@ -1,3 +1,4 @@
+use super::events::{FRAME_INTERVAL, InputView, WheelBatch, WheelInput};
 use super::render::render;
 use super::terminal::TerminalGuard;
 use super::*;
@@ -22,17 +23,22 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     refresh.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut app = App::new(resource, config, cli, theme);
     let mut active = None;
+    let mut wheel_input = WheelInput::default();
+    let mut input_view = InputView::of(&app);
+    let mut next_frame = time::Instant::now();
+    let mut dirty = true;
     connect_kubernetes(cli, &sender);
     request_refresh(&mut app, cli, &sender, &mut active, true);
 
     while !app.quit {
         update_refresh_interval(&mut refresh, app.config.interval());
         app.apply_deferred_snapshot();
+        let current_view = InputView::of(&app);
+        if current_view != input_view {
+            wheel_input.view_changed(Instant::now());
+            input_view = current_view;
+        }
         terminal.set_mouse_capture(app.captures_mouse())?;
-        terminal.terminal.draw(|frame| {
-            app.clamp_tree_horizontal_scroll(frame.area());
-            render(frame, &app);
-        })?;
         let toast_active = app.toast.is_some();
         let toast_delay = app
             .toast
@@ -41,9 +47,35 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                 toast.expires_at.saturating_duration_since(Instant::now())
             });
         tokio::select! {
+            _ = time::sleep_until(next_frame) => {
+                let started = Instant::now();
+                if let Some(batch) = wheel_input.take() {
+                    apply_wheel_batch(&mut app, &mut terminal, batch)?;
+                    dirty = true;
+                }
+                if dirty {
+                    terminal.terminal.draw(|frame| {
+                        app.clamp_tree_horizontal_scroll(frame.area());
+                        render(frame, &app);
+                    })?;
+                    dirty = false;
+                }
+                wheel_input.exclude_draw_time(started, Instant::now());
+                // Always leave time to consume input after a slow draw. An
+                // overdue repeating timer could otherwise monopolize the loop.
+                next_frame = time::Instant::now() + FRAME_INTERVAL;
+            }
             event = events.next() => {
                 let Some(event) = event else { break };
-                match event.context("failed to read terminal event")? {
+                let event = event.context("failed to read terminal event")?;
+                let (batch, event) = wheel_input.push(event, Instant::now());
+                if let Some(batch) = batch {
+                    apply_wheel_batch(&mut app, &mut terminal, batch)?;
+                    dirty = true;
+                }
+                let Some(event) = event else { continue };
+                dirty = true;
+                match event {
                     TerminalEvent::Key(key) => {
                         let area = terminal.terminal.size()?;
                         match app.handle_key(key, area.into()) {
@@ -98,6 +130,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                 }
             }
             Some(event) = receiver.recv() => {
+                dirty = true;
                 match event {
                     AppEvent::TraceFinished { generation, result } if generation == app.generation => {
                         active = None;
@@ -152,9 +185,11 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
             }
             _ = refresh.tick(), if !app.no_watch && !app.paused && !app.loading && !app.resource_missing => {
                 request_refresh(&mut app, cli, &sender, &mut active, false);
+                dirty = true;
             }
             _ = time::sleep(toast_delay), if toast_active => {
                 app.toast = None;
+                dirty = true;
             }
         }
     }
@@ -162,6 +197,16 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
         token.cancel();
         time::sleep(Duration::from_millis(800)).await;
     }
+    Ok(())
+}
+
+fn apply_wheel_batch(app: &mut App, terminal: &mut TerminalGuard, batch: WheelBatch) -> Result<()> {
+    let area = terminal.terminal.size()?;
+    let action = app.handle_mouse_events(batch.mouse, batch.count, area.into());
+    debug_assert!(
+        action.is_none(),
+        "wheel events must not dispatch resource actions"
+    );
     Ok(())
 }
 

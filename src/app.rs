@@ -60,6 +60,7 @@ const HELP_LINES: &[&str] = &[
     "Navigation",
     "  j/k, Up/Down      move selection",
     "  PgUp/PgDn         move one page",
+    "  Mouse wheel       scroll vertically",
     "  Enter             show resource problem details",
     "  Right             expand or select first child",
     "  Left              collapse or select parent",
@@ -147,7 +148,7 @@ struct PaletteEntry {
 enum Modal {
     Text {
         title: String,
-        content: String,
+        content: content::TextContent,
         kind: ContentKind,
         wrapped: bool,
         vertical_scroll: u16,
@@ -286,6 +287,8 @@ struct App {
     last_tree_click: Option<TreeClick>,
 }
 
+mod content;
+mod events;
 mod input;
 mod render;
 mod runtime;

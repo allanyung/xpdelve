@@ -1799,6 +1799,103 @@ fn tree_pins_and_caps_long_unicode_objects_for_both_schemas() {
 }
 
 #[test]
+fn tree_vertical_wheel_moves_selection_scrolls_and_clamps() {
+    let mut app = app();
+    let children: Vec<_> = (0..20)
+        .map(|index| {
+            serde_json::json!({"object": {
+                "apiVersion": "v1", "kind": "Child", "metadata": {"name": format!("child-{index}")}
+            }})
+        })
+        .collect();
+    let trace = serde_json::json!({
+        "object": {"apiVersion": "v1", "kind": "Root", "metadata": {"name": "root"}},
+        "children": children
+    });
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    let area = Rect::new(0, 0, 50, 10);
+    let tree_area = resource_tree_area(area).unwrap();
+    let event = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: tree_area.x + 1,
+        row: tree_area.y + 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            ..event
+        },
+        area,
+    );
+    assert!(app.tree_selection.is_some());
+    app.last_tree_click = Some(TreeClick {
+        identity: app.selected_identity.clone().unwrap(),
+        at: Instant::now(),
+    });
+    assert!(app.handle_mouse(event, area).is_none());
+    assert_eq!(app.selected_visible, 3);
+    assert!(app.tree_selection.is_none());
+    assert!(app.last_tree_click.is_none());
+    app.handle_mouse(event, area);
+    assert_eq!(app.selected_visible, 6);
+    assert!(app.resource_scroll > 0);
+    assert_eq!(
+        app.selected_identity,
+        Some(app.selected_node().unwrap().identity.clone())
+    );
+    let rendered = rendered_tree(&app, tree_area).unwrap();
+    assert!(rendered.start <= app.selected_visible);
+    assert!(app.selected_visible < rendered.start + rendered.row_count);
+    for _ in 0..20 {
+        app.handle_mouse(event, area);
+    }
+    assert_eq!(app.selected_visible, 20);
+    for _ in 0..20 {
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..event
+            },
+            area,
+        );
+    }
+    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.resource_scroll, 0);
+    assert_eq!(app.resource_horizontal_scroll, 0);
+}
+
+#[test]
+fn tree_vertical_wheel_ignores_outside_pointer_and_blocked_views() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let event = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 20,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(MouseEvent { row: 0, ..event }, area);
+    app.handle_mouse(
+        MouseEvent {
+            column: area.right(),
+            ..event
+        },
+        area,
+    );
+    app.mode = InputMode::Command;
+    app.handle_mouse(event, area);
+    app.mode = InputMode::Normal;
+    app.resource_missing = true;
+    app.handle_mouse(event, area);
+    app.resource_missing = false;
+    app.snapshot = None;
+    app.handle_mouse(event, area);
+    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.resource_scroll, 0);
+}
+
+#[test]
 fn tree_horizontal_wheel_ignores_other_views_and_outside_pointer() {
     let mut app = app();
     let area = Rect::new(0, 0, 50, 16);
@@ -2739,6 +2836,175 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
 }
 
 #[test]
+fn help_mouse_wheel_scrolls_and_clamps_without_a_snapshot() {
+    let mut app = app();
+    app.snapshot = None;
+    app.mode = InputMode::Help;
+    assert!(app.captures_mouse());
+    let area = Rect::new(0, 0, 100, 24);
+    let help_area = centered(area, 72, 20);
+    let event = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: help_area.x + 1,
+        row: help_area.y + 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(
+        MouseEvent {
+            column: 0,
+            row: 0,
+            ..event
+        },
+        area,
+    );
+    assert_eq!(app.help_scroll, 0);
+    app.handle_mouse(event, area);
+    assert_eq!(app.help_scroll, 3);
+    app.handle_mouse(
+        MouseEvent {
+            modifiers: KeyModifiers::SHIFT,
+            ..event
+        },
+        area,
+    );
+    assert_eq!(app.help_scroll, 3);
+    for _ in 0..30 {
+        app.handle_mouse(event, area);
+    }
+    assert_eq!(
+        app.help_scroll,
+        (HELP_LINES.len() as u16) - (help_area.height - 3)
+    );
+    for _ in 0..30 {
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..event
+            },
+            area,
+        );
+    }
+    assert_eq!(app.help_scroll, 0);
+    assert_eq!(app.mode, InputMode::Help);
+}
+
+#[test]
+fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
+    let area = Rect::new(0, 0, 40, 10);
+    for kind in [
+        ContentKind::Yaml,
+        ContentKind::Describe,
+        ContentKind::Events,
+        ContentKind::Error,
+        ContentKind::SmallError,
+    ] {
+        for wrapped in [false, true] {
+            let mut app = app();
+            let content = (0..20)
+                .map(|index| format!("line {index}: {}", "word ".repeat(20)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let body = content_modal_body(area, kind);
+            let max_scroll = visual_rows(&content, body.width, wrapped)
+                .len()
+                .saturating_sub(usize::from(body.height)) as u16;
+            app.modal = Some(Modal::Text {
+                title: "content".into(),
+                content: content.into(),
+                kind,
+                wrapped,
+                vertical_scroll: 0,
+                horizontal_scroll: 0,
+                query: String::new(),
+                search_input: None,
+                selection: None,
+            });
+            let event = MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: body.x,
+                row: body.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.handle_mouse(
+                MouseEvent {
+                    row: area.bottom(),
+                    ..event
+                },
+                area,
+            );
+            assert!(matches!(
+                app.modal,
+                Some(Modal::Text {
+                    vertical_scroll: 0,
+                    ..
+                })
+            ));
+            app.handle_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    ..event
+                },
+                area,
+            );
+            assert!(matches!(
+                app.modal,
+                Some(Modal::Text {
+                    selection: Some(_),
+                    ..
+                })
+            ));
+            assert!(app.handle_mouse(event, area).is_none());
+            assert!(matches!(
+                app.modal,
+                Some(Modal::Text {
+                    vertical_scroll: 3,
+                    selection: None,
+                    ..
+                })
+            ));
+            app.handle_mouse(
+                MouseEvent {
+                    modifiers: KeyModifiers::SHIFT,
+                    ..event
+                },
+                area,
+            );
+            assert!(matches!(
+                app.modal,
+                Some(Modal::Text {
+                    vertical_scroll: 3,
+                    ..
+                })
+            ));
+            for _ in 0..100 {
+                app.handle_mouse(event, area);
+            }
+            assert!(
+                matches!(app.modal, Some(Modal::Text { vertical_scroll, .. }) if vertical_scroll == max_scroll)
+            );
+            for _ in 0..100 {
+                app.handle_mouse(
+                    MouseEvent {
+                        kind: MouseEventKind::ScrollUp,
+                        ..event
+                    },
+                    area,
+                );
+            }
+            assert!(matches!(
+                app.modal,
+                Some(Modal::Text {
+                    vertical_scroll: 0,
+                    horizontal_scroll: 0,
+                    ..
+                })
+            ));
+            assert_eq!(app.selected_visible, 0);
+        }
+    }
+}
+
+#[test]
 fn content_mouse_drag_copies_selected_source_text() {
     let area = Rect::new(0, 0, 40, 10);
     for content_kind in [
@@ -3279,10 +3545,137 @@ fn narrow_package_table_keeps_health_columns_reachable() {
 }
 
 #[test]
+fn yaml_scroll_flood_escape_and_following_keys_do_not_scroll_the_tree() {
+    use super::events::{InputView, WheelInput};
+
+    let mut app = app();
+    app.finish_action(
+        "YAML: Root/root",
+        None,
+        Ok(Some("key: value\n".repeat(2_000))),
+    );
+    let area = Rect::new(0, 0, 50, 16);
+    let mouse = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 20,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    let now = Instant::now();
+    let mut input = WheelInput::default();
+    for _ in 0..50_000 {
+        let (batch, event) = input.push(TerminalEvent::Mouse(mouse), now);
+        assert!(batch.is_none());
+        assert!(event.is_none());
+    }
+    let before = InputView::of(&app);
+    let (batch, event) = input.push(
+        TerminalEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        now,
+    );
+    let batch = batch.unwrap();
+    app.handle_mouse_events(batch.mouse, batch.count, area);
+    let Some(TerminalEvent::Key(key)) = event else {
+        panic!("lost Escape")
+    };
+    app.handle_key(key, area);
+    assert!(app.modal.is_none());
+    assert_ne!(before, InputView::of(&app));
+    input.view_changed(now);
+    for _ in 0..10_000 {
+        let (batch, event) = input.push(TerminalEvent::Mouse(mouse), now);
+        assert!(batch.is_none());
+        assert!(event.is_none());
+    }
+    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.resource_scroll, 0);
+    for code in [KeyCode::Down, KeyCode::Char('q')] {
+        let (batch, event) = input.push(
+            TerminalEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            now,
+        );
+        assert!(batch.is_none());
+        let Some(TerminalEvent::Key(key)) = event else {
+            panic!("lost subsequent key")
+        };
+        app.handle_key(key, area);
+    }
+    assert_eq!(app.selected_visible, 1);
+    assert!(app.quit);
+}
+
+#[test]
+fn coalesced_wheels_match_individual_wheels_in_tree_help_and_yaml() {
+    let area = Rect::new(0, 0, 50, 16);
+    for view in 0..3 {
+        let mut individual = app();
+        let mut batched = app();
+        for app in [&mut individual, &mut batched] {
+            if view == 1 {
+                app.mode = InputMode::Help;
+            } else if view == 2 {
+                app.finish_action(
+                    "YAML: Root/root",
+                    None,
+                    Ok(Some("key: value\n".repeat(200))),
+                );
+            }
+        }
+        for (kind, modifiers) in [
+            (MouseEventKind::ScrollDown, KeyModifiers::NONE),
+            (MouseEventKind::ScrollUp, KeyModifiers::NONE),
+            (MouseEventKind::ScrollDown, KeyModifiers::SHIFT),
+            (MouseEventKind::ScrollRight, KeyModifiers::NONE),
+            (MouseEventKind::ScrollLeft, KeyModifiers::NONE),
+        ] {
+            let mouse = MouseEvent {
+                kind,
+                modifiers,
+                column: 20,
+                row: 3,
+            };
+            for _ in 0..30 {
+                individual.handle_mouse(mouse, area);
+            }
+            batched.handle_mouse_events(mouse, 30, area);
+            assert_eq!(individual.selected_visible, batched.selected_visible);
+            assert_eq!(individual.resource_scroll, batched.resource_scroll);
+            assert_eq!(
+                individual.resource_horizontal_scroll,
+                batched.resource_horizontal_scroll
+            );
+            assert_eq!(individual.help_scroll, batched.help_scroll);
+            if let (
+                Some(Modal::Text {
+                    vertical_scroll: a, ..
+                }),
+                Some(Modal::Text {
+                    vertical_scroll: b, ..
+                }),
+            ) = (&individual.modal, &batched.modal)
+            {
+                assert_eq!(a, b);
+            }
+        }
+    }
+}
+
+#[test]
+fn replacing_a_text_document_is_an_input_view_boundary() {
+    let mut app = app();
+    app.finish_action("YAML: Root/root", None, Ok(Some("key: old".into())));
+    let old_view = events::InputView::of(&app);
+    app.finish_action("YAML: Root/root", None, Ok(Some("key: new".into())));
+    assert_ne!(old_view, events::InputView::of(&app));
+}
+
+#[test]
 fn modal_scroll_is_clamped_to_last_viewport() {
-    assert_eq!(modal_max_vertical("one\ntwo\nthree\nfour", 80, 2, false), 2);
-    assert_eq!(modal_max_vertical("0123456789", 5, 1, true), 1);
-    assert_eq!(modal_max_horizontal("0123456789", 6), 4);
+    let content = content::TextContent::from("one\ntwo\nthree\nfour");
+    assert_eq!(content.scroll_bounds(80, 2, false).0, 2);
+    let content = content::TextContent::from("0123456789");
+    assert_eq!(content.scroll_bounds(5, 1, true).0, 1);
+    assert_eq!(content.scroll_bounds(6, 1, false).1, 4);
 }
 
 #[test]
