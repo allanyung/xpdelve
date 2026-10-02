@@ -236,6 +236,21 @@ impl Theme {
         }
     }
 
+    pub fn text_selection(&self, base: Style) -> Style {
+        if self.colors_enabled {
+            Style::default()
+                .fg(self.palette.base)
+                .bg(self.palette.yellow)
+                .bold()
+        } else if base.add_modifier.contains(Modifier::REVERSED) {
+            Style::default()
+                .remove_modifier(Modifier::REVERSED)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        }
+    }
+
     pub fn danger(&self) -> Style {
         self.fg(self.palette.red).bold()
     }

@@ -966,6 +966,38 @@ fn monochrome_selected_row_uses_reverse_without_palette_colors() {
 }
 
 #[test]
+fn text_selection_is_visible_on_selected_row() {
+    let mut app = app();
+    let tree_area = resource_tree_area(Rect::new(0, 0, 100, 16)).unwrap();
+    let rendered = rendered_tree(&app, tree_area).unwrap();
+    let root_start = rendered.lines[0].len() + 1;
+    app.tree_selection = Some(TreeSelection {
+        text: TextSelection {
+            anchor: SelectionPoint {
+                start: root_start,
+                end: root_start + 1,
+            },
+            focus: SelectionPoint {
+                start: root_start + 3,
+                end: root_start + 4,
+            },
+            dragged: true,
+        },
+        content: rendered.content,
+        area: tree_area,
+        selecting: false,
+    });
+
+    let backend = TestBackend::new(100, 16);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    assert_eq!(buffer.cell((1, 3)).unwrap().bg, app.theme.palette.yellow);
+    assert_eq!(buffer.cell((5, 3)).unwrap().bg, app.theme.palette.lavender);
+}
+
+#[test]
 fn inspection_content_views_use_the_full_terminal() {
     let area = Rect::new(0, 0, 100, 40);
     assert_eq!(content_modal_area(area, ContentKind::Yaml), area);
@@ -1496,6 +1528,86 @@ fn tree_mouse_drag_copies_displayed_text() {
         Some("Root".into())
     );
     assert!(app.tree_selection.is_some());
+}
+
+#[test]
+fn tree_refresh_does_not_interrupt_mouse_selection() {
+    for changed in [false, true] {
+        let mut app = app();
+        let area = Rect::new(0, 0, 80, 12);
+        let tree_area = resource_tree_area(area).unwrap();
+        let body = Block::default().borders(Borders::ALL).inner(tree_area);
+        let original = rendered_tree(&app, tree_area).unwrap().content;
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column: body.x + column,
+            row: body.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        let snapshot = app.snapshot.as_ref().unwrap().as_ref().clone();
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2), area);
+        app.apply_snapshot(snapshot.clone());
+        assert!(app.tree_selection.is_some());
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5), area);
+
+        let latest = if changed {
+            Snapshot::parse(
+                br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"renamed"}}}"#,
+            )
+            .unwrap()
+        } else {
+            snapshot
+        };
+        let latest_count = latest.nodes.len();
+        app.apply_snapshot(latest);
+        assert_eq!(rendered_tree(&app, tree_area).unwrap().content, original);
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((body.x + 2, body.y + 1))
+                .unwrap()
+                .bg,
+            app.theme.palette.yellow
+        );
+
+        assert_eq!(
+            copied_mouse_text(
+                app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5), area)
+            ),
+            Some("Root".into())
+        );
+        assert!(app.deferred_snapshot.is_none());
+        assert_eq!(app.snapshot.as_ref().unwrap().nodes.len(), latest_count);
+        assert_eq!(app.tree_selection.is_some(), !changed);
+    }
+}
+
+#[test]
+fn completed_tree_selection_survives_unchanged_refresh() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 80, 12);
+    let body = Block::default()
+        .borders(Borders::ALL)
+        .inner(resource_tree_area(area).unwrap());
+    let mouse = |kind, column| MouseEvent {
+        kind,
+        column: body.x + column,
+        row: body.y + 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2), area);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5), area);
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5), area);
+    let selection = app.tree_selection.clone();
+
+    app.apply_snapshot(app.snapshot.as_ref().unwrap().as_ref().clone());
+
+    assert_eq!(app.tree_selection, selection);
+    assert!(app.deferred_snapshot.is_none());
 }
 
 #[test]

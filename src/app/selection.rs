@@ -228,8 +228,9 @@ pub(super) fn render_text_selection(
                 if screen_column >= body.width {
                     continue;
                 }
-                frame.buffer_mut()[(body.x + screen_column, body.y + screen_row as u16)]
-                    .set_style(theme.selected_row());
+                let cell =
+                    &mut frame.buffer_mut()[(body.x + screen_column, body.y + screen_row as u16)];
+                cell.set_style(theme.text_selection(cell.style()));
             }
         }
     }
