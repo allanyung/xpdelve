@@ -210,10 +210,55 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         Paragraph::new(lines).block(bordered_block(title, &app.theme)),
         area,
     );
+    let horizontal = rendered.horizontal;
+    let body = Block::default().borders(Borders::ALL).inner(area);
+    if horizontal.pinned_width >= 2 {
+        let divider_column = body.x + horizontal.pinned_width as u16 - 2;
+        for row in 0..=rendered.row_count {
+            if let Some(cell) = frame
+                .buffer_mut()
+                .cell_mut((divider_column, body.y + row as u16))
+            {
+                cell.set_style(app.theme.subtle());
+            }
+        }
+    }
+    if horizontal.max_offset() > 0 && horizontal.viewport_width > 0 {
+        let scrollbar_area = Rect::new(
+            area.x + horizontal.pinned_width as u16,
+            area.y + area.height.saturating_sub(1),
+            horizontal.viewport_width as u16 + 1,
+            1,
+        );
+        let mut state = ScrollbarState::new(horizontal.max_offset() + 1)
+            .position(horizontal.offset)
+            .viewport_content_length(horizontal.viewport_width);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+                .begin_symbol(Some(if app.config.ui.ascii { "<" } else { "◀" }))
+                .end_symbol(Some(if app.config.ui.ascii { ">" } else { "▶" }))
+                .begin_style(if horizontal.offset == 0 {
+                    app.theme.subtle().add_modifier(Modifier::DIM)
+                } else {
+                    app.theme.title()
+                })
+                .end_style(if horizontal.offset == horizontal.max_offset() {
+                    app.theme.subtle().add_modifier(Modifier::DIM)
+                } else {
+                    app.theme.title()
+                })
+                .track_symbol(Some(if app.config.ui.ascii { "." } else { "·" }))
+                .track_style(app.theme.subtle())
+                .thumb_symbol(if app.config.ui.ascii { "-" } else { "▪" })
+                .thumb_style(app.theme.subtle()),
+            scrollbar_area,
+            &mut state,
+        );
+    }
     if let Some(selection) = &app.tree_selection {
         render_text_selection(
             frame,
-            Block::default().borders(Borders::ALL).inner(area),
+            body,
             &rendered.content,
             selection.text,
             0,
@@ -229,36 +274,66 @@ pub(super) struct RenderedTree {
     pub(super) content: String,
     pub(super) start: usize,
     pub(super) row_count: usize,
+    pub(super) horizontal: TreeHorizontalLayout,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TreeHorizontalLayout {
+    pub(super) pinned_width: usize,
+    pub(super) viewport_width: usize,
+    pub(super) content_width: usize,
+    pub(super) offset: usize,
+}
+
+impl TreeHorizontalLayout {
+    pub(super) fn max_offset(self) -> usize {
+        self.content_width.saturating_sub(self.viewport_width)
+    }
+
+    fn slice(self, value: &str, ascii: bool) -> String {
+        let object_width = self.pinned_width.saturating_sub(2);
+        let object = horizontal_slice(value, 0, object_width);
+        let separator = horizontal_slice(
+            if ascii { "| " } else { "│ " },
+            0,
+            self.pinned_width - object_width,
+        );
+        let tail = horizontal_slice(value, self.pinned_width + self.offset, self.viewport_width);
+        format!("{object}{separator}{tail}")
+    }
+}
+
+pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Option<TablePlan> {
+    let snapshot = app.snapshot.as_ref()?;
+    Some(TablePlan::new(
+        snapshot,
+        visible,
+        area.width.saturating_sub(2) as usize,
+        snapshot.nodes.first().is_some_and(|node| node.is_package),
+        app.config.ui.short,
+        app.config.ui.ascii,
+    ))
 }
 
 pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
     let snapshot = app.snapshot.as_ref()?;
     let visible = app.visible();
-    let package_trace = snapshot.nodes.first().is_some_and(|node| node.is_package);
     let viewport = area.height.saturating_sub(3) as usize;
     let start = app.resource_view_start(viewport);
-    let plan = TablePlan::new(
-        snapshot,
-        &visible,
-        area.width.saturating_sub(2) as usize,
-        package_trace,
-        app.config.ui.short,
-        app.full_width,
-        app.config.ui.ascii,
-    );
+    let plan = tree_table_plan(app, area, &visible)?;
+    let horizontal = plan.horizontal_layout(app.resource_horizontal_scroll);
     let mut lines = Vec::with_capacity(viewport + 1);
-    lines.push(horizontal_slice(&plan.header(), 0, plan.available));
+    lines.push(horizontal.slice(&plan.header(), app.config.ui.ascii));
     lines.extend(visible.iter().skip(start).take(viewport).map(|index| {
         let node = &snapshot.nodes[*index];
-        horizontal_slice(
+        horizontal.slice(
             &plan.row(
                 snapshot,
                 node,
                 app.kind_filter.is_none() || app.health_filter != HealthFilter::All,
                 app.collapsed.contains(&node.identity),
             ),
-            0,
-            plan.available,
+            app.config.ui.ascii,
         )
     }));
     let row_count = lines.len().saturating_sub(1);
@@ -268,6 +343,7 @@ pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
         content,
         start,
         row_count,
+        horizontal,
     })
 }
 
@@ -393,7 +469,6 @@ impl TablePlan {
         available: usize,
         package: bool,
         short: bool,
-        full_width: bool,
         ascii: bool,
     ) -> Self {
         let object = visible
@@ -401,7 +476,8 @@ impl TablePlan {
             .map(|index| object_cell(snapshot, &snapshot.nodes[*index], ascii).width())
             .max()
             .unwrap_or(6)
-            .max("OBJECT".len());
+            .max("OBJECT".len())
+            .min(available / 2);
         let group = visible
             .iter()
             .map(|index| group_cell(&snapshot.nodes[*index]).width())
@@ -409,89 +485,74 @@ impl TablePlan {
             .unwrap_or(5)
             .max("GROUP".len());
         let timestamps = !short;
-        let fixed = if package {
-            if timestamps { 78 } else { 44 }
-        } else if timestamps {
-            53
+        let version = if package {
+            visible
+                .iter()
+                .filter_map(|index| snapshot.nodes[*index].version.as_deref())
+                .map(UnicodeWidthStr::width)
+                .max()
+                .unwrap_or_default()
+                .max("VERSION".len())
         } else {
-            19
+            0
         };
-        let group_width = if package { 0 } else { group };
-        let minimum_status = 1;
-        let mut plan = Self {
+        let state = if package {
+            visible
+                .iter()
+                .filter_map(|index| snapshot.nodes[*index].state.as_deref())
+                .map(UnicodeWidthStr::width)
+                .max()
+                .unwrap_or_default()
+                .max("STATE".len())
+        } else {
+            0
+        };
+        let status = visible
+            .iter()
+            .map(|index| snapshot.nodes[*index].status.width())
+            .max()
+            .unwrap_or(6)
+            .max("STATUS".len());
+        Self {
             available,
             object,
             group,
-            status: minimum_status,
+            status,
             package,
             timestamps,
-            version: usize::from(package) * 10,
-            state: usize::from(package) * 8,
+            version,
+            state,
             ascii,
-        };
-        if !full_width && object + group_width + fixed + minimum_status > available {
-            plan.timestamps = false;
         }
-        if !full_width && package && object + plan.fixed_width() + minimum_status > available {
-            plan.version = 0;
-        }
-        if !full_width && package && object + plan.fixed_width() + minimum_status > available {
-            plan.state = 0;
-        }
-        let fixed = plan.fixed_width();
-        if full_width {
-            if package {
-                plan.version = visible
-                    .iter()
-                    .filter_map(|index| snapshot.nodes[*index].version.as_deref())
-                    .map(UnicodeWidthStr::width)
-                    .max()
-                    .unwrap_or_default()
-                    .max("VERSION".len());
-                plan.state = visible
-                    .iter()
-                    .filter_map(|index| snapshot.nodes[*index].state.as_deref())
-                    .map(UnicodeWidthStr::width)
-                    .max()
-                    .unwrap_or_default()
-                    .max("STATE".len());
-            }
-            plan.status = visible
-                .iter()
-                .map(|index| snapshot.nodes[*index].status.width())
-                .max()
-                .unwrap_or(6)
-                .max("STATUS".len());
-            return plan;
-        }
-        let mut overflow = object + group_width + fixed + minimum_status;
-        if overflow > available {
-            let reducible = if package { 0 } else { group.saturating_sub(4) };
-            let reduction = reducible.min(overflow - available);
-            plan.group -= reduction;
-            overflow -= reduction;
-        }
-        if overflow > available {
-            let reducible = object.saturating_sub(4);
-            let reduction = reducible.min(overflow - available);
-            plan.object -= reduction;
-        }
-        let group_width = if package { 0 } else { plan.group };
-        plan.status = available
-            .saturating_sub(plan.object + group_width + fixed)
-            .max(1);
-        plan
     }
 
     pub(super) fn fixed_width(&self) -> usize {
         if self.package {
-            let displayed = 3 + usize::from(self.version > 0) + usize::from(self.state > 0);
+            let displayed = 3
+                + usize::from(self.version > 0)
+                + usize::from(self.state > 0)
+                + usize::from(self.timestamps) * 2;
             let widths = 9 + 7 + if self.timestamps { 30 } else { 0 } + self.version + self.state;
             widths + displayed * 2
         } else if self.timestamps {
             53
         } else {
             19
+        }
+    }
+
+    pub(super) fn horizontal_layout(&self, offset: usize) -> TreeHorizontalLayout {
+        let pinned_width = (self.object + 2).min(self.available);
+        let viewport_width = self.available.saturating_sub(pinned_width);
+        let group = if self.package { 0 } else { self.group };
+        let content_width =
+            (self.object + group + self.fixed_width() + self.status).saturating_sub(pinned_width);
+        let max_offset = content_width.saturating_sub(viewport_width);
+        TreeHorizontalLayout {
+            pinned_width,
+            viewport_width,
+            content_width,
+            offset: offset.min(max_offset),
         }
     }
 
@@ -702,21 +763,27 @@ pub(super) fn compact_object(value: &str, width: usize) -> String {
     format!("{marker}…{suffix}")
 }
 
-pub(super) fn horizontal_slice(value: &str, offset: u16, width: usize) -> String {
-    let mut skipped = 0;
-    let mut used = 0;
+pub(super) fn horizontal_slice(value: &str, offset: usize, width: usize) -> String {
+    let mut position = 0;
+    let end = offset.saturating_add(width);
     let mut result = String::new();
-    for character in value.chars() {
-        let character_width = character.width().unwrap_or(0);
-        if skipped + character_width <= usize::from(offset) {
-            skipped += character_width;
+    for grapheme in value.graphemes(true) {
+        let next = position + grapheme.width();
+        if next <= offset {
+            position = next;
             continue;
         }
-        if used + character_width > width {
+        if position >= end {
             break;
         }
-        result.push(character);
-        used += character_width;
+        if position < offset || next > end {
+            // A wide grapheme crossing an edge occupies blank cells rather than
+            // shifting every subsequent column or drawing half a glyph.
+            result.push_str(&" ".repeat(next.min(end).saturating_sub(position.max(offset))));
+        } else {
+            result.push_str(grapheme);
+        }
+        position = next;
     }
     result
 }
@@ -801,7 +868,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
             format!(" {}", active.join("  |  "))
         }
         InputMode::Normal | InputMode::Help => {
-            " Enter/Space:expand/collapse  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  v:events  z:width"
+            " h/l:scroll  Enter/Space:expand/collapse  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  v:events"
                 .into()
         }
         }

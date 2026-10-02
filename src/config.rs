@@ -42,6 +42,7 @@ pub struct TraceConfig {
 pub struct UiConfig {
     pub color: ColorMode,
     pub ascii: bool,
+    /// Legacy setting, accepted for compatibility; the tree is always scrollable.
     pub horizontal_scroll: bool,
     pub short: bool,
 }

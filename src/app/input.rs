@@ -3,6 +3,47 @@ use super::selection::*;
 use super::*;
 
 impl App {
+    pub(super) fn clamp_tree_horizontal_scroll(&mut self, terminal_area: Rect) {
+        let Some(tree_area) = resource_tree_area(terminal_area) else {
+            self.tree_selection = None;
+            self.last_tree_click = None;
+            return;
+        };
+        let offset = if self.resource_horizontal_scroll == 0 {
+            0
+        } else {
+            tree_table_plan(self, tree_area, &self.visible()).map_or(0, |plan| {
+                plan.horizontal_layout(self.resource_horizontal_scroll)
+                    .offset
+            })
+        };
+        if offset != self.resource_horizontal_scroll
+            || self
+                .tree_selection
+                .as_ref()
+                .is_some_and(|selection| selection.area != tree_area)
+        {
+            self.tree_selection = None;
+            self.last_tree_click = None;
+        }
+        self.resource_horizontal_scroll = offset;
+    }
+
+    fn scroll_tree_horizontal(&mut self, terminal_area: Rect, right: bool) {
+        if resource_tree_area(terminal_area).is_none() {
+            return;
+        }
+        self.clamp_tree_horizontal_scroll(terminal_area);
+        self.resource_horizontal_scroll = if right {
+            self.resource_horizontal_scroll.saturating_add(4)
+        } else {
+            self.resource_horizontal_scroll.saturating_sub(4)
+        };
+        self.clamp_tree_horizontal_scroll(terminal_area);
+        self.tree_selection = None;
+        self.last_tree_click = None;
+    }
+
     pub(super) fn handle_mouse(
         &mut self,
         mouse: MouseEvent,
@@ -158,7 +199,31 @@ impl App {
         mouse: MouseEvent,
         terminal_area: Rect,
     ) -> Option<MouseAction> {
+        if !self.captures_mouse() {
+            return None;
+        }
         let tree_area = resource_tree_area(terminal_area)?;
+        if mouse.column >= tree_area.x
+            && mouse.column < tree_area.right()
+            && mouse.row >= tree_area.y
+            && mouse.row < tree_area.bottom()
+        {
+            let right = match mouse.kind {
+                MouseEventKind::ScrollLeft => Some(false),
+                MouseEventKind::ScrollRight => Some(true),
+                MouseEventKind::ScrollUp if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                    Some(false)
+                }
+                MouseEventKind::ScrollDown if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                    Some(true)
+                }
+                _ => None,
+            };
+            if let Some(right) = right {
+                self.scroll_tree_horizontal(terminal_area, right);
+                return None;
+            }
+        }
         let body = Block::default().borders(Borders::ALL).inner(tree_area);
         let rendered = rendered_tree(self, tree_area)?;
 
@@ -728,6 +793,12 @@ impl App {
                 self.set_selection(self.visible().len().saturating_sub(1));
             }
             (KeyCode::Enter | KeyCode::Char(' '), _) => self.toggle_selected(),
+            (KeyCode::Right, KeyModifiers::SHIFT) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                self.scroll_tree_horizontal(terminal_area, true);
+            }
+            (KeyCode::Left, KeyModifiers::SHIFT) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                self.scroll_tree_horizontal(terminal_area, false);
+            }
             (KeyCode::Right, _) => self.expand_or_child(),
             (KeyCode::Left, _) => self.collapse_or_parent(),
             (KeyCode::Char(']'), _) => self.collapsed.clear(),
@@ -803,14 +874,6 @@ impl App {
                 if let Some(target) = self.selected_target() {
                     return UiAction::Copy(target.identity.to_string());
                 }
-            }
-            (KeyCode::Char('z'), _) => {
-                self.full_width = !self.full_width;
-                self.status = if self.full_width {
-                    "Full-width mode".into()
-                } else {
-                    "Fitted column mode".into()
-                };
             }
             (KeyCode::Char('p'), _) => {
                 if self.config.read_only {

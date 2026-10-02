@@ -860,7 +860,7 @@ fn ordinary_table_has_aligned_xpdig_style_columns_without_resource() {
     let app = app();
     let snapshot = app.snapshot.as_ref().unwrap();
     let visible = app.visible();
-    let plan = TablePlan::new(snapshot, &visible, 140, false, false, false, false);
+    let plan = TablePlan::new(snapshot, &visible, 140, false, false, false);
     let header = plan.header();
     assert!(header.contains("OBJECT"));
     assert!(header.contains("GROUP"));
@@ -871,12 +871,17 @@ fn ordinary_table_has_aligned_xpdig_style_columns_without_resource() {
 }
 
 #[test]
-fn narrow_table_hides_both_timestamp_columns() {
+fn narrow_table_keeps_timestamp_columns_scrollable_unless_short_is_enabled() {
     let app = app();
     let snapshot = app.snapshot.as_ref().unwrap();
     let visible = app.visible();
-    let plan = TablePlan::new(snapshot, &visible, 50, false, false, false, false);
+    let plan = TablePlan::new(snapshot, &visible, 50, false, false, false);
     let header = plan.header();
+    assert!(header.contains("SYNCED LAST"));
+    assert!(header.contains("READY LAST"));
+    assert!(plan.horizontal_layout(0).max_offset() > 0);
+    let short = TablePlan::new(snapshot, &visible, 50, false, true, false);
+    let header = short.header();
     assert!(!header.contains("LAST"));
     assert!(header.contains("SYNCED"));
     assert!(header.contains("READY"));
@@ -892,6 +897,545 @@ fn rendered_table_keeps_a_fixed_header() {
     assert!(rendered.contains("OBJECT"));
     assert!(rendered.contains("GROUP"));
     assert!(rendered.contains("Root/root"));
+}
+
+#[test]
+fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let tree = resource_tree_area(area).unwrap();
+    let before = rendered_tree(&app, tree).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), area);
+    let after = rendered_tree(&app, tree).unwrap();
+    let pinned = before.horizontal.pinned_width;
+    assert_eq!(after.horizontal.offset, 4);
+    assert_ne!(before.lines[0], after.lines[0]);
+    assert_eq!(
+        horizontal_slice(&before.lines[0], 0, pinned),
+        horizontal_slice(&after.lines[0], 0, pinned)
+    );
+    assert_eq!(
+        horizontal_slice(&before.lines[1], 0, pinned),
+        horizontal_slice(&after.lines[1], 0, pinned)
+    );
+    assert_eq!(horizontal_slice(&after.lines[0], pinned, 1), "P");
+    assert_eq!(app.selected_visible, 0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), area);
+    assert_eq!(rendered_tree(&app, tree).unwrap().lines, before.lines);
+}
+
+#[test]
+fn tree_thumbwheel_and_shift_wheel_scroll_columns() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let tree = resource_tree_area(area).unwrap();
+    let before = rendered_tree(&app, tree).unwrap().lines;
+    let event = MouseEvent {
+        kind: MouseEventKind::ScrollRight,
+        column: 20,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(event, area);
+    let after = rendered_tree(&app, tree).unwrap().lines;
+    assert_ne!(after, before);
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            modifiers: KeyModifiers::SHIFT,
+            ..event
+        },
+        area,
+    );
+    assert_eq!(rendered_tree(&app, tree).unwrap().lines, before);
+}
+
+#[test]
+fn tree_horizontal_scroll_is_always_available_and_z_does_not_reset_it() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let tree = resource_tree_area(area).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    assert_eq!(app.resource_horizontal_scroll, 4);
+    for _ in 0..100 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    }
+    let rendered = rendered_tree(&app, tree).unwrap();
+    assert_eq!(
+        app.resource_horizontal_scroll,
+        rendered.horizontal.max_offset()
+    );
+    assert!(rendered.lines[0].ends_with("STATUS"));
+    assert!(rendered.lines[1].contains("Root/root"));
+    let offset = app.resource_horizontal_scroll;
+    let status = app.status.clone();
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), area);
+    assert_eq!(app.resource_horizontal_scroll, offset);
+    assert_eq!(app.status, status);
+    assert_eq!(rendered_tree(&app, tree).unwrap().lines, rendered.lines);
+    for _ in 0..100 {
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT), area);
+    }
+    assert_eq!(app.resource_horizontal_scroll, 0);
+    // Unmodified arrows still navigate the tree.
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
+    assert_eq!(app.selected_visible, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
+    assert_eq!(app.selected_visible, 0);
+}
+
+#[test]
+fn tree_horizontal_scroll_preserves_and_clamps_position_on_resize() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    app.clamp_tree_horizontal_scroll(Rect::new(0, 0, 60, 16));
+    assert_eq!(app.resource_horizontal_scroll, 4);
+    app.resource_horizontal_scroll = usize::MAX;
+    app.clamp_tree_horizontal_scroll(area);
+    let old_offset = app.resource_horizontal_scroll;
+    app.clamp_tree_horizontal_scroll(Rect::new(0, 0, 70, 16));
+    assert!(app.resource_horizontal_scroll < old_offset);
+    app.clamp_tree_horizontal_scroll(Rect::new(0, 0, 20, 5));
+    assert!(app.resource_horizontal_scroll > 0);
+    app.clamp_tree_horizontal_scroll(Rect::new(0, 0, 140, 16));
+    assert_eq!(app.resource_horizontal_scroll, 0);
+}
+
+#[test]
+fn tree_horizontal_scroll_clamps_after_content_changes() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let mut snapshot = app.snapshot.as_ref().unwrap().as_ref().clone();
+    Arc::make_mut(&mut snapshot.nodes)[1].status = format!("{}TAIL", "x".repeat(100));
+    app.apply_snapshot(snapshot.clone());
+    app.resource_horizontal_scroll = usize::MAX;
+    app.clamp_tree_horizontal_scroll(area);
+    let wide_offset = app.resource_horizontal_scroll;
+    let rendered = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
+    assert!(rendered.lines[2].ends_with("TAIL"));
+    app.apply_snapshot(snapshot);
+    app.clamp_tree_horizontal_scroll(area);
+    assert_eq!(app.resource_horizontal_scroll, wide_offset);
+    app.collapsed
+        .insert(app.snapshot.as_ref().unwrap().nodes[0].identity.clone());
+    app.clamp_tree_horizontal_scroll(area);
+    assert!(app.resource_horizontal_scroll < wide_offset);
+    let narrow_offset = app.resource_horizontal_scroll;
+    app.collapsed.clear();
+    app.clamp_tree_horizontal_scroll(area);
+    assert_eq!(app.resource_horizontal_scroll, narrow_offset);
+    app.filter = "does-not-exist".into();
+    app.clamp_tree_horizontal_scroll(area);
+    let filtered_offset = app.resource_horizontal_scroll;
+    assert!(filtered_offset <= narrow_offset);
+    app.filter.clear();
+    app.apply_snapshot(
+        Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}}}"#,
+        )
+        .unwrap(),
+    );
+    app.clamp_tree_horizontal_scroll(area);
+    assert!(app.resource_horizontal_scroll <= filtered_offset);
+}
+
+#[test]
+fn tree_pins_and_caps_long_unicode_objects_for_both_schemas() {
+    for (api_version, kind) in [
+        ("example.io/v1", "Root"),
+        ("pkg.crossplane.io/v1", "Provider"),
+    ] {
+        let mut app = app();
+        let trace = serde_json::json!({"object": {"apiVersion": api_version, "kind": kind, "metadata": {"name": "界".repeat(80)}}});
+        app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+        let area = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
+        let before = rendered_tree(&app, area).unwrap();
+        assert_eq!(before.horizontal.pinned_width, 26); // 24-cell object + separator
+        assert!(before.lines[1].contains('…'));
+        assert!(before.lines.iter().all(|line| line.width() <= 48));
+        app.resource_horizontal_scroll = usize::MAX;
+        let after = rendered_tree(&app, area).unwrap();
+        assert_eq!(
+            horizontal_slice(&before.lines[1], 0, 26),
+            horizontal_slice(&after.lines[1], 0, 26)
+        );
+        assert!(after.lines[0].trim_end().ends_with("STATUS"));
+        assert!(after.lines.iter().all(|line| line.width() <= 48));
+        let plan = tree_table_plan(&app, area, &app.visible()).unwrap();
+        assert_eq!(
+            plan.header().width() - after.horizontal.pinned_width,
+            after.horizontal.content_width
+        );
+    }
+}
+
+#[test]
+fn tree_horizontal_wheel_ignores_other_views_and_outside_pointer() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let event = MouseEvent {
+        kind: MouseEventKind::ScrollRight,
+        column: 20,
+        row: 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(MouseEvent { row: 0, ..event }, area);
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            ..event
+        },
+        area,
+    );
+    app.mode = InputMode::Help;
+    app.handle_mouse(event, area);
+    app.mode = InputMode::Command;
+    app.handle_mouse(event, area);
+    app.mode = InputMode::Normal;
+    assert_eq!(app.resource_horizontal_scroll, 0);
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            modifiers: KeyModifiers::SHIFT,
+            ..event
+        },
+        area,
+    );
+    assert_eq!(app.resource_horizontal_scroll, 4);
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollLeft,
+            ..event
+        },
+        area,
+    );
+    assert_eq!(app.resource_horizontal_scroll, 0);
+}
+
+#[test]
+fn tree_scrolled_drag_copies_visible_pinned_and_tail_text() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    let tree_area = resource_tree_area(area).unwrap();
+    let body = Block::default().borders(Borders::ALL).inner(tree_area);
+    let rendered = rendered_tree(&app, tree_area).unwrap();
+    let mouse = |kind, column| MouseEvent {
+        kind,
+        column,
+        row: body.y + 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), body.x), area);
+    app.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), body.right() - 1),
+        area,
+    );
+    assert_eq!(
+        copied_mouse_text(app.handle_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), body.right() - 1),
+            area
+        )),
+        Some(rendered.lines[1].clone())
+    );
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: body.x,
+            row: body.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        area,
+    );
+    assert!(app.tree_selection.is_none());
+}
+
+#[test]
+fn tree_horizontal_scrollbar_uses_only_existing_bottom_border() {
+    let mut app = app();
+    let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+    let tree = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
+    let layout = rendered_tree(&app, tree).unwrap().horizontal;
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let bar_x = tree.x + layout.pinned_width as u16;
+    let bar_y = tree.bottom() - 1;
+    assert_eq!(
+        terminal
+            .backend()
+            .buffer()
+            .cell((bar_x + 1, bar_y))
+            .unwrap()
+            .symbol(),
+        "▪"
+    );
+    assert_ne!(
+        terminal
+            .backend()
+            .buffer()
+            .cell((bar_x - 1, bar_y))
+            .unwrap()
+            .symbol(),
+        "▪"
+    );
+    app.resource_horizontal_scroll = layout.max_offset();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert_eq!(
+        terminal
+            .backend()
+            .buffer()
+            .cell((tree.right() - 3, bar_y))
+            .unwrap()
+            .symbol(),
+        "▪"
+    );
+    let mut wide_terminal = Terminal::new(TestBackend::new(140, 16)).unwrap();
+    wide_terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert!(!wide_terminal.backend().to_string().contains('▪'));
+    app.config.ui.ascii = true;
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert_eq!(
+        terminal
+            .backend()
+            .buffer()
+            .cell((tree.right() - 3, bar_y))
+            .unwrap()
+            .symbol(),
+        "-"
+    );
+    wide_terminal.draw(|frame| render(frame, &app)).unwrap();
+    let wide_tree = resource_tree_area(Rect::new(0, 0, 140, 16)).unwrap();
+    assert_ne!(
+        wide_terminal
+            .backend()
+            .buffer()
+            .cell((wide_tree.right() - 2, wide_tree.bottom() - 1))
+            .unwrap()
+            .symbol(),
+        ">"
+    );
+}
+
+#[test]
+fn tree_divider_separates_pinned_objects_without_changing_column_widths() {
+    for ascii in [false, true] {
+        let mut app = app();
+        app.config.ui.ascii = ascii;
+        let area = Rect::new(0, 0, 50, 16);
+        let tree = resource_tree_area(area).unwrap();
+        let before = rendered_tree(&app, tree).unwrap();
+        let divider = before.horizontal.pinned_width - 2;
+        for line in &before.lines {
+            assert_eq!(
+                horizontal_slice(line, divider, 2),
+                if ascii { "| " } else { "│ " }
+            );
+            assert_eq!(line.width(), usize::from(tree.width - 2));
+        }
+        assert_eq!(horizontal_slice(&before.lines[0], divider + 2, 5), "GROUP");
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+        let after = rendered_tree(&app, tree).unwrap();
+        for (before, after) in before.lines.iter().zip(&after.lines) {
+            assert_eq!(
+                horizontal_slice(before, 0, divider + 2),
+                horizontal_slice(after, 0, divider + 2)
+            );
+        }
+        let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        for row in 2..=4 {
+            assert_eq!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((divider as u16 + 1, row))
+                    .unwrap()
+                    .symbol(),
+                if ascii { "|" } else { "│" }
+            );
+        }
+    }
+}
+
+#[test]
+fn tree_divider_uses_subtle_style_without_changing_row_selection() {
+    for color in [
+        crate::config::ColorMode::Always,
+        crate::config::ColorMode::Never,
+    ] {
+        for ascii in [false, true] {
+            let mut app = app_with_theme("catppuccin-mocha", color);
+            app.config.ui.ascii = ascii;
+            let mut snapshot = app.snapshot.as_ref().unwrap().as_ref().clone();
+            Arc::make_mut(&mut snapshot.nodes)[1].health = crate::model::Health::Unhealthy;
+            app.apply_snapshot(snapshot);
+            let tree = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
+            let layout = rendered_tree(&app, tree).unwrap().horizontal;
+            let divider = tree.x + 1 + layout.pinned_width as u16 - 2;
+            let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            for row in 2..=4 {
+                let cell = buffer.cell((divider, row)).unwrap();
+                assert_eq!(cell.symbol(), if ascii { "|" } else { "│" });
+                if app.theme.colors_enabled {
+                    assert_eq!(cell.fg, app.theme.palette.overlay1);
+                } else {
+                    assert_eq!(cell.fg, Color::Reset);
+                    assert!(cell.modifier.contains(Modifier::DIM));
+                }
+            }
+            let selected = buffer.cell((divider, 3)).unwrap();
+            assert_eq!(selected.bg, buffer.cell((divider - 1, 3)).unwrap().bg);
+            assert_eq!(
+                selected.modifier.contains(Modifier::REVERSED),
+                !app.theme.colors_enabled
+            );
+            assert_eq!(
+                buffer.cell((divider - 1, 4)).unwrap().fg,
+                app.theme
+                    .health(crate::model::Health::Unhealthy)
+                    .fg
+                    .unwrap_or(Color::Reset)
+            );
+            let rendered = rendered_tree(&app, tree).unwrap();
+            let symbol = if ascii { "|" } else { "│" };
+            let start = rendered.lines[0].len() + 1 + rendered.lines[1].find(symbol).unwrap();
+            let point = SelectionPoint {
+                start,
+                end: start + symbol.len(),
+            };
+            app.tree_selection = Some(TreeSelection {
+                text: TextSelection {
+                    anchor: point,
+                    focus: point,
+                    dragged: true,
+                },
+                content: rendered.content,
+                area: tree,
+                selecting: false,
+            });
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let highlighted = terminal.backend().buffer().cell((divider, 3)).unwrap();
+            if app.theme.colors_enabled {
+                assert_eq!(highlighted.bg, app.theme.palette.yellow);
+                assert_eq!(highlighted.fg, app.theme.palette.base);
+            } else {
+                assert!(!highlighted.modifier.contains(Modifier::REVERSED));
+                assert!(highlighted.modifier.contains(Modifier::UNDERLINED));
+            }
+        }
+    }
+}
+
+#[test]
+fn tree_scrollbar_has_static_square_thumb_and_left_arrow_in_separator_gap() {
+    for color in [
+        crate::config::ColorMode::Always,
+        crate::config::ColorMode::Never,
+    ] {
+        for ascii in [false, true] {
+            let mut app = app_with_theme("catppuccin-mocha", color);
+            app.config.ui.ascii = ascii;
+            let tree = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
+            let layout = rendered_tree(&app, tree).unwrap().horizontal;
+            let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+            let left = tree.x + layout.pinned_width as u16;
+            let right = tree.right() - 2;
+            let bottom = tree.bottom() - 1;
+            for offset in [0, 4, layout.max_offset()] {
+                app.resource_horizontal_scroll = offset;
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let start = buffer.cell((left, bottom)).unwrap();
+                let end = buffer.cell((right, bottom)).unwrap();
+                assert_eq!(start.symbol(), if ascii { "<" } else { "◀" });
+                assert_eq!(end.symbol(), if ascii { ">" } else { "▶" });
+                assert_eq!(start.modifier.contains(Modifier::DIM), offset == 0);
+                assert_eq!(
+                    end.modifier.contains(Modifier::DIM),
+                    offset == layout.max_offset()
+                );
+                let thumb = (left + 1..right)
+                    .map(|x| buffer.cell((x, bottom)).unwrap())
+                    .find(|cell| cell.symbol() == if ascii { "-" } else { "▪" })
+                    .unwrap();
+                let track = (left + 1..right)
+                    .map(|x| buffer.cell((x, bottom)).unwrap())
+                    .find(|cell| cell.symbol() == if ascii { "." } else { "·" })
+                    .unwrap();
+                assert!(!thumb.modifier.contains(Modifier::BOLD));
+                if app.theme.colors_enabled {
+                    assert_eq!(thumb.fg, app.theme.palette.overlay1);
+                    assert_eq!(thumb.fg, track.fg);
+                } else {
+                    assert!(track.modifier.contains(Modifier::DIM));
+                }
+                let unchanged = buffer.clone();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                assert_eq!(terminal.backend().buffer(), &unchanged);
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_horizontal_scroll_configuration_does_not_disable_scrolling() {
+    for value in [false, true] {
+        let fixture = app();
+        let config: Config =
+            toml::from_str(&format!("[ui]\nhorizontal_scroll = {value}\n")).unwrap();
+        let cli = Cli::parse_from(["xpdelve", "Root/root"]);
+        let mut app = App::new("Root/root".into(), config, &cli, fixture.theme);
+        app.apply_snapshot(fixture.snapshot.unwrap().as_ref().clone());
+        let area = Rect::new(0, 0, 50, 16);
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+        assert_eq!(app.resource_horizontal_scroll, 4);
+    }
+}
+
+#[test]
+fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
+    for (api_version, kind) in [
+        ("example.io/v1", "Root"),
+        ("pkg.crossplane.io/v1", "Provider"),
+    ] {
+        let mut app = app();
+        let trace = serde_json::json!({"object": {"apiVersion": api_version, "kind": kind, "metadata": {"name": "a-long-resource-name"}}});
+        app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+        for short in [false, true] {
+            app.config.ui.short = short;
+            for width in 32..160 {
+                let tree = resource_tree_area(Rect::new(0, 0, width, 16)).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let layout = plan.horizontal_layout(usize::MAX);
+                assert!(layout.pinned_width - 2 <= usize::from(width - 2) / 2);
+                assert_eq!(
+                    plan.header().width(),
+                    layout.pinned_width + layout.content_width
+                );
+                app.resource_horizontal_scroll = usize::MAX;
+                let rendered = rendered_tree(&app, tree).unwrap();
+                assert!(
+                    rendered
+                        .lines
+                        .iter()
+                        .all(|line| line.width() <= usize::from(width - 2))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn horizontal_slicing_preserves_graphemes_and_wide_cell_alignment() {
+    assert_eq!(horizontal_slice("A界BC", 2, 3), " BC");
+    assert_eq!(horizontal_slice("A界BC", 0, 2), "A ");
+    assert_eq!(horizontal_slice("e\u{301}界x", 0, 3), "e\u{301}界");
+    assert_eq!(horizontal_slice("e\u{301}界x", 1, 3), "界x");
+    assert_eq!(horizontal_slice("👩‍💻x", 1, 2), " x");
+    assert_eq!(horizontal_slice("界", 1, 0), "");
+    assert_eq!(horizontal_slice("text", 100, 5), "");
 }
 
 #[test]
@@ -1177,7 +1721,10 @@ fn main_key_legend_uses_sofka_subtle_color() {
     let rendered = terminal.backend().to_string();
     assert!(rendered.contains("Enter/Space:expand/collapse"));
     assert!(rendered.contains("ctrl-d:delete"));
-    assert!(rendered.contains("e:edit"));
+    assert!(rendered.contains("h/l:scroll"));
+    assert!(!rendered.contains("z:fit"));
+    assert!(!rendered.contains("z:width"));
+    assert!(!HELP_LINES.iter().any(|line| line.starts_with("  z ")));
     assert!(rendered.contains("::command"));
     assert!(!rendered.contains("j/k:move"));
 }
@@ -1913,7 +2460,7 @@ fn package_schema_does_not_depend_on_an_image() {
         )
         .unwrap();
     assert!(snapshot.nodes[0].is_package);
-    let plan = TablePlan::new(&snapshot, &[0], 100, true, false, false, false);
+    let plan = TablePlan::new(&snapshot, &[0], 100, true, false, false);
     let header = plan.header();
     assert!(header.contains("INSTALLED"));
     assert!(header.contains("HEALTHY"));
@@ -1926,11 +2473,16 @@ fn narrow_package_table_keeps_health_columns_reachable() {
             br#"{"object":{"apiVersion":"pkg.crossplane.io/v1","kind":"Provider","metadata":{"name":"provider"}}}"#,
         )
         .unwrap();
-    let plan = TablePlan::new(&snapshot, &[0], 30, true, false, false, false);
+    let plan = TablePlan::new(&snapshot, &[0], 30, true, false, false);
     let header = plan.header();
-    assert!(header.width() <= 30);
+    assert!(header.width() > 30);
+    assert!(plan.horizontal_layout(0).max_offset() > 0);
     assert!(header.contains("INSTALLED"));
     assert!(header.contains("HEALTHY"));
+    assert!(header.contains("INSTALLED LAST"));
+    assert!(header.contains("HEALTHY LAST"));
+    assert!(header.contains("VERSION"));
+    assert!(header.contains("STATE"));
 }
 
 #[test]

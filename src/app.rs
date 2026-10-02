@@ -25,7 +25,8 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
 };
 use regex::RegexBuilder;
 use tokio::io::AsyncReadExt;
@@ -64,7 +65,10 @@ const HELP_LINES: &[&str] = &[
     "  Left              collapse or select parent",
     "  [                 collapse all below root",
     "  ]                 expand all",
-    "  z                 toggle fitted / full-width table",
+    "  h/l               scroll columns",
+    "  Shift+Left/Right  scroll columns",
+    "  Thumbwheel        scroll columns over tree",
+    "  Shift+wheel       scroll columns over tree",
     "",
     "Discovery",
     "  :                 open command palette",
@@ -242,6 +246,7 @@ struct App {
     selected_identity: Option<Identity>,
     selected_visible: usize,
     resource_scroll: usize,
+    resource_horizontal_scroll: usize,
     collapsed: HashSet<Identity>,
     excluded_kinds: HashSet<ResourceKind>,
     mode: InputMode,
@@ -268,7 +273,6 @@ struct App {
     active_mutations: HashSet<Identity>,
     refresh_pending: bool,
     retry_delay: Duration,
-    full_width: bool,
     resource_missing: bool,
     namespace: Option<String>,
     context: Option<String>,

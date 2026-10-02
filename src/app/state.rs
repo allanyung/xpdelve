@@ -3,13 +3,13 @@ use super::*;
 
 impl App {
     pub(super) fn new(resource: String, config: Config, cli: &Cli, theme: Theme) -> Self {
-        let full_width = config.ui.horizontal_scroll;
         Self {
             resource,
             snapshot: None,
             selected_identity: None,
             selected_visible: 0,
             resource_scroll: 0,
+            resource_horizontal_scroll: 0,
             collapsed: HashSet::new(),
             excluded_kinds: HashSet::new(),
             mode: InputMode::Normal,
@@ -36,7 +36,6 @@ impl App {
             active_mutations: HashSet::new(),
             refresh_pending: false,
             retry_delay: Duration::from_secs(1),
-            full_width,
             resource_missing: false,
             namespace: cli.namespace.clone(),
             context: cli.context.clone(),
@@ -418,6 +417,7 @@ impl App {
         self.selected_identity = None;
         self.selected_visible = 0;
         self.resource_scroll = 0;
+        self.resource_horizontal_scroll = 0;
         self.collapsed.clear();
         if !matches!(
             self.modal,

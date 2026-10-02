@@ -28,7 +28,10 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     while !app.quit {
         app.apply_deferred_snapshot();
         terminal.set_mouse_capture(app.captures_mouse())?;
-        terminal.terminal.draw(|frame| render(frame, &app))?;
+        terminal.terminal.draw(|frame| {
+            app.clamp_tree_horizontal_scroll(frame.area());
+            render(frame, &app);
+        })?;
         let toast_active = app.toast.is_some();
         let toast_delay = app
             .toast
