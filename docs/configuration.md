@@ -57,6 +57,7 @@ name = "catppuccin-mocha"
 | `ui.short` | Hide condition transition-time columns when `true` |
 | `skin.name` | Built-in theme name; omit it for terminal-background detection |
 | `skin.colors` | Optional per-swatch RGB overrides |
+| `extra_columns` | Additional main-tree columns keyed by exact resource kind and API group |
 
 Placeholders must be separate array entries, as shown in the example; embedded
 forms such as `"--context={context}"` are invalid. Set `context_args` or
@@ -65,6 +66,73 @@ corresponding option.
 
 Automatic refresh begins enabled unless `--no-watch` is supplied. Pausing or
 resuming it with `P` is session-only and is not stored in configuration.
+
+## Extra columns
+
+Add columns to the existing main resource tree with `[[extra_columns."Kind.group"]]`.
+These definitions do not create new views or replace built-in columns. Every
+extra column appears immediately before STATUS, including with `--short` and in
+package traces.
+
+```toml
+[[extra_columns."Bucket.s3.aws.upbound.io"]]
+name = "REGION"
+path = "/spec/forProvider/region"
+width = 14
+
+[[extra_columns.Secret]]
+name = "OWNER"
+path = "/metadata/annotations/example.com~1owner"
+```
+
+Keys match the object's exact, case-sensitive **kind and API group**, not its
+plural resource name or the CLI argument. Use a bare kind such as `Secret` for
+the core API group. A definition applies to every matching resource, regardless
+of API version, name, or namespace. Wildcards and per-instance overrides are not
+supported.
+
+### Fields and display
+
+- `name` is the column header. Headers are trimmed and displayed in uppercase;
+  comparison is case-insensitive.
+- `path` is a non-empty JSON Pointer (RFC 6901) into the resource's trace JSON,
+  such as `/status/atProvider/location` or `/spec/ports/0/port`. Escape `/` in a field
+  name as `~1`, and `~` as `~0`. Dot notation and JSONPath expressions are not
+  supported.
+- `width` is optional. Omit it to size the column from its header and currently
+  visible values. Set it to a display-cell width from 1 to 65535 for fixed-width
+  truncation. Columns remain reachable through horizontal scrolling while
+  OBJECT stays pinned.
+
+Strings, numbers, and booleans render as text. Missing fields, nulls, objects,
+and arrays show `-`; select individual fields or array elements to display them.
+Terminal control sequences are made inert and newlines/tabs are flattened to
+spaces. Core Secret `data` and `stringData` payloads show `<redacted>` instead
+of their contents. Other resources may contain sensitive values; choose paths
+accordingly.
+
+Values come from the current trace snapshot and update on trace refresh, without
+additional Kubernetes requests. Configuration is loaded at startup; restart
+xpdelve after editing it. Extra values are not included in text filtering or
+find navigation.
+
+### Mixed-resource trees
+
+The table shows the union of extra columns configured for kinds in the currently
+visible tree. Kind/text/health filtering, exclusions, and collapse can change
+this union; vertical scrolling does not. A row without a matching definition
+for a column shows `-`.
+
+Resource keys are processed in lexical order, then columns in declaration order.
+Headers shared across kinds produce a single column at their first occurrence;
+each kind may use a different path. If any matching definition supplies a fixed
+width for a shared header, the largest supplied width wins. Otherwise the shared
+column is sized automatically.
+
+Invalid resource keys, empty/control-character headers, collisions with built-in
+headers, duplicate headers within a kind, malformed pointers, invalid widths,
+and unknown fields are configuration errors. Existing configuration files need
+no changes, and `schema_version` remains `1`.
 
 ## Themes
 

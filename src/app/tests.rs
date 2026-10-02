@@ -870,6 +870,217 @@ fn ordinary_table_has_aligned_xpdig_style_columns_without_resource() {
     assert!(!header.contains("RESOURCE"));
 }
 
+fn app_with_extra_columns() -> App {
+    let mut app = app();
+    app.config.extra_columns = toml::from_str::<Config>(
+        r#"
+        [[extra_columns.Root]]
+        name = "VALUE"
+        path = "/status/value"
+        width = 12
+        [[extra_columns.Root]]
+        name = "FLAG"
+        path = "/status/enabled"
+        [[extra_columns.Child]]
+        name = "value"
+        path = "/metadata/name"
+        width = 8
+        [[extra_columns.Child]]
+        name = "CHILD ONLY"
+        path = "/metadata/name"
+        "#,
+    )
+    .unwrap()
+    .extra_columns;
+    app.apply_snapshot(Snapshot::parse(br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"},"status":{"value":"workspace","enabled":true}},"children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"child"}}}]}"#).unwrap());
+    app
+}
+
+#[test]
+fn extra_columns_union_is_aligned_before_status_in_both_table_modes() {
+    let mut app = app_with_extra_columns();
+    for short in [false, true] {
+        app.config.ui.short = short;
+        let area = Rect::new(0, 0, 240, 20);
+        let rendered = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
+        let header = &rendered.lines[0];
+        let value = header[..header.find("VALUE").unwrap()].width();
+        let child = header[..header.find("CHILD ONLY").unwrap()].width();
+        let flag = header[..header.find("FLAG").unwrap()].width();
+        let status = header[..header.find("STATUS").unwrap()].width();
+        assert!(value < child && child < flag && flag < status);
+        assert_eq!(child - value, 14);
+        assert_eq!(
+            horizontal_slice(&rendered.lines[1], value, 12).trim(),
+            "workspace"
+        );
+        assert_eq!(
+            horizontal_slice(&rendered.lines[2], value, 12).trim(),
+            "child"
+        );
+        assert_eq!(horizontal_slice(&rendered.lines[1], child, 10).trim(), "-");
+        assert_eq!(horizontal_slice(&rendered.lines[2], flag, 4).trim(), "-");
+        assert_eq!(header.contains("LAST"), !short);
+        let plan =
+            tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
+        assert_eq!(
+            plan.header().width(),
+            plan.horizontal_layout(0).pinned_width + plan.horizontal_layout(0).content_width
+        );
+        let backend = TestBackend::new(240, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(terminal.backend().to_string().contains("workspace"));
+    }
+}
+
+#[test]
+fn extra_columns_follow_collapse_kind_filter_and_refresh() {
+    let mut app = app_with_extra_columns();
+    let area = Rect::new(0, 0, 240, 20);
+    let tree = resource_tree_area(area).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    assert!(!rendered_tree(&app, tree).unwrap().lines[0].contains("CHILD ONLY"));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    assert!(rendered_tree(&app, tree).unwrap().lines[0].contains("CHILD ONLY"));
+    for key in [':', 'c', 'h'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    let filtered = rendered_tree(&app, tree).unwrap();
+    assert!(filtered.lines[0].contains("CHILD ONLY"));
+    assert!(!filtered.lines[0].contains("FLAG"));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    app.apply_snapshot(Snapshot::parse(br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"},"status":{"value":"updated","enabled":false}}}"#).unwrap());
+    let refreshed = rendered_tree(&app, tree).unwrap();
+    assert!(refreshed.lines[1].contains("updated"));
+    assert!(refreshed.lines[1].contains("false"));
+    assert!(!refreshed.lines[0].contains("CHILD ONLY"));
+}
+
+#[test]
+fn extra_columns_scroll_with_the_table_while_objects_remain_pinned() {
+    let mut app = app_with_extra_columns();
+    let area = Rect::new(0, 0, 60, 20);
+    let tree = resource_tree_area(area).unwrap();
+    let before = rendered_tree(&app, tree).unwrap();
+    for _ in 0..100 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    }
+    let after = rendered_tree(&app, tree).unwrap();
+    assert_eq!(after.horizontal.offset, after.horizontal.max_offset());
+    assert!(after.lines[0].contains("STATUS"));
+    assert!(after.lines[0].contains("FLAG"));
+    assert_eq!(
+        horizontal_slice(&before.lines[1], 0, before.horizontal.pinned_width),
+        horizontal_slice(&after.lines[1], 0, after.horizontal.pinned_width)
+    );
+}
+
+#[test]
+fn extra_columns_work_in_package_tables() {
+    let mut app = app();
+    app.config.extra_columns = toml::from_str::<Config>(
+        "[[extra_columns.\"Provider.pkg.crossplane.io\"]]\nname='PACKAGE'\npath='/spec/package'",
+    )
+    .unwrap()
+    .extra_columns;
+    app.apply_snapshot(Snapshot::parse(br#"{"object":{"apiVersion":"pkg.crossplane.io/v1","kind":"Provider","metadata":{"name":"provider"},"spec":{"package":"example:v1"}}}"#).unwrap());
+    for short in [false, true] {
+        app.config.ui.short = short;
+        let area = Rect::new(0, 0, 240, 20);
+        let rendered = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
+        let header = &rendered.lines[0];
+        assert!(header.find("PACKAGE").unwrap() < header.find("STATUS").unwrap());
+        assert!(rendered.lines[1].contains("example:v1"));
+        assert!(header.contains("INSTALLED"));
+        assert!(header.contains("HEALTHY"));
+        assert!(!header.contains("GROUP"));
+        let plan =
+            tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
+        assert_eq!(
+            plan.header().width(),
+            plan.horizontal_layout(0).pinned_width + plan.horizontal_layout(0).content_width
+        );
+    }
+}
+
+#[test]
+fn extra_columns_follow_exclusions_and_do_not_change_when_scrolling_vertically() {
+    let mut app = app_with_extra_columns();
+    let mut trace = serde_json::json!({
+        "object": {"apiVersion":"v1", "kind":"Root", "metadata":{"name":"root"}},
+        "children": []
+    });
+    let children = trace["children"].as_array_mut().unwrap();
+    for index in 0..15 {
+        children.push(serde_json::json!({"object":{"apiVersion":"v1", "kind":"Other", "metadata":{"name":format!("other-{index}")}}}));
+    }
+    children.push(serde_json::json!({"object":{"apiVersion":"v1", "kind":"Child", "metadata":{"name":"child"}}}));
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    let area = Rect::new(0, 0, 240, 12);
+    let tree = resource_tree_area(area).unwrap();
+    let before = rendered_tree(&app, tree).unwrap();
+    assert!(before.lines[0].contains("CHILD ONLY"));
+    assert!(
+        !before
+            .lines
+            .iter()
+            .skip(1)
+            .any(|line| line.contains("Child/child"))
+    );
+    for _ in 0..20 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), area);
+    }
+    let after = rendered_tree(&app, tree).unwrap();
+    assert_eq!(before.lines[0], after.lines[0]);
+    assert!(after.lines.iter().any(|line| line.contains("Child/child")));
+    for key in ":exclude".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    assert!(app.excluded_kinds.contains(&resource_kind("", "Child")));
+    let excluded = rendered_tree(&app, tree).unwrap();
+    assert!(!excluded.lines[0].contains("CHILD ONLY"));
+    assert!(excluded.lines[0].contains("FLAG"));
+}
+
+#[test]
+fn extra_columns_truncate_unicode_by_display_width() {
+    let mut app = app();
+    app.config.extra_columns = toml::from_str::<Config>("[[extra_columns.Root]]\nname='文字'\npath='/status/value'\nwidth=6\n[[extra_columns.Root]]\nname='NEXT'\npath='/metadata/name'").unwrap().extra_columns;
+    app.apply_snapshot(Snapshot::parse("{\"object\":{\"apiVersion\":\"v1\",\"kind\":\"Root\",\"metadata\":{\"name\":\"root\"},\"status\":{\"value\":\"界界界界\"}}}".as_bytes()).unwrap());
+    let area = Rect::new(0, 0, 240, 20);
+    let rendered = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
+    let header = &rendered.lines[0];
+    let value = header[..header.find("文字").unwrap()].width();
+    let next = header[..header.find("NEXT").unwrap()].width();
+    assert_eq!(next - value, 8);
+    assert_eq!(horizontal_slice(&rendered.lines[1], value, 6), "界界… ");
+    assert_eq!(horizontal_slice(&rendered.lines[1], next, 4), "root");
+}
+
+#[test]
+fn unmatched_extra_columns_preserve_existing_table_rendering() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 240, 20);
+    let tree = resource_tree_area(area).unwrap();
+    let before = rendered_tree(&app, tree).unwrap();
+    app.config.extra_columns = toml::from_str::<Config>(
+        "[[extra_columns.\"Widget.example.org\"]]\nname='VALUE'\npath='/status/value'",
+    )
+    .unwrap()
+    .extra_columns;
+    let after = rendered_tree(&app, tree).unwrap();
+    assert_eq!(before.lines, after.lines);
+    assert_eq!(
+        before.horizontal.content_width,
+        after.horizontal.content_width
+    );
+}
+
 #[test]
 fn narrow_table_keeps_timestamp_columns_scrollable_unless_short_is_enabled() {
     let app = app();
