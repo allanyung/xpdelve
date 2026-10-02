@@ -481,7 +481,7 @@ impl TablePlan {
             .max()
             .unwrap_or(6)
             .max("OBJECT".len())
-            .min(available / 2);
+            .min(available * 3 / 5);
         let group = visible
             .iter()
             .map(|index| group_cell(&snapshot.nodes[*index]).width())

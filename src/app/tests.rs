@@ -1051,14 +1051,14 @@ fn tree_pins_and_caps_long_unicode_objects_for_both_schemas() {
         app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
         let area = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
         let before = rendered_tree(&app, area).unwrap();
-        assert_eq!(before.horizontal.pinned_width, 26); // 24-cell object + separator
+        assert_eq!(before.horizontal.pinned_width, 30); // 28-cell object + separator
         assert!(before.lines[1].contains('…'));
         assert!(before.lines.iter().all(|line| line.width() <= 48));
         app.resource_horizontal_scroll = usize::MAX;
         let after = rendered_tree(&app, area).unwrap();
         assert_eq!(
-            horizontal_slice(&before.lines[1], 0, 26),
-            horizontal_slice(&after.lines[1], 0, 26)
+            horizontal_slice(&before.lines[1], 0, 30),
+            horizontal_slice(&after.lines[1], 0, 30)
         );
         assert!(after.lines[0].trim_end().ends_with("STATUS"));
         assert!(after.lines.iter().all(|line| line.width() <= 48));
@@ -1395,7 +1395,7 @@ fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
                 let tree = resource_tree_area(Rect::new(0, 0, width, 16)).unwrap();
                 let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
                 let layout = plan.horizontal_layout(usize::MAX);
-                assert!(layout.pinned_width - 2 <= usize::from(width - 2) / 2);
+                assert!(layout.pinned_width - 2 <= usize::from(width - 2) * 3 / 5);
                 assert_eq!(
                     plan.header().width(),
                     layout.pinned_width + layout.content_width

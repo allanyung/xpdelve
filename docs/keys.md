@@ -26,7 +26,7 @@ to the tree.
 
 The tree is always horizontally scrollable. `OBJECT` stays pinned while the
 other columns and their headers scroll together. The object column occupies at
-most half the inner tree width; longer names are compacted. Columns can be
+most 60% of the inner tree width; longer names are compacted. Columns can be
 partially visible at either edge. A horizontal scrollbar appears on the bottom
 border beneath the scrolling
 columns when they overflow, with static, centred `▪` squares in the subtle
