@@ -111,6 +111,7 @@ pub struct ProjectedNode {
     pub child_count: usize,
     pub health: Health,
     pub status: String,
+    pub status_details: Option<String>,
     pub ready: Option<bool>,
     pub synced: Option<bool>,
     pub ready_last: Option<String>,
@@ -121,6 +122,19 @@ pub struct ProjectedNode {
     pub version: Option<String>,
     pub state: Option<String>,
     pub object: Arc<Value>,
+}
+
+impl ProjectedNode {
+    pub fn matches_text(&self, query: &str) -> bool {
+        format!(
+            "{} {} {}",
+            self.identity,
+            self.status,
+            self.status_details.as_deref().unwrap_or_default()
+        )
+        .to_lowercase()
+        .contains(&query.to_lowercase())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -300,7 +314,8 @@ fn project_node(
         package: package_kind,
         package_revision,
     };
-    let status = status_text(&node.object, trace_error.as_deref(), projection);
+    let status = status_text(&node.object, node.error.as_ref(), projection);
+    let status_details = status_details(trace_error.as_deref(), projection);
     let health = if node.object.pointer("/metadata/deletionTimestamp").is_some() {
         Health::Unhealthy
     } else if node.error.as_ref().is_some_and(error_is_not_found) {
@@ -336,6 +351,7 @@ fn project_node(
         child_count,
         health,
         status,
+        status_details,
         ready,
         synced,
         ready_last: ready_condition.and_then(condition_transition),
@@ -507,14 +523,22 @@ fn condition_transition(condition: &Value) -> Option<String> {
 
 fn status_text(
     object: &Value,
-    trace_error: Option<&str>,
+    trace_error: Option<&Value>,
     projection: ConditionProjection<'_>,
 ) -> String {
     if object.pointer("/metadata/deletionTimestamp").is_some() {
         return "Deleting".into();
     }
     if let Some(error) = trace_error {
-        return format!("Error: {error}");
+        return if error_is_not_found(error) {
+            "Deleted"
+        } else {
+            "Error"
+        }
+        .into();
+    }
+    if let Some(status) = problem_status(projection) {
+        return status.into();
     }
     if projection.package_revision {
         return projection
@@ -553,17 +577,83 @@ fn status_text(
             .and_then(condition_reason)
             .unwrap_or_else(|| "Synced".into());
     }
-    if projection.synced != ConditionState::True
-        && let Some(status) = projection.synced_condition.and_then(condition_reason)
-    {
-        return status;
-    }
-    if projection.ready != ConditionState::True
-        && let Some(status) = projection.ready_condition.and_then(condition_reason)
-    {
-        return status;
-    }
     "-".into()
+}
+
+fn problem_status(projection: ConditionProjection<'_>) -> Option<&'static str> {
+    if relevant_reason_is(
+        projection.ready_condition,
+        projection.synced_condition,
+        "Warning",
+    ) {
+        return Some("Warning");
+    }
+    if relevant_reason_is(
+        projection.ready_condition,
+        projection.synced_condition,
+        "Unknown",
+    ) {
+        return Some("Unknown");
+    }
+    // Revisions derive health from RevisionHealthy (or legacy Healthy), not Installed.
+    let synced = if projection.package_revision {
+        ConditionState::Missing
+    } else {
+        projection.synced
+    };
+    match (projection.ready, synced) {
+        (_, ConditionState::False) => Some("Error"),
+        (ConditionState::False, _)
+            if relevant_reason_is(projection.ready_condition, None, "Creating") =>
+        {
+            Some("Creating")
+        }
+        (ConditionState::False, _) => Some("Unready"),
+        (ConditionState::Unknown, _) | (_, ConditionState::Unknown) => Some("Unknown"),
+        _ => None,
+    }
+}
+
+fn status_details(
+    trace_error: Option<&str>,
+    projection: ConditionProjection<'_>,
+) -> Option<String> {
+    let mut details = Vec::new();
+    if let Some(error) = trace_error {
+        details.push(format!("Error: {error}"));
+    }
+    let synced_condition = projection.synced_condition.filter(|condition| {
+        !projection.package_revision
+            || relevant_reason_is(Some(condition), None, "Warning")
+            || relevant_reason_is(Some(condition), None, "Unknown")
+    });
+    for condition in [synced_condition, projection.ready_condition]
+        .into_iter()
+        .flatten()
+    {
+        if !matches!(
+            condition_state(Some(condition)),
+            ConditionState::False | ConditionState::Unknown
+        ) && !relevant_reason_is(Some(condition), None, "Warning")
+            && !relevant_reason_is(Some(condition), None, "Unknown")
+        {
+            continue;
+        }
+        let condition_type = condition
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("Condition");
+        let state = condition
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown");
+        let message =
+            condition_reason(condition).unwrap_or_else(|| "No reason or message reported.".into());
+        details.push(text::sanitize(&format!(
+            "{condition_type}={state}\n{message}"
+        )));
+    }
+    (!details.is_empty()).then(|| details.join("\n\n"))
 }
 
 fn package_kind(identity: &Identity) -> bool {
@@ -643,12 +733,16 @@ fn matches_query(node: &ProjectedNode, query: &str) -> bool {
             .unwrap_or_default()
             .to_lowercase()
             .contains(needle),
-        "status" => node.status.to_lowercase().contains(needle),
+        "status" => format!(
+            "{} {}",
+            node.status,
+            node.status_details.as_deref().unwrap_or_default()
+        )
+        .to_lowercase()
+        .contains(needle),
         "ready" => bool_text(node.ready).contains(needle),
         "synced" => bool_text(node.synced).contains(needle),
-        _ => format!("{} {}", node.identity, node.status)
-            .to_lowercase()
-            .contains(&query),
+        _ => node.matches_text(&query),
     }
 }
 
@@ -689,7 +783,11 @@ mod tests {
         assert_eq!(snapshot.nodes[1].depth, 1);
         assert_eq!(snapshot.nodes[1].identity.to_string(), "Secret/child");
         assert_eq!(snapshot.nodes[1].health, Health::Unhealthy);
-        assert_eq!(snapshot.nodes[1].status, "Waiting");
+        assert_eq!(snapshot.nodes[1].status, "Unready");
+        assert_eq!(
+            snapshot.nodes[1].status_details.as_deref(),
+            Some("Ready=False\nWaiting")
+        );
     }
 
     #[test]
@@ -850,7 +948,89 @@ mod tests {
             br#"{"object":{"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"},"status":{"conditions":[{"type":"Synced","status":"False","reason":"SyncFailed","message":"cannot connect"},{"type":"Ready","status":"False","reason":"NotReady"}]}}}"#,
         )
         .unwrap();
-        assert_eq!(snapshot.nodes[0].status, "SyncFailed: cannot connect");
+        assert_eq!(snapshot.nodes[0].status, "Error");
+        assert_eq!(
+            snapshot.nodes[0].status_details.as_deref(),
+            Some("Synced=False\nSyncFailed: cannot connect\n\nReady=False\nNotReady")
+        );
+    }
+
+    #[test]
+    fn problem_labels_and_details_cover_missing_messages_and_package_conditions() {
+        for (kind, conditions, expected_status, expected_details) in [
+            (
+                "Resource",
+                serde_json::json!([{"type":"Ready","status":"False"}]),
+                "Unready",
+                "Ready=False\nNo reason or message reported.",
+            ),
+            (
+                "Resource",
+                serde_json::json!([{"type":"Synced","status":"Unknown"}]),
+                "Unknown",
+                "Synced=Unknown\nNo reason or message reported.",
+            ),
+            (
+                "Provider",
+                serde_json::json!([{"type":"Installed","status":"False","reason":"InstallFailed"},{"type":"Healthy","status":"False","reason":"UnhealthyPackage"}]),
+                "Error",
+                "Installed=False\nInstallFailed\n\nHealthy=False\nUnhealthyPackage",
+            ),
+            (
+                "ProviderRevision",
+                serde_json::json!([{"type":"RevisionHealthy","status":"False","message":"runtime failed"}]),
+                "Unready",
+                "RevisionHealthy=False\nruntime failed",
+            ),
+            (
+                "ConfigurationRevision",
+                serde_json::json!([{"type":"Healthy","status":"False","reason":"UnhealthyPackageRevision"}]),
+                "Unready",
+                "Healthy=False\nUnhealthyPackageRevision",
+            ),
+        ] {
+            let group = if kind == "Resource" {
+                "example.io/v1"
+            } else {
+                "pkg.crossplane.io/v1"
+            };
+            let trace = serde_json::json!({"object":{"apiVersion":group,"kind":kind,"metadata":{"name":"example"},"status":{"conditions":conditions}}});
+            let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+            assert_eq!(snapshot.nodes[0].status, expected_status);
+            assert_eq!(
+                snapshot.nodes[0].status_details.as_deref(),
+                Some(expected_details)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_conditions_are_not_errors_and_healthy_details_stay_in_status() {
+        let snapshot = Snapshot::parse(TRACE.as_bytes()).unwrap();
+        assert_eq!(snapshot.nodes[0].status, "-");
+        assert!(snapshot.nodes[0].status_details.is_none());
+        let trace = serde_json::json!({"object": healthy_object("Resource", "example")});
+        let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+        assert_eq!(snapshot.nodes[0].status, "Ready");
+        assert!(snapshot.nodes[0].status_details.is_none());
+    }
+
+    #[test]
+    fn deleting_keeps_trace_and_condition_details_searchable_and_safe() {
+        let trace = serde_json::json!({
+            "object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"example","deletionTimestamp":"2026-09-20T08:49:00Z"},"status":{"conditions":[{"type":"Ready","status":"False","reason":"Waiting","message":"first line\nsecond line\u{1b}[31m\u{202e}"}]}},
+            "error":{"message":"access denied"}
+        });
+        let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+        let node = &snapshot.nodes[0];
+        assert_eq!(node.status, "Deleting");
+        let details = node.status_details.as_deref().unwrap();
+        assert!(details.contains("Error: access denied"));
+        assert!(details.contains("Waiting: first line\nsecond line\\x1b[31m\\u{202E}"));
+        for query in ["access denied", "status:waiting", "status:deleting"] {
+            assert!(matches_query(node, query));
+        }
+        assert!(!matches_query(node, "status:absent"));
     }
 
     #[test]
@@ -884,7 +1064,11 @@ mod tests {
         .unwrap();
         let node = &snapshot.nodes[0];
         assert_eq!(node.health, Health::Warning);
-        assert_eq!(node.status, "Warning: Needs attention");
+        assert_eq!(node.status, "Warning");
+        assert_eq!(
+            node.status_details.as_deref(),
+            Some("Ready=False\nWarning: Needs attention")
+        );
     }
 
     #[test]
@@ -895,7 +1079,11 @@ mod tests {
         .unwrap();
         let node = &snapshot.nodes[0];
         assert_eq!(node.health, Health::Unknown);
-        assert_eq!(node.status, "Unknown: State unavailable");
+        assert_eq!(node.status, "Unknown");
+        assert_eq!(
+            node.status_details.as_deref(),
+            Some("Ready=False\nUnknown: State unavailable")
+        );
     }
 
     #[test]
@@ -917,7 +1105,8 @@ mod tests {
         .unwrap();
         let node = &snapshot.nodes[0];
         assert_eq!(node.health, Health::Unhealthy);
-        assert_eq!(node.status, "Error: not found");
+        assert_eq!(node.status, "Error");
+        assert_eq!(node.status_details.as_deref(), Some("Error: not found"));
     }
 
     #[test]
@@ -928,7 +1117,11 @@ mod tests {
         .unwrap();
         let node = &snapshot.nodes[0];
         assert_eq!(node.health, Health::Unknown);
-        assert_eq!(node.status, "Error: configmaps \"example\" not found");
+        assert_eq!(node.status, "Deleted");
+        assert_eq!(
+            node.status_details.as_deref(),
+            Some("Error: configmaps \"example\" not found")
+        );
     }
 
     #[test]
@@ -938,10 +1131,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            snapshot.nodes[0].status,
-            "Error: configmaps \"missing\" not found"
+            snapshot.nodes[0].status_details.as_deref(),
+            Some("Error: configmaps \"missing\" not found")
         );
-        assert!(!snapshot.nodes[0].status.contains("ErrStatus"));
+        assert_eq!(snapshot.nodes[0].status, "Deleted");
     }
 
     #[test]
@@ -950,7 +1143,88 @@ mod tests {
             br#"{"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"missing"}},"error":{"ErrStatus":{"code":404,"reason":"NotFound"}}}"#,
         )
         .unwrap();
-        assert_eq!(snapshot.nodes[0].status, "Error: NotFound");
+        assert_eq!(snapshot.nodes[0].status, "Deleted");
+        assert_eq!(
+            snapshot.nodes[0].status_details.as_deref(),
+            Some("Error: NotFound")
+        );
+    }
+
+    #[test]
+    fn deleted_status_uses_structured_errors_and_preserves_deleting_precedence() {
+        for error in [
+            serde_json::json!({"code":404,"message":"object missing"}),
+            serde_json::json!({"reason":"NotFound","message":"object missing"}),
+            serde_json::json!({"ErrStatus":{"code":404,"message":"object missing"}}),
+            serde_json::json!({"ErrStatus":{"reason":"NotFound","message":"object missing"}}),
+            serde_json::json!({"errStatus":{"code":404,"message":"object missing"}}),
+            serde_json::json!({"errStatus":{"reason":"NotFound","message":"object missing"}}),
+        ] {
+            let mut trace = serde_json::json!({"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"example"}},"error":error});
+            let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+            let node = &snapshot.nodes[0];
+            assert_eq!(node.status, "Deleted");
+            assert_eq!(node.health, Health::Unknown);
+            assert_eq!(
+                node.status_details.as_deref(),
+                Some("Error: object missing")
+            );
+            assert!(matches_query(node, "status:deleted"));
+            assert!(matches_query(node, "status:object missing"));
+
+            trace["object"]["metadata"]["deletionTimestamp"] =
+                serde_json::json!("2026-09-20T08:49:00Z");
+            let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+            assert_eq!(snapshot.nodes[0].status, "Deleting");
+            assert_eq!(snapshot.nodes[0].health, Health::Unhealthy);
+            assert_eq!(snapshot.nodes[0].status_details, node.status_details);
+        }
+    }
+
+    #[test]
+    fn creating_status_uses_false_readiness_reason_without_hiding_failures() {
+        for (ready, reason, synced, trace_error, expected) in [
+            ("False", "Creating", None, false, "Creating"),
+            ("False", "Creating", Some("True"), false, "Creating"),
+            ("False", "Creating", Some("False"), false, "Error"),
+            ("False", "Creating", None, true, "Error"),
+            ("False", "Waiting", None, false, "Unready"),
+            ("Unknown", "Creating", None, false, "Unknown"),
+            (
+                "True",
+                "Creating",
+                None,
+                false,
+                "Creating: Unready resources: child",
+            ),
+        ] {
+            let mut conditions = vec![
+                serde_json::json!({"type":"Ready","status":ready,"reason":reason,"message":"Unready resources: child"}),
+            ];
+            if let Some(synced) = synced {
+                conditions.push(serde_json::json!({"type":"Synced","status":synced,"reason":"ReconcileError","message":"cannot connect"}));
+            }
+            let mut trace = serde_json::json!({"object":{"apiVersion":"example.io/v1","kind":"Resource","metadata":{"name":"example"},"status":{"conditions":conditions}}});
+            if trace_error {
+                trace["error"] = serde_json::json!({"message":"access denied"});
+            }
+            let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+            let node = &snapshot.nodes[0];
+            assert_eq!(node.status, expected);
+            if ready == "False" {
+                assert_eq!(node.health, Health::Unhealthy);
+                assert!(
+                    node.status_details
+                        .as_deref()
+                        .unwrap()
+                        .contains(&format!("Ready=False\n{reason}: Unready resources: child"))
+                );
+                assert!(matches_query(node, "status:unready resources: child"));
+            } else if ready == "True" {
+                assert_eq!(node.health, Health::Healthy);
+                assert!(node.status_details.is_none());
+            }
+        }
     }
 
     #[test]
@@ -974,6 +1248,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.nodes[0].health, Health::Healthy);
+    }
+
+    #[test]
+    fn healthy_package_revision_ignores_installed_failure() {
+        let snapshot = Snapshot::parse(br#"{"object":{"apiVersion":"pkg.crossplane.io/v1","kind":"ProviderRevision","metadata":{"name":"example"},"status":{"conditions":[{"type":"RevisionHealthy","status":"True","reason":"HealthyPackageRevision"},{"type":"Installed","status":"False","reason":"Irrelevant"}]}}}"#).unwrap();
+        assert_eq!(snapshot.nodes[0].health, Health::Healthy);
+        assert_eq!(snapshot.nodes[0].status, "HealthyPackageRevision");
+        assert!(snapshot.nodes[0].status_details.is_none());
     }
 
     #[test]

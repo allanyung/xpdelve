@@ -19,8 +19,7 @@ project demo are documented in [`demo/`](demo/README.md).
 
 xpdelve provides live trace browsing, resilient refresh, tree find/filter,
 native Kubernetes inspection and mutations, and kubectl-backed Describe and
-Edit workflows. See
-[`docs/implementation.md`](docs/implementation.md) for remaining release work.
+Edit workflows.
 
 ## Installation
 
@@ -131,18 +130,18 @@ context, resource, API group, and name through the variables in `args`.
 ## Keys
 
 - `j`/`k` or `Up`/`Down`: move through resources
-- `Enter`/`Space`: toggle expansion
+- `Enter`: show resource problem details when available; the footer hint appears only on those rows
 - `Right`: expand or select the first child
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
 - `:`: choose a resource kind; `/`: filter; `f`: find; `n`/`N`: next or previous match
-- `d`, `y`, `s`, `v`: describe, live YAML, status, and events
+- `d`, `y`, `s`, `E`: describe, live YAML, status, and events
 - `p`/`u`: pause or unpause the selected Crossplane resource
 - `ctrl+d`: delete with a propagation-policy confirmation
 - `ctrl+x`: selectively remove finalizers after confirmation
 - `e`: run `kubectl edit`
 - `c`: copy the canonical resource identifier using OSC 52
-- `h`/`l`, Shift+Left/Right: scroll columns while resource names stay pinned; thumbwheel or Shift+wheel also works over the tree
+- `h`/`l`, Shift+Left/Right: scroll middle columns while resource names and status stay pinned; thumbwheel or Shift+wheel also works over the tree
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
 ### Extra tree columns

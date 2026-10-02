@@ -213,8 +213,15 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     );
     let horizontal = rendered.horizontal;
     let body = Block::default().borders(Borders::ALL).inner(area);
-    if horizontal.pinned_width >= 2 {
-        let divider_column = body.x + horizontal.pinned_width as u16 - 2;
+    for divider in [
+        horizontal.pinned_width.checked_sub(2),
+        (horizontal.right_pinned_width >= 2)
+            .then_some(horizontal.pinned_width + horizontal.viewport_width),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let divider_column = body.x + divider as u16;
         for row in 0..=rendered.row_count {
             if let Some(cell) = frame
                 .buffer_mut()
@@ -284,7 +291,9 @@ pub(super) struct RenderedTree {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TreeHorizontalLayout {
+    // Pinned regions include their two-cell divider; STATUS also has one trailing space.
     pub(super) pinned_width: usize,
+    pub(super) right_pinned_width: usize,
     pub(super) viewport_width: usize,
     pub(super) content_width: usize,
     pub(super) offset: usize,
@@ -292,7 +301,11 @@ pub(super) struct TreeHorizontalLayout {
 
 impl TreeHorizontalLayout {
     pub(super) fn max_offset(self) -> usize {
-        self.content_width.saturating_sub(self.viewport_width)
+        if self.viewport_width == 0 {
+            0
+        } else {
+            self.content_width.saturating_sub(self.viewport_width)
+        }
     }
 
     fn slice(self, value: &str, ascii: bool) -> String {
@@ -303,8 +316,29 @@ impl TreeHorizontalLayout {
             0,
             self.pinned_width - object_width,
         );
-        let tail = horizontal_slice(value, self.pinned_width + self.offset, self.viewport_width);
-        format!("{object}{separator}{tail}")
+        let mut middle = horizontal_slice(
+            value,
+            self.pinned_width + self.offset,
+            self.viewport_width
+                .min(self.content_width.saturating_sub(self.offset)),
+        );
+        middle.push_str(&" ".repeat(self.viewport_width.saturating_sub(middle.width())));
+        let right_separator = horizontal_slice(
+            if ascii { "| " } else { "│ " },
+            0,
+            self.right_pinned_width.min(2),
+        );
+        let status = horizontal_slice(
+            value,
+            self.pinned_width + self.content_width + 2,
+            self.right_pinned_width.saturating_sub(3),
+        );
+        let padding = if self.right_pinned_width >= 3 {
+            " "
+        } else {
+            ""
+        };
+        format!("{object}{separator}{middle}{right_separator}{status}{padding}")
     }
 }
 
@@ -489,8 +523,7 @@ impl TablePlan {
             .map(|index| object_cell(snapshot, &snapshot.nodes[*index], ascii).width())
             .max()
             .unwrap_or(6)
-            .max("OBJECT".len())
-            .min(available * 3 / 5);
+            .max("OBJECT".len());
         let group = visible
             .iter()
             .map(|index| group_cell(&snapshot.nodes[*index]).width())
@@ -522,10 +555,14 @@ impl TablePlan {
         };
         let status = visible
             .iter()
-            .map(|index| snapshot.nodes[*index].status.width())
+            .map(|index| status_cell(&snapshot.nodes[*index]).width())
             .max()
             .unwrap_or(6)
-            .max("STATUS".len());
+            .max("STATUS".len())
+            .min(24)
+            .min((available / 3).max("STATUS".len()))
+            .min(available.saturating_sub(5));
+        let object = object.min(available.saturating_sub(status + 5) * 3 / 5);
         Self {
             available,
             object,
@@ -561,8 +598,11 @@ impl TablePlan {
     }
 
     pub(super) fn horizontal_layout(&self, offset: usize) -> TreeHorizontalLayout {
-        let pinned_width = (self.object + 2).min(self.available);
-        let viewport_width = self.available.saturating_sub(pinned_width);
+        let right_pinned_width = (self.status + 3).min(self.available);
+        let pinned_width = (self.object + 2).min(self.available.saturating_sub(right_pinned_width));
+        let viewport_width = self
+            .available
+            .saturating_sub(pinned_width + right_pinned_width);
         let group = if self.package { 0 } else { self.group };
         let extra_width: usize = self
             .extra_columns
@@ -570,14 +610,16 @@ impl TablePlan {
             .map(|column| column.width + 2)
             .sum();
         let content_width = (self.object + group + self.fixed_width() + extra_width + self.status)
-            .saturating_sub(pinned_width);
-        let max_offset = content_width.saturating_sub(viewport_width);
-        TreeHorizontalLayout {
+            .saturating_sub(pinned_width + self.status + 2);
+        let mut horizontal = TreeHorizontalLayout {
             pinned_width,
+            right_pinned_width,
             viewport_width,
             content_width,
-            offset: offset.min(max_offset),
-        }
+            offset: 0,
+        };
+        horizontal.offset = offset.min(horizontal.max_offset());
+        horizontal
     }
 
     pub(super) fn header(&self) -> String {
@@ -637,6 +679,7 @@ impl TablePlan {
         let group = group_cell(node);
         let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
         let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
+        let status = status_cell(node);
         let extra_values: Vec<_> = self
             .extra_columns
             .iter()
@@ -682,7 +725,7 @@ impl TablePlan {
                 .zip(&extra_values)
                 .map(|(column, value)| (value.as_str(), column.width)),
         );
-        columns.push((&node.status, self.status));
+        columns.push((status.as_str(), self.status));
         format_columns_owned(&columns)
     }
 }
@@ -740,6 +783,10 @@ pub(super) fn group_cell(node: &ProjectedNode) -> String {
     }
 }
 
+fn status_cell(node: &ProjectedNode) -> String {
+    text::sanitize(&node.status).replace(['\n', '\t'], " ")
+}
+
 pub(super) fn format_columns(columns: &[(&str, usize)]) -> String {
     format_columns_owned(columns)
 }
@@ -766,13 +813,13 @@ pub(super) fn pad_or_truncate(value: &str, width: usize) -> String {
     let mut result = String::new();
     let target = width - 1;
     let mut used = 0;
-    for character in value.chars() {
-        let character_width = character.width().unwrap_or(0);
-        if used + character_width > target {
+    for grapheme in value.graphemes(true) {
+        let grapheme_width = grapheme.width();
+        if used + grapheme_width > target {
             break;
         }
-        result.push(character);
-        used += character_width;
+        result.push_str(grapheme);
+        used += grapheme_width;
     }
     result.push('…');
     result.push_str(&" ".repeat(width.saturating_sub(result.width())));
@@ -864,54 +911,82 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         " r:retry  q:quit".into()
     } else {
         match app.mode {
-        InputMode::Command => format!(":{}▏", app.input),
-        InputMode::Filter => format!(" Filter: {}_", app.input),
-        InputMode::Find => format!(" Find: {}_", app.input),
-        InputMode::Normal | InputMode::Help
-            if app.kind_filter.is_some()
-                || app.health_filter != HealthFilter::All
-                || !app.excluded_kinds.is_empty()
-                || !app.filter.is_empty()
-                || !app.find.is_empty() =>
-        {
-            let mut active = Vec::new();
-            if let Some(kind) = &app.kind_filter {
-                active.push(format!("Kind: {}", app.kind_filter_label(kind)));
+            InputMode::Command => format!(":{}▏", app.input),
+            InputMode::Filter => format!(" Filter: {}_", app.input),
+            InputMode::Find => format!(" Find: {}_", app.input),
+            InputMode::Normal | InputMode::Help
+                if app.kind_filter.is_some()
+                    || app.health_filter != HealthFilter::All
+                    || !app.excluded_kinds.is_empty()
+                    || !app.filter.is_empty()
+                    || !app.find.is_empty() =>
+            {
+                let mut active = Vec::new();
+                if let Some(kind) = &app.kind_filter {
+                    active.push(format!("Kind: {}", app.kind_filter_label(kind)));
+                }
+                if app.health_filter != HealthFilter::All {
+                    active.push(format!(
+                        "Health: {}",
+                        health_filter_label(app.health_filter)
+                    ));
+                }
+                if !app.excluded_kinds.is_empty() {
+                    let mut excluded = app
+                        .excluded_kinds
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
+                    excluded.sort_by_key(|kind| kind.to_lowercase());
+                    active.push(if excluded.len() <= 2 {
+                        format!("Excluded: {}", excluded.join(", "))
+                    } else {
+                        format!("Excluded kinds: {}", excluded.len())
+                    });
+                }
+                if !app.filter.is_empty() {
+                    active.push(format!("Filter: {}", app.filter));
+                }
+                if !app.find.is_empty() {
+                    active.push(format!("Find: {}", app.find));
+                }
+                format!(" {}", active.join("  |  "))
             }
-            if app.health_filter != HealthFilter::All {
-                active.push(format!(
-                    "Health: {}",
-                    health_filter_label(app.health_filter)
-                ));
-            }
-            if !app.excluded_kinds.is_empty() {
-                let mut excluded = app
-                    .excluded_kinds
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                excluded.sort_by_key(|kind| kind.to_lowercase());
-                active.push(if excluded.len() <= 2 {
-                    format!("Excluded: {}", excluded.join(", "))
+            InputMode::Normal | InputMode::Help => {
+                let details = if app
+                    .selected_node()
+                    .is_some_and(|node| node.status_details.is_some())
+                {
+                    " Enter:details "
                 } else {
-                    format!("Excluded kinds: {}", excluded.len())
-                });
+                    ""
+                };
+                format!(
+                    "{details} Left/Right:collapse/expand  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  E:events"
+                )
             }
-            if !app.filter.is_empty() {
-                active.push(format!("Filter: {}", app.filter));
-            }
-            if !app.find.is_empty() {
-                active.push(format!("Find: {}", app.find));
-            }
-            format!(" {}", active.join("  |  "))
-        }
-        InputMode::Normal | InputMode::Help => {
-            " h/l:scroll  Enter/Space:expand/collapse  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  v:events"
-                .into()
-        }
         }
     };
-    frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), area);
+    let scrollable = !app.resource_missing
+        && matches!(app.mode, InputMode::Normal | InputMode::Help)
+        && resource_tree_area(frame.area())
+            .and_then(|tree| tree_table_plan(app, tree, &app.visible()))
+            .is_some_and(|plan| {
+                let horizontal = plan.horizontal_layout(app.resource_horizontal_scroll);
+                horizontal.max_offset() > 0 && horizontal.viewport_width > 0
+            });
+    if scrollable {
+        let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(12)]).split(area);
+        frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), chunks[0]);
+        frame.render_widget(
+            Paragraph::new(" h/l:scroll ")
+                .alignment(Alignment::Right)
+                .style(app.theme.subtle()),
+            chunks[1],
+        );
+    } else {
+        frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), area);
+    }
 }
 
 pub(super) fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {

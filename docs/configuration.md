@@ -110,7 +110,7 @@ supported.
 - `width` is optional. Omit it to size the column from its header and currently
   visible values. Set it to a display-cell width from 1 to 65535 for fixed-width
   truncation. Columns remain reachable through horizontal scrolling while
-  OBJECT stays pinned.
+  OBJECT stays pinned on the left and STATUS stays pinned on the right.
 
 Strings, numbers, and booleans render as text. Missing fields, nulls, objects,
 and arrays show `-`; select individual fields or array elements to display them.
