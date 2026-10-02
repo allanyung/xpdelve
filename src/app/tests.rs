@@ -1366,8 +1366,9 @@ fn tree_scrollbar_has_static_square_thumb_and_left_arrow_in_separator_gap() {
                     .unwrap();
                 assert!(!thumb.modifier.contains(Modifier::BOLD));
                 if app.theme.colors_enabled {
-                    assert_eq!(thumb.fg, app.theme.palette.overlay1);
-                    assert_eq!(thumb.fg, track.fg);
+                    assert_eq!(thumb.fg, app.theme.palette.subtext1);
+                    assert_eq!(track.fg, app.theme.palette.overlay1);
+                    assert_ne!(thumb.fg, track.fg);
                 } else {
                     assert!(track.modifier.contains(Modifier::DIM));
                 }

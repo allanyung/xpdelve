@@ -250,7 +250,11 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
                 .track_symbol(Some(if app.config.ui.ascii { "." } else { "·" }))
                 .track_style(app.theme.subtle())
                 .thumb_symbol(if app.config.ui.ascii { "-" } else { "▪" })
-                .thumb_style(app.theme.subtle()),
+                .thumb_style(if app.theme.colors_enabled {
+                    app.theme.fg(app.theme.palette.subtext1)
+                } else {
+                    app.theme.subtle()
+                }),
             scrollbar_area,
             &mut state,
         );
