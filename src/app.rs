@@ -197,6 +197,8 @@ struct TextSelection {
 struct TreeSelection {
     text: TextSelection,
     content: String,
+    area: Rect,
+    selecting: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +274,7 @@ struct App {
     context: Option<String>,
     toast: Option<Toast>,
     tree_selection: Option<TreeSelection>,
+    deferred_snapshot: Option<Snapshot>,
     last_tree_click: Option<TreeClick>,
 }
 

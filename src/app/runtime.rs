@@ -26,6 +26,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     request_refresh(&mut app, cli, &sender, &mut active, true);
 
     while !app.quit {
+        app.apply_deferred_snapshot();
         terminal.set_mouse_capture(app.captures_mouse())?;
         terminal.terminal.draw(|frame| render(frame, &app))?;
         let toast_active = app.toast.is_some();

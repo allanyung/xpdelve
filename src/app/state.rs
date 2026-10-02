@@ -42,6 +42,7 @@ impl App {
             context: cli.context.clone(),
             toast: None,
             tree_selection: None,
+            deferred_snapshot: None,
             last_tree_click: None,
         }
     }
@@ -361,7 +362,15 @@ impl App {
     }
 
     pub(super) fn apply_snapshot(&mut self, snapshot: Snapshot) {
-        self.tree_selection = None;
+        if self
+            .tree_selection
+            .as_ref()
+            .is_some_and(|selection| selection.selecting)
+        {
+            self.deferred_snapshot = Some(snapshot);
+            self.loading = false;
+            return;
+        }
         self.last_tree_click = None;
         let selection_chain = self.selection_chain();
         let snapshot = Arc::new(snapshot);
@@ -379,6 +388,12 @@ impl App {
             })
             .unwrap_or_else(|| self.selected_visible.min(visible.len().saturating_sub(1)));
         self.sync_selected_identity();
+        if let Some(selection) = &self.tree_selection
+            && super::render::rendered_tree(self, selection.area)
+                .is_none_or(|rendered| rendered.content != selection.content)
+        {
+            self.tree_selection = None;
+        }
         self.loading = false;
         self.resource_missing = false;
         self.last_refresh = Some(Instant::now());
@@ -386,7 +401,19 @@ impl App {
         self.retry_delay = Duration::from_secs(1);
     }
 
+    pub(super) fn apply_deferred_snapshot(&mut self) {
+        if !self
+            .tree_selection
+            .as_ref()
+            .is_some_and(|selection| selection.selecting)
+            && let Some(snapshot) = self.deferred_snapshot.take()
+        {
+            self.apply_snapshot(snapshot);
+        }
+    }
+
     pub(super) fn apply_resource_not_found(&mut self) {
+        self.deferred_snapshot = None;
         self.snapshot = None;
         self.selected_identity = None;
         self.selected_visible = 0;

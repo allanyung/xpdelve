@@ -9,7 +9,9 @@ impl App {
         terminal_area: Rect,
     ) -> Option<MouseAction> {
         if self.modal.is_none() {
-            return self.handle_tree_mouse(mouse, terminal_area);
+            let action = self.handle_tree_mouse(mouse, terminal_area);
+            self.apply_deferred_snapshot();
+            return action;
         }
         if matches!(self.modal, Some(Modal::ContextMenu { .. })) {
             return self.handle_context_menu_mouse(mouse, terminal_area);
@@ -188,6 +190,8 @@ impl App {
                         dragged: false,
                     },
                     content: rendered.content,
+                    area: tree_area,
+                    selecting: true,
                 });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -210,6 +214,7 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 let mut active = self.tree_selection.take()?;
+                active.selecting = false;
                 if !active.text.dragged {
                     if let Some(position) = clicked_tree_position(
                         body,
