@@ -129,8 +129,133 @@ fn inspection_failure_remains_in_status_line() {
 fn collapse_hides_descendants() {
     let mut app = app();
     assert_eq!(app.visible().len(), 2);
-    app.toggle_selected();
+    app.collapse_or_parent();
     assert_eq!(app.visible().len(), 1);
+}
+
+#[test]
+fn enter_and_space_never_toggle_tree_expansion() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 20);
+    for collapsed in [false, true] {
+        for key in [KeyCode::Enter, KeyCode::Char(' ')] {
+            app.handle_key(KeyEvent::new(key, KeyModifiers::NONE), area);
+            assert_eq!(app.visible().len(), if collapsed { 1 } else { 2 });
+            assert!(app.modal.is_none());
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
+    }
+}
+
+#[test]
+fn problematic_parent_opens_details_without_changing_expansion() {
+    let mut app = app();
+    app.apply_snapshot(Snapshot::parse(br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},"error":{"message":"trace failed"},"children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"child"}}}]}"#).unwrap());
+    let area = Rect::new(0, 0, 100, 20);
+    for collapsed in [false, true] {
+        let before = app.collapsed.clone();
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), area);
+        assert!(app.modal.is_none());
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+        assert!(matches!(app.modal, Some(Modal::Text { .. })));
+        assert_eq!(app.collapsed, before);
+        assert_eq!(app.visible().len(), if collapsed { 1 } else { 2 });
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
+    }
+}
+
+#[test]
+fn resource_details_support_long_safe_text_scrolling_and_search() {
+    let mut app = app();
+    let message = format!(
+        "{}\nneedle\u{1b}[31m\u{202e}",
+        "long diagnostic\n".repeat(60)
+    );
+    let trace = serde_json::json!({"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},"error":{"message":message}});
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    let area = Rect::new(0, 0, 100, 20);
+    let tree = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
+    assert!(tree.lines[1].contains("Error"));
+    assert!(!tree.lines[1].contains("diagnostic"));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), area);
+    assert!(
+        matches!(&app.modal, Some(Modal::Text { content, vertical_scroll, .. }) if *vertical_scroll > 0 && content.contains("needle\\x1b[31m\\u{202E}") && !content.contains('\u{1b}') && !content.contains('\u{202e}'))
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
+    for character in "needle".chars() {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            area,
+        );
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    assert!(
+        matches!(&app.modal, Some(Modal::Text { query, vertical_scroll, .. }) if query == "needle" && *vertical_scroll > 40)
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert!(terminal.backend().to_string().contains("needle"));
+}
+
+#[test]
+fn enter_opens_wrapped_problem_details_that_survive_refresh() {
+    let mut app = app();
+    let trace = serde_json::json!({
+        "object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},
+        "children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"child"},"status":{"conditions":[{"type":"Ready","status":"False","reason":"Waiting","message":"a long diagnostic"}]}},"error":{"message":"cannot connect"}}]
+    });
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    let area = Rect::new(0, 0, 100, 20);
+    app.find = "cannot connect".into();
+    app.find_next(false);
+    assert_eq!(app.selected_visible, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    let Some(Modal::Text {
+        title,
+        content,
+        kind,
+        wrapped,
+        ..
+    }) = &app.modal
+    else {
+        panic!("expected resource problem details");
+    };
+    assert_eq!(title, "Resource details: Child/child");
+    assert!(content.contains("Error: cannot connect"));
+    assert!(content.contains("Ready=False\nWaiting: a long diagnostic"));
+    assert_eq!(*kind, ContentKind::Error);
+    assert!(*wrapped);
+    let original = content.clone();
+    app.apply_snapshot(
+        Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}}}"#,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(&app.modal, Some(Modal::Text { content, .. }) if content == &original));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn uppercase_e_opens_events_and_lowercase_bindings_remain_distinct() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 20);
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+        assert!(
+            matches!(app.handle_key(KeyEvent::new(KeyCode::Char('E'), modifiers), area), UiAction::Events(target) if target.identity == app.selected_node().unwrap().identity)
+        );
+    }
+    assert!(matches!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), area),
+        UiAction::None
+    ));
+    assert!(matches!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE), area),
+        UiAction::Edit(_)
+    ));
 }
 
 #[test]
@@ -161,7 +286,7 @@ fn collapse_all_keeps_root_expanded() {
 fn right_expands_a_collapsed_node() {
     let mut app = app();
     let area = Rect::new(0, 0, 100, 20);
-    app.toggle_selected();
+    app.collapse_or_parent();
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
 
@@ -230,7 +355,7 @@ fn unicode_tree_uses_disconnected_xpdig_indentation() {
     let cell = object_cell_with_state(snapshot, root, false);
     assert!(cell.starts_with("▾ Root/root"));
 
-    app.toggle_selected();
+    app.collapse_or_parent();
     let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
     assert!(rendered.lines[1].starts_with("▸ Root/root"));
     assert_eq!(
@@ -249,7 +374,7 @@ fn ascii_tree_uses_fixed_width_disclosure_indicators() {
     assert!(expanded.lines[1].starts_with("- Root/root"));
     assert!(expanded.lines[2].starts_with("`--- Child/child"));
 
-    app.toggle_selected();
+    app.collapse_or_parent();
     let collapsed = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
     assert!(collapsed.lines[1].starts_with("+ Root/root"));
     assert_eq!(
@@ -1164,8 +1289,10 @@ fn extra_columns_union_is_aligned_before_status_in_both_table_modes() {
         let plan =
             tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
         assert_eq!(
-            plan.header().width(),
-            plan.horizontal_layout(0).pinned_width + plan.horizontal_layout(0).content_width
+            plan.header().width() + 1,
+            plan.horizontal_layout(0).pinned_width
+                + plan.horizontal_layout(0).content_width
+                + plan.horizontal_layout(0).right_pinned_width
         );
         let backend = TestBackend::new(240, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1179,9 +1306,9 @@ fn extra_columns_follow_collapse_kind_filter_and_refresh() {
     let mut app = app_with_extra_columns();
     let area = Rect::new(0, 0, 240, 20);
     let tree = resource_tree_area(area).unwrap();
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
     assert!(!rendered_tree(&app, tree).unwrap().lines[0].contains("CHILD ONLY"));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
     assert!(rendered_tree(&app, tree).unwrap().lines[0].contains("CHILD ONLY"));
     for key in [':', 'c', 'h'] {
         app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
@@ -1239,8 +1366,10 @@ fn extra_columns_work_in_package_tables() {
         let plan =
             tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
         assert_eq!(
-            plan.header().width(),
-            plan.horizontal_layout(0).pinned_width + plan.horizontal_layout(0).content_width
+            plan.header().width() + 1,
+            plan.horizontal_layout(0).pinned_width
+                + plan.horizontal_layout(0).content_width
+                + plan.horizontal_layout(0).right_pinned_width
         );
     }
 }
@@ -1376,6 +1505,152 @@ fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
 }
 
 #[test]
+fn object_and_status_are_pinned_while_only_middle_columns_scroll() {
+    for (api_version, kind) in [
+        ("example.io/v1", "Root"),
+        ("pkg.crossplane.io/v1", "Provider"),
+    ] {
+        for short in [false, true] {
+            let mut app = app_with_extra_columns();
+            let trace = serde_json::json!({"object":{"apiVersion":api_version,"kind":kind,"metadata":{"name":"root"},"status":{"conditions":[{"type":"Ready","status":"False","reason":"Creating"},{"type":"Healthy","status":"False","reason":"Creating"}]}}});
+            app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+            app.config.ui.short = short;
+            for width in [32, 50, 100, 240] {
+                let tree = resource_tree_area(Rect::new(0, 0, width, 16)).unwrap();
+                app.resource_horizontal_scroll = 0;
+                let before = rendered_tree(&app, tree).unwrap();
+                let horizontal = before.horizontal;
+                let right = horizontal.pinned_width + horizontal.viewport_width;
+                assert_eq!(before.lines[0].matches("STATUS").count(), 1);
+                assert_eq!(
+                    right + horizontal.right_pinned_width,
+                    usize::from(width - 2)
+                );
+                assert_eq!(
+                    horizontal_slice(
+                        &before.lines[0],
+                        right + 2,
+                        horizontal.right_pinned_width - 3
+                    )
+                    .trim(),
+                    "STATUS"
+                );
+                assert_eq!(
+                    horizontal_slice(
+                        &before.lines[1],
+                        right + 2,
+                        horizontal.right_pinned_width - 3
+                    )
+                    .trim(),
+                    "Creating"
+                );
+                for offset in [4, usize::MAX] {
+                    app.resource_horizontal_scroll = offset;
+                    let after = rendered_tree(&app, tree).unwrap();
+                    for (before, after) in before.lines.iter().zip(&after.lines) {
+                        assert_eq!(
+                            horizontal_slice(before, 0, horizontal.pinned_width),
+                            horizontal_slice(after, 0, horizontal.pinned_width)
+                        );
+                        assert_eq!(
+                            horizontal_slice(before, right, horizontal.right_pinned_width),
+                            horizontal_slice(after, right, horizontal.right_pinned_width)
+                        );
+                        assert_eq!(after.width(), usize::from(width - 2));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn long_unicode_statuses_are_capped_without_changing_model_text() {
+    let mut app = app();
+    let mut snapshot = app.snapshot.as_ref().unwrap().as_ref().clone();
+    let status = format!("{}tail", "界".repeat(50));
+    Arc::make_mut(&mut snapshot.nodes)[0].status = status.clone();
+    app.apply_snapshot(snapshot);
+    let middle_width = tree_table_plan(
+        &app,
+        resource_tree_area(Rect::new(0, 0, 100, 16)).unwrap(),
+        &app.visible(),
+    )
+    .unwrap()
+    .horizontal_layout(0)
+    .content_width;
+    for width in [32, 50, 100, 240] {
+        let tree = resource_tree_area(Rect::new(0, 0, width, 16)).unwrap();
+        let rendered = rendered_tree(&app, tree).unwrap();
+        let horizontal = rendered.horizontal;
+        let status_width = horizontal.right_pinned_width - 3;
+        assert!((6..=24).contains(&status_width));
+        assert!(rendered.lines[1].trim_end().ends_with('…'));
+        assert_eq!(rendered.lines[1].width(), usize::from(width - 2));
+        assert_eq!(horizontal.content_width, middle_width);
+    }
+    assert_eq!(app.snapshot.as_ref().unwrap().nodes[0].status, status);
+}
+
+#[test]
+fn status_has_one_reserved_space_before_the_right_border() {
+    for (api_version, kind, status) in [
+        ("example.io/v1", "Root", "Creating"),
+        ("pkg.crossplane.io/v1", "Provider", "HealthyPackageRevision"),
+        (
+            "example.io/v1",
+            "Root",
+            "A very long successful status that needs truncation",
+        ),
+    ] {
+        let mut app = app();
+        let trace = serde_json::json!({"object":{"apiVersion":api_version,"kind":kind,"metadata":{"name":"root"}}});
+        let mut snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+        Arc::make_mut(&mut snapshot.nodes)[0].status = status.into();
+        app.apply_snapshot(snapshot);
+        for width in [32, 50, 100, 240] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 16)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer.cell((width - 2, 3)).unwrap().symbol(), " ");
+            assert_ne!(buffer.cell((width - 3, 3)).unwrap().symbol(), " ");
+            let rendered = rendered_tree(
+                &app,
+                resource_tree_area(Rect::new(0, 0, width, 16)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(rendered.lines[1].width(), usize::from(width - 2));
+            assert!(rendered.lines[0].ends_with(' '));
+            assert!(rendered.lines[1].ends_with(' '));
+        }
+    }
+}
+
+#[test]
+fn status_rendering_is_single_line_and_zero_middle_space_cannot_scroll() {
+    let mut app = app();
+    let mut snapshot = app.snapshot.as_ref().unwrap().as_ref().clone();
+    Arc::make_mut(&mut snapshot.nodes)[0].status = "first\nsecond\tline".into();
+    app.apply_snapshot(snapshot);
+    let tree = resource_tree_area(Rect::new(0, 0, 100, 16)).unwrap();
+    let rendered = rendered_tree(&app, tree).unwrap();
+    assert!(rendered.lines[1].ends_with("first second line "));
+    assert!(!rendered.lines[1].contains(['\n', '\t']));
+    let plan = TablePlan::new(
+        app.snapshot.as_ref().unwrap(),
+        &app.visible(),
+        4,
+        false,
+        false,
+        false,
+    );
+    let horizontal = plan.horizontal_layout(usize::MAX);
+    assert_eq!(horizontal.viewport_width, 0);
+    assert_eq!(horizontal.max_offset(), 0);
+    assert_eq!(horizontal.offset, 0);
+}
+
+#[test]
 fn tree_thumbwheel_and_shift_wheel_scroll_columns() {
     let mut app = app();
     let area = Rect::new(0, 0, 50, 16);
@@ -1416,7 +1691,7 @@ fn tree_horizontal_scroll_is_always_available_and_z_does_not_reset_it() {
         app.resource_horizontal_scroll,
         rendered.horizontal.max_offset()
     );
-    assert!(rendered.lines[0].ends_with("STATUS"));
+    assert!(rendered.lines[0].ends_with("STATUS "));
     assert!(rendered.lines[1].contains("Root/root"));
     let offset = app.resource_horizontal_scroll;
     let status = app.status.clone();
@@ -1464,7 +1739,7 @@ fn tree_horizontal_scroll_clamps_after_content_changes() {
     app.clamp_tree_horizontal_scroll(area);
     let wide_offset = app.resource_horizontal_scroll;
     let rendered = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
-    assert!(rendered.lines[2].ends_with("TAIL"));
+    assert!(rendered.lines[2].trim_end().ends_with('…'));
     app.apply_snapshot(snapshot);
     app.clamp_tree_horizontal_scroll(area);
     assert_eq!(app.resource_horizontal_scroll, wide_offset);
@@ -1502,20 +1777,22 @@ fn tree_pins_and_caps_long_unicode_objects_for_both_schemas() {
         app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
         let area = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
         let before = rendered_tree(&app, area).unwrap();
-        assert_eq!(before.horizontal.pinned_width, 30); // 28-cell object + separator
+        assert_eq!(before.horizontal.pinned_width, 24); // Object shares space remaining after status/dividers.
         assert!(before.lines[1].contains('…'));
         assert!(before.lines.iter().all(|line| line.width() <= 48));
         app.resource_horizontal_scroll = usize::MAX;
         let after = rendered_tree(&app, area).unwrap();
         assert_eq!(
-            horizontal_slice(&before.lines[1], 0, 30),
-            horizontal_slice(&after.lines[1], 0, 30)
+            horizontal_slice(&before.lines[1], 0, before.horizontal.pinned_width),
+            horizontal_slice(&after.lines[1], 0, after.horizontal.pinned_width)
         );
         assert!(after.lines[0].trim_end().ends_with("STATUS"));
         assert!(after.lines.iter().all(|line| line.width() <= 48));
         let plan = tree_table_plan(&app, area, &app.visible()).unwrap();
         assert_eq!(
-            plan.header().width() - after.horizontal.pinned_width,
+            plan.header().width() + 1
+                - after.horizontal.pinned_width
+                - after.horizontal.right_pinned_width,
             after.horizontal.content_width
         );
     }
@@ -1565,13 +1842,15 @@ fn tree_horizontal_wheel_ignores_other_views_and_outside_pointer() {
 }
 
 #[test]
-fn tree_scrolled_drag_copies_visible_pinned_and_tail_text() {
+fn tree_scrolled_drag_copies_object_middle_and_status_text() {
     let mut app = app();
+    app.apply_snapshot(Snapshot::parse(br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},"error":{"code":404,"message":"object missing"},"children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"child"}}}]}"#).unwrap());
     let area = Rect::new(0, 0, 50, 16);
     app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
     let tree_area = resource_tree_area(area).unwrap();
     let body = Block::default().borders(Borders::ALL).inner(tree_area);
     let rendered = rendered_tree(&app, tree_area).unwrap();
+    assert!(rendered.lines[1].trim_end().ends_with("Deleted"));
     let mouse = |kind, column| MouseEvent {
         kind,
         column,
@@ -1635,7 +1914,7 @@ fn tree_horizontal_scrollbar_uses_only_existing_bottom_border() {
         terminal
             .backend()
             .buffer()
-            .cell((tree.right() - 3, bar_y))
+            .cell((bar_x + layout.viewport_width as u16 - 1, bar_y))
             .unwrap()
             .symbol(),
         "▪"
@@ -1649,7 +1928,7 @@ fn tree_horizontal_scrollbar_uses_only_existing_bottom_border() {
         terminal
             .backend()
             .buffer()
-            .cell((tree.right() - 3, bar_y))
+            .cell((bar_x + layout.viewport_width as u16 - 1, bar_y))
             .unwrap()
             .symbol(),
         "-"
@@ -1723,12 +2002,18 @@ fn tree_divider_uses_subtle_style_without_changing_row_selection() {
             let tree = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
             let layout = rendered_tree(&app, tree).unwrap().horizontal;
             let divider = tree.x + 1 + layout.pinned_width as u16 - 2;
+            let status_divider = tree.x + 1 + (layout.pinned_width + layout.viewport_width) as u16;
             let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             let buffer = terminal.backend().buffer();
             for row in 2..=4 {
                 let cell = buffer.cell((divider, row)).unwrap();
+                let status_cell = buffer.cell((status_divider, row)).unwrap();
                 assert_eq!(cell.symbol(), if ascii { "|" } else { "│" });
+                assert_eq!(status_cell.symbol(), cell.symbol());
+                assert_eq!(status_cell.fg, cell.fg);
+                assert_eq!(status_cell.bg, cell.bg);
+                assert_eq!(status_cell.modifier, cell.modifier);
                 if app.theme.colors_enabled {
                     assert_eq!(cell.fg, app.theme.palette.overlay1);
                 } else {
@@ -1792,7 +2077,7 @@ fn tree_scrollbar_has_static_square_thumb_and_left_arrow_in_separator_gap() {
             let layout = rendered_tree(&app, tree).unwrap().horizontal;
             let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
             let left = tree.x + layout.pinned_width as u16;
-            let right = tree.right() - 2;
+            let right = left + layout.viewport_width as u16;
             let bottom = tree.bottom() - 1;
             for offset in [0, 4, layout.max_offset()] {
                 app.resource_horizontal_scroll = offset;
@@ -1848,8 +2133,8 @@ fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
                 let layout = plan.horizontal_layout(usize::MAX);
                 assert!(layout.pinned_width - 2 <= usize::from(width - 2) * 3 / 5);
                 assert_eq!(
-                    plan.header().width(),
-                    layout.pinned_width + layout.content_width
+                    plan.header().width() + 1,
+                    layout.pinned_width + layout.content_width + layout.right_pinned_width
                 );
                 app.resource_horizontal_scroll = usize::MAX;
                 let rendered = rendered_tree(&app, tree).unwrap();
@@ -1866,6 +2151,7 @@ fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
 
 #[test]
 fn horizontal_slicing_preserves_graphemes_and_wide_cell_alignment() {
+    assert_eq!(pad_or_truncate("👩‍💻👩‍💻👩‍💻", 5), "👩‍💻👩‍💻…");
     assert_eq!(horizontal_slice("A界BC", 2, 3), " BC");
     assert_eq!(horizontal_slice("A界BC", 0, 2), "A ");
     assert_eq!(horizontal_slice("e\u{301}界x", 0, 3), "e\u{301}界");
@@ -2156,14 +2442,84 @@ fn main_key_legend_uses_sofka_subtle_color() {
         app.theme.palette.overlay1
     );
     let rendered = terminal.backend().to_string();
-    assert!(rendered.contains("Enter/Space:expand/collapse"));
+    assert!(!rendered.contains("Enter:details"));
+    assert!(rendered.contains("Left/Right:collapse/expand"));
+    assert!(!rendered.contains("Enter/Space"));
     assert!(rendered.contains("ctrl-d:delete"));
-    assert!(rendered.contains("h/l:scroll"));
+    assert!(!rendered.contains("h/l:scroll"));
     assert!(!rendered.contains("z:fit"));
     assert!(!rendered.contains("z:width"));
     assert!(!HELP_LINES.iter().any(|line| line.starts_with("  z ")));
     assert!(rendered.contains("::command"));
     assert!(!rendered.contains("j/k:move"));
+}
+
+#[test]
+fn tree_scroll_hint_is_right_aligned_and_only_shown_for_overflow() {
+    let mut app = app();
+    let mut saw_overflow = false;
+    let mut saw_no_overflow = false;
+    for width in [32, 60, 100, 240, 32] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let footer = (0..width)
+            .map(|column| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((column, 18))
+                    .unwrap()
+                    .symbol()
+            })
+            .collect::<String>();
+        let tree = resource_tree_area(Rect::new(0, 0, width, 20)).unwrap();
+        let horizontal = tree_table_plan(&app, tree, &app.visible())
+            .unwrap()
+            .horizontal_layout(0);
+        if horizontal.max_offset() > 0 {
+            saw_overflow = true;
+            assert!(footer.ends_with(" h/l:scroll "), "{footer:?}");
+            assert!(!footer.contains("Enter:details"));
+        } else {
+            saw_no_overflow = true;
+            assert!(!footer.contains("h/l:scroll"));
+            if width == 240 {
+                assert!(footer.contains("E:events"));
+            }
+        }
+    }
+    assert!(saw_overflow && saw_no_overflow);
+    app.filter = "child".into();
+    let mut terminal = Terminal::new(TestBackend::new(32, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let output = terminal.backend().to_string();
+    assert!(output.contains("Filter: child"));
+    assert!(output.contains("h/l:scroll"));
+
+    for mode in [InputMode::Filter, InputMode::Find, InputMode::Command] {
+        app.mode = mode;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(!terminal.backend().to_string().contains("h/l:scroll"));
+    }
+    app.mode = InputMode::Normal;
+    app.snapshot = None;
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert!(!terminal.backend().to_string().contains("h/l:scroll"));
+}
+
+#[test]
+fn enter_hint_tracks_selected_details_not_health() {
+    let mut app = app();
+    app.apply_snapshot(Snapshot::parse(br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},"children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"deleted"}},"error":{"code":404,"message":"object missing"}},{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"unready"},"status":{"conditions":[{"type":"Ready","status":"False"}]}}}]}"#).unwrap());
+    let mut terminal = Terminal::new(TestBackend::new(160, 20)).unwrap();
+    for (position, expected) in [(0, false), (1, true), (2, true), (0, false)] {
+        app.set_selection(position);
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert_eq!(
+            terminal.backend().to_string().contains("Enter:details"),
+            expected
+        );
+    }
 }
 
 #[test]

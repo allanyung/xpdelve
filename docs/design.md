@@ -59,21 +59,39 @@ retain their Installed/Healthy, image/version, and desired-state semantics.
 
 The main view is a full-width, initially expanded tree. Ordinary traces display
 `OBJECT`, `GROUP`, `SYNCED`, `SYNCED LAST`, `READY`, `READY LAST`, and `STATUS`.
-Package traces use their Installed/Healthy schema. All requested columns retain
-their natural widths, except `OBJECT`, which is capped to leave space for the
+Package traces use their Installed/Healthy schema. Middle columns retain their
+natural widths; `OBJECT` and `STATUS` have bounded widths to leave space for the
 scrolling columns. Transition-time columns are omitted only with `ui.short` or
 `--short`. The composition-resource annotation is not a table column.
 
+Problem statuses use fixed labels (`Deleted`, `Error`, `Creating`, `Unready`,
+`Unknown`, or `Warning`), with `Deleting` retaining precedence. `Deleted` uses
+structured NotFound/404 trace errors; `Creating` uses the reason on a false
+readiness/health condition, without masking reconciliation/installation failures.
+Successful status text and health colors are unchanged. Diagnostic text is
+projected separately and remains searchable by find, plain-text filters, and
+`status:` filters. Enter opens snapshot-local problem details in a persistent,
+wrapped text modal. Its footer hint appears only when the selected row has
+details available. Enter and Space do not
+toggle tree expansion. Left/Right and `[`/`]` control expansion. Events use `E`,
+while `e` remains edit.
+
 Horizontal scrolling is always available with `h`/`l`, Shift+Left/Right, a
 thumbwheel, or Shift+wheel; there is no width-mode toggle.
-The `OBJECT` column remains pinned, capped at 60% of the inner width, while headers
-and remaining columns scroll by terminal cells. The scroll offset is preserved
-and clamped as the viewport or content changes. Overflow
-is indicated by a scrollbar on the existing bottom border. A vertical divider
-in the subtle style separates the pinned column from the scrolling content;
+`OBJECT` remains pinned on the left and `STATUS` on the right. STATUS takes its
+natural width up to 24 cells, further capped to one third of the inner width
+(with a six-cell minimum on supported terminals), plus one reserved space before
+the right border. OBJECT is capped at 60% of the space remaining after STATUS,
+its right padding, and both dividers. Only the middle columns and
+headers scroll by terminal cells. Long statuses are rendered as single-line,
+grapheme-safe ellipsized text without changing the model. The scroll offset is
+preserved and clamped as the viewport or content changes. Middle overflow is
+indicated by a scrollbar on the existing bottom border, and a right-aligned
+footer hint, only when the middle viewport has usable space. Vertical dividers
+in the subtle style separate both pinned columns from the scrolling content;
 the scrollbar uses static, centred `▪` squares in the subtle style and a dotted
 track, with arrowheads dimmed at the limits. The left arrow sits below the gap
-immediately after the divider, while the right arrow remains at the right edge.
+immediately after the OBJECT divider, while the right arrow stops before STATUS.
 Both have ASCII alternatives and remain distinguishable in monochrome.
 
 Describe, YAML, and Events use the full terminal; confirmation dialogs remain

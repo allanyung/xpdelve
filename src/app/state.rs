@@ -358,6 +358,26 @@ impl App {
         });
     }
 
+    pub(super) fn show_resource_details(&mut self) {
+        let Some(node) = self.selected_node() else {
+            return;
+        };
+        let Some(content) = &node.status_details else {
+            return;
+        };
+        self.modal = Some(Modal::Text {
+            title: format!("Resource details: {}", node.identity),
+            content: content.clone(),
+            kind: ContentKind::Error,
+            wrapped: true,
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+            selection: None,
+        });
+    }
+
     pub(super) fn finish_action(
         &mut self,
         label: &str,
@@ -553,19 +573,6 @@ impl App {
         start
     }
 
-    pub(super) fn toggle_selected(&mut self) {
-        let Some(node) = self.selected_node() else {
-            return;
-        };
-        if node.child_count == 0 {
-            return;
-        }
-        let identity = node.identity.clone();
-        if !self.collapsed.remove(&identity) {
-            self.collapsed.insert(identity);
-        }
-    }
-
     pub(super) fn expand_or_child(&mut self) {
         let visible = self.visible();
         let Some(snapshot) = &self.snapshot else {
@@ -623,10 +630,7 @@ impl App {
             .enumerate()
             .filter_map(|(position, index)| {
                 let node = &snapshot.nodes[*index];
-                format!("{} {}", node.identity, node.status)
-                    .to_lowercase()
-                    .contains(&needle)
-                    .then_some(position)
+                node.matches_text(&needle).then_some(position)
             })
             .collect();
         if matches.is_empty() {

@@ -10,7 +10,7 @@
 | `PageUp`, `Ctrl+B` | Move up one page |
 | `g`, Home | Select first resource |
 | `G`, End | Select last resource |
-| `Enter`, `Space` | Toggle the selected subtree |
+| `Enter` | Show the selected resource's problem details, when available |
 | Right | Expand the selected subtree or select its first child |
 | Left | Collapse the subtree or select its parent |
 | `[` | Collapse every subtree below the root, leaving the root expanded |
@@ -24,20 +24,52 @@ name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-`
 shifts resource names or table columns while leaf rows remain visually connected
 to the tree.
 
-The tree is always horizontally scrollable. `OBJECT` stays pinned while the
-other columns and their headers scroll together. The object column occupies at
-most 60% of the inner tree width; longer names are compacted. Columns can be
-partially visible at either edge. A horizontal scrollbar appears on the bottom
-border beneath the scrolling
-columns when they overflow, with static, centred `▪` squares in the subtle
-colour, a dotted track, and arrowheads. The left arrow sits below the gap just
-after the divider; the right arrow sits at the right edge.
-An arrow is dimmed when that end has been reached. A vertical divider separates
-the pinned object column from the other headers and resource cells. ASCII mode
+Enter never expands or collapses a row, and Space has no action in the resource
+tree. Use Left/Right or `[`/`]` to control expansion. Enter and Space retain their
+existing roles in dialogs, pickers, and text inputs.
+
+Problematic resources display short status labels: `Deleted` for structured
+NotFound/404 trace errors, `Error` for other trace or reconciliation/installation
+failures, `Creating` for false readiness/health conditions with reason
+`Creating`, `Unready` for other false readiness/health conditions, and `Unknown`
+or `Warning` for unknown states or those condition reasons. `Deleting` takes
+precedence while a resource is being deleted. Reconciliation/installation
+failures take precedence over `Creating`. `Deleted` means the referenced object
+is not found; it does not require that xpdelve previously observed the object.
+Successful statuses remain unchanged, and missing conditions alone are not
+errors. Health colors retain their existing meanings.
+
+Press Enter to open a wrapped, scrollable details view containing the full trace
+error and any problematic Ready/Synced (or package-specific) conditions. A
+condition without a reason or message still reports its state. Details come from
+the current trace snapshot, require no API request, and remain fixed while the
+view is open, even across refreshes. Esc or `q` closes it. The footer shows
+`Enter:details` only when the selected resource has details available, not simply
+when it is unhealthy. The `s` key continues to show the resource's raw status YAML.
+
+`OBJECT` stays pinned on the left and `STATUS` stays pinned against the inner
+right edge. Only the columns between them and their headers scroll together,
+including configured extra columns. STATUS text is left-aligned within its
+column, with one reserved space before the right border, sized from visible
+rows, and capped at 24 terminal cells or one third of
+the inner width (with a six-cell minimum on supported terminals). Longer values
+are truncated with an ellipsis; the model text remains unchanged. The object
+column occupies at most 60% of the space remaining after reserving STATUS, its
+right padding, and the dividers; longer names are compacted.
+
+Middle columns can be partially visible at either edge of their viewport. A
+horizontal scrollbar appears on the existing bottom border beneath this middle
+region when it overflows, with static, centred `▪` squares in the subtle colour,
+a dotted track, and arrowheads. The left arrow sits below the gap just after the
+OBJECT divider; the right arrow stops before the STATUS divider. An arrow is
+dimmed when that end has been reached. Subtle vertical dividers separate both
+pinned columns from the scrolling headers and resource cells. ASCII mode
 uses `|` for the divider and `<`, `>`, `.`, and `-` for the scrollbar.
 Resizing, refreshing, filtering, and collapsing preserve the scroll position,
 clamped to the remaining content. Columns are not hidden automatically in narrow
 windows; `ui.short` or `--short` can explicitly omit the transition-time columns.
+The footer shows `h/l:scroll` at its right edge only when the middle columns
+overflow and there is space to scroll them.
 
 Over the tree, a mouse thumbwheel (native horizontal-wheel events) or
 Shift+vertical-wheel scrolls the columns in four-cell steps. Terminal support is
@@ -55,7 +87,7 @@ required for these mouse events. Ordinary vertical-wheel behavior is unchanged.
 | `d` | Open captured `kubectl describe` output |
 | `y` | Open redacted live YAML |
 | `s` | Show the selected resource status |
-| `v` | Load related Kubernetes events |
+| `E` | Load related Kubernetes events |
 | `c` | Copy the canonical resource identifier with OSC 52 |
 
 ## Command Palette, Kind Filtering, And Exclusion
@@ -71,8 +103,9 @@ The selected kind is shown as `Kind: <name>` below the tree and remains active
 across trace refreshes.
 
 The `/` text filter supports plain text and field-qualified queries. Plain text
-matches the resource identifier or status. Field names and values are
-case-insensitive:
+matches the resource identifier, status label, or problem details. `status:` also
+searches problem details, including messages no longer shown in the table.
+Field names and values are case-insensitive:
 
 | Field | Example |
 | --- | --- |
@@ -144,11 +177,12 @@ Content modals use `j`/`k` or Up/Down, PageUp/PageDown, and `g`/`G` for vertical
 navigation. Describe, event, and error content wraps long lines. YAML wraps by
 default; press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped
 YAML horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
-lines. In Describe, live YAML, Events, and mutation errors, drag across text to
-copy it on mouse release; visual soft wraps do not add newlines to the copied
-text. The main resource table also supports drag-to-copy, while a click without
-dragging selects the clicked resource row and a double-click opens its live YAML.
-Tree copying uses the displayed text, including the pinned column and the visible
+lines. In Describe, live YAML, Events, resource details, and mutation errors,
+drag across text to copy it on mouse release; visual soft wraps do not add
+newlines to the copied text. The main resource table also supports drag-to-copy,
+while a click without dragging selects the clicked resource row and a
+double-click opens its live YAML.
+Tree copying uses the displayed text, including both pinned columns and the visible
 portion of horizontally scrolled columns.
 Right-clicking a resource opens a menu for YAML, Edit, Status, Events, and
 Describe.

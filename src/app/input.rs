@@ -792,7 +792,7 @@ impl App {
             (KeyCode::End | KeyCode::Char('G'), _) => {
                 self.set_selection(self.visible().len().saturating_sub(1));
             }
-            (KeyCode::Enter | KeyCode::Char(' '), _) => self.toggle_selected(),
+            (KeyCode::Enter, _) => self.show_resource_details(),
             (KeyCode::Right, KeyModifiers::SHIFT) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
                 self.scroll_tree_horizontal(terminal_area, true);
             }
@@ -858,7 +858,7 @@ impl App {
                     self.show_status(&identity);
                 }
             }
-            (KeyCode::Char('v'), _) => {
+            (KeyCode::Char('E'), _) => {
                 if let Some(target) = self.selected_target() {
                     return UiAction::Events(target);
                 }
