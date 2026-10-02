@@ -28,6 +28,7 @@ impl App {
             quit: false,
             config,
             config_path: cli.config.clone().unwrap_or_else(config::default_path),
+            cli: cli.clone(),
             no_watch: cli.no_watch,
             theme,
             kubernetes: None,
@@ -145,6 +146,17 @@ impl App {
             ));
         }
         if !query.is_empty()
+            && let Some(score) = fuzzy_score("reload", query)
+        {
+            entries.push((
+                score,
+                PaletteEntry {
+                    label: "reload".into(),
+                    action: PaletteAction::ReloadConfig,
+                },
+            ));
+        }
+        if !query.is_empty()
             && let Some(score) = fuzzy_score("quit", query)
         {
             entries.push((
@@ -233,11 +245,52 @@ impl App {
                 self.modal = Some(Modal::SkinPicker { selected: 0 });
                 return;
             }
+            PaletteAction::ReloadConfig => {
+                self.mode = InputMode::Normal;
+                self.input.clear();
+                self.reload_config();
+                return;
+            }
             PaletteAction::Quit => self.quit = true,
         }
         self.mode = InputMode::Normal;
         self.input.clear();
         self.set_selection(0);
+    }
+
+    pub(super) fn reload_config(&mut self) {
+        let mut cli = self.cli.clone();
+        cli.config = Some(self.config_path.clone());
+        let result = Config::load(&cli).and_then(|config| {
+            let theme = Theme::resolve(&config.skin, config.ui.color)?;
+            Ok((config, theme))
+        });
+        match result {
+            Ok((config, theme)) => {
+                self.config = config;
+                self.theme = theme;
+                self.retry_delay = self.retry_delay.min(Duration::from_secs(
+                    self.config.trace.retry_backoff_max_seconds,
+                ));
+                self.tree_selection = None;
+                self.last_tree_click = None;
+                self.status = "Configuration reloaded".into();
+            }
+            Err(error) => {
+                self.status = "Could not reload configuration".into();
+                self.modal = Some(Modal::Text {
+                    title: "Configuration reload failed".into(),
+                    content: text::sanitize(&format!("{error:#}")),
+                    kind: ContentKind::SmallError,
+                    wrapped: true,
+                    vertical_scroll: 0,
+                    horizontal_scroll: 0,
+                    query: String::new(),
+                    search_input: None,
+                    selection: None,
+                });
+            }
+        }
     }
 
     pub(super) fn apply_skin(&mut self, name: &str) {
@@ -422,7 +475,7 @@ impl App {
         if !matches!(
             self.modal,
             Some(Modal::Text {
-                kind: ContentKind::Error,
+                kind: ContentKind::Error | ContentKind::SmallError,
                 ..
             })
         ) {

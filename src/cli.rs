@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
-#[derive(Debug, Parser)]
+#[derive(Clone, Debug, Parser)]
 #[command(
     name = "xpdelve",
     version,
@@ -56,7 +56,7 @@ pub struct Cli {
     pub resource: Vec<String>,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     /// Print version information.
     Version,

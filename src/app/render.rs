@@ -943,6 +943,7 @@ pub(super) fn palette_list_item<'a>(entry: &'a PaletteEntry, theme: &Theme) -> L
         | PaletteAction::OpenExcludePicker
         | PaletteAction::OpenHealthPicker
         | PaletteAction::OpenSkinPicker
+        | PaletteAction::ReloadConfig
         | PaletteAction::Quit => ListItem::new(Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -1055,7 +1056,7 @@ pub(super) fn render_modal(
             selection,
         } => {
             let title = format!(" {} ", text::sanitize(title));
-            let block = if *kind == ContentKind::Error {
+            let block = if matches!(kind, ContentKind::Error | ContentKind::SmallError) {
                 destructive_block(title, theme)
             } else {
                 bordered_block(title, theme)
@@ -1349,7 +1350,10 @@ pub(super) fn styled_content_line<'a>(
         }
         ContentKind::Describe if line.ends_with(':') => theme.syntax_heading(),
         ContentKind::Yaml => return yaml_line(line, query, theme),
-        ContentKind::Describe | ContentKind::Events | ContentKind::Error => Style::default(),
+        ContentKind::Describe
+        | ContentKind::Events
+        | ContentKind::Error
+        | ContentKind::SmallError => Style::default(),
     };
     highlighted_line(line, query, base, theme)
 }
@@ -1357,12 +1361,17 @@ pub(super) fn styled_content_line<'a>(
 pub(super) fn content_wraps_by_default(kind: ContentKind) -> bool {
     matches!(
         kind,
-        ContentKind::Describe | ContentKind::Yaml | ContentKind::Events | ContentKind::Error
+        ContentKind::Describe
+            | ContentKind::Yaml
+            | ContentKind::Events
+            | ContentKind::Error
+            | ContentKind::SmallError
     )
 }
 
 pub(super) fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
     match (kind, wrapped) {
+        (ContentKind::SmallError, _) => " j/k or ↑/↓:scroll  Esc/q:close",
         (ContentKind::Yaml, true) => {
             " drag:copy  j/k or ↑/↓:vertical  w:unwrap  /:find  n/N:matches  Esc:close"
         }
@@ -1558,6 +1567,7 @@ pub(super) fn content_modal_area(area: Rect, kind: ContentKind) -> Rect {
             area.width.saturating_mul(90) / 100,
             area.height.saturating_mul(80) / 100,
         ),
+        ContentKind::SmallError => centered(area, 72, 12),
     }
 }
 

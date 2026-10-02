@@ -192,6 +192,10 @@ and Enter to apply it. The choice takes effect immediately and is saved as
 
 Enter `:quit` to close xpdelve from the command palette.
 
+Enter `:reload` to reload the active configuration file without restarting.
+Command-line overrides and session filters, selection, and pause state are
+preserved. Invalid configuration leaves the current settings unchanged.
+
 See [the full keybinding and filtering guide](docs/keys.md) for palette controls
 and the distinction between kind filtering, text filtering, and find.
 
