@@ -54,7 +54,6 @@ name = "catppuccin-mocha"
 | `trace.retry_backoff_max_seconds` | Maximum delay between retries after repeated failures |
 | `ui.color` | Color policy: `auto`, `always`, or `never` |
 | `ui.ascii` | Use ASCII rather than Unicode tree lines when `true` |
-| `ui.horizontal_scroll` | Deprecated and ignored; accepted for compatibility with existing configuration files. The tree is always horizontally scrollable |
 | `ui.short` | Hide condition transition-time columns when `true` |
 | `skin.name` | Built-in theme name; omit it for terminal-background detection |
 | `skin.colors` | Optional per-swatch RGB overrides |

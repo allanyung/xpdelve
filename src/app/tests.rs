@@ -1380,21 +1380,6 @@ fn tree_scrollbar_has_static_square_thumb_and_left_arrow_in_separator_gap() {
 }
 
 #[test]
-fn legacy_horizontal_scroll_configuration_does_not_disable_scrolling() {
-    for value in [false, true] {
-        let fixture = app();
-        let config: Config =
-            toml::from_str(&format!("[ui]\nhorizontal_scroll = {value}\n")).unwrap();
-        let cli = Cli::parse_from(["xpdelve", "Root/root"]);
-        let mut app = App::new("Root/root".into(), config, &cli, fixture.theme);
-        app.apply_snapshot(fixture.snapshot.unwrap().as_ref().clone());
-        let area = Rect::new(0, 0, 50, 16);
-        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
-        assert_eq!(app.resource_horizontal_scroll, 4);
-    }
-}
-
-#[test]
 fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
     for (api_version, kind) in [
         ("example.io/v1", "Root"),

@@ -65,8 +65,7 @@ scrolling columns. Transition-time columns are omitted only with `ui.short` or
 `--short`. The composition-resource annotation is not a table column.
 
 Horizontal scrolling is always available with `h`/`l`, Shift+Left/Right, a
-thumbwheel, or Shift+wheel; there is no width-mode toggle. The legacy
-`ui.horizontal_scroll` setting is accepted but ignored.
+thumbwheel, or Shift+wheel; there is no width-mode toggle.
 The `OBJECT` column remains pinned, capped at half the inner width, while headers
 and remaining columns scroll by terminal cells. The scroll offset is preserved
 and clamped as the viewport or content changes. Overflow
