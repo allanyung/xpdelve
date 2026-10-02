@@ -82,6 +82,7 @@ const HELP_LINES: &[&str] = &[
     "Session",
     "  r                 refresh now",
     "  P                 pause automatic refresh",
+    "  :reload           reload configuration",
     "  q / Ctrl+C        quit",
     "",
     "Actions",
@@ -132,6 +133,7 @@ enum PaletteAction {
     OpenExcludePicker,
     OpenHealthPicker,
     OpenSkinPicker,
+    ReloadConfig,
     Quit,
 }
 
@@ -229,13 +231,14 @@ enum ContentKind {
     Yaml,
     Events,
     Error,
+    SmallError,
 }
 
 impl ContentKind {
     fn supports_mouse_selection(self) -> bool {
         matches!(
             self,
-            Self::Describe | Self::Yaml | Self::Events | Self::Error
+            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
         )
     }
 }
@@ -265,6 +268,7 @@ struct App {
     quit: bool,
     config: Config,
     config_path: PathBuf,
+    cli: Cli,
     no_watch: bool,
     theme: Theme,
     kubernetes: Option<Arc<Kubernetes>>,

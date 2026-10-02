@@ -402,6 +402,246 @@ fn skin_palette_command_opens_the_skin_picker() {
 }
 
 #[test]
+fn reload_palette_command_applies_configuration_and_preserves_session_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+read_only = true
+[trace]
+program = "custom-trace"
+interval_seconds = 12
+timeout_seconds = 30
+retry_backoff_max_seconds = 2
+[ui]
+color = "never"
+ascii = true
+short = true
+[skin]
+name = "nord"
+[[extra_columns.Root]]
+name = "NAME"
+path = "/metadata/name"
+"#,
+    )
+    .unwrap();
+    let mut app = app();
+    app.config_path = path;
+    app.set_selection(1);
+    let selected = app.selected_identity.clone();
+    let snapshot = app.snapshot.clone().unwrap();
+    app.collapsed.insert(selected.clone().unwrap());
+    app.excluded_kinds.insert(resource_kind("", "Unused"));
+    app.find = "child".into();
+    app.paused = true;
+    app.retry_delay = Duration::from_secs(16);
+    let area = Rect::new(0, 0, 100, 24);
+    for key in ":reload".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+    }
+
+    let entries = app.palette_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].action, PaletteAction::ReloadConfig);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(app.input.is_empty());
+    assert_eq!(app.status, "Configuration reloaded");
+    assert!(app.config.read_only);
+    assert!(app.config.ui.ascii);
+    assert!(app.config.ui.short);
+    assert_eq!(app.theme.resolved_name, "nord");
+    assert!(!app.theme.colors_enabled);
+    assert_eq!(app.config.extra_columns["Root"][0].name, "NAME");
+    assert_eq!(app.config.trace.program, "custom-trace");
+    assert_eq!(app.config.interval(), Duration::from_secs(12));
+    assert_eq!(app.config.timeout(), Some(Duration::from_secs(30)));
+    assert_eq!(app.retry_delay, Duration::from_secs(2));
+    assert_eq!(app.selected_identity, selected);
+    assert_eq!(app.selected_visible, 1);
+    assert!(Arc::ptr_eq(app.snapshot.as_ref().unwrap(), &snapshot));
+    assert!(app.collapsed.contains(selected.as_ref().unwrap()));
+    assert!(app.excluded_kinds.contains(&resource_kind("", "Unused")));
+    assert_eq!(app.find, "child");
+    assert!(app.paused);
+}
+
+#[test]
+fn reload_configuration_preserves_command_line_overrides_and_filters() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "[skin]\nname = 'nord'\n").unwrap();
+    let cli = Cli::parse_from([
+        "xpdelve",
+        "--config",
+        path.to_str().unwrap(),
+        "--readonly",
+        "--short",
+        "--cmd",
+        "custom-trace --json",
+        "--watch-interval",
+        "8",
+        "--no-watch",
+        "Root/root",
+    ]);
+    let config = Config::load(&cli).unwrap();
+    let theme = Theme::resolve(&config.skin, config.ui.color).unwrap();
+    let mut app = App::new("Root/root".into(), config, &cli, theme);
+    app.filter = "child".into();
+    app.kind_filter = Some(resource_kind("", "Child"));
+    app.health_filter = HealthFilter::Unhealthy;
+    std::fs::write(
+        path,
+        "read_only = false\n[trace]\nprogram = 'other-trace'\ninterval_seconds = 20\n[ui]\nshort = false\n[skin]\nname = 'nord'\n",
+    )
+    .unwrap();
+
+    app.reload_config();
+
+    assert_eq!(app.status, "Configuration reloaded");
+    assert!(app.config.read_only);
+    assert!(app.config.ui.short);
+    assert_eq!(app.config.trace.program, "custom-trace");
+    assert_eq!(app.config.trace.args, ["--json"]);
+    assert_eq!(app.config.interval(), Duration::from_secs(8));
+    assert!(app.no_watch);
+    assert_eq!(app.filter, "child");
+    assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
+    assert_eq!(app.health_filter, HealthFilter::Unhealthy);
+}
+
+#[test]
+fn reload_configuration_rejects_invalid_or_missing_files_without_changing_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = app();
+    app.config_path = directory.path().join("config.toml");
+    for source in [
+        "invalid toml",
+        "schema_version = 2",
+        "[trace]\ninterval_seconds = 0",
+        "[ui]\nascii = true\n[skin]\nname = 'unknown-theme'",
+        "[[extra_columns.Root]]\nname = 'NAME'\npath = 'invalid'",
+    ] {
+        std::fs::write(&app.config_path, source).unwrap();
+        app.reload_config();
+        assert_eq!(app.status, "Could not reload configuration");
+        assert!(matches!(app.modal, Some(Modal::Text {
+            kind: ContentKind::SmallError,
+            ref content,
+            ..
+        }) if !content.is_empty()));
+        assert_eq!(app.config.interval(), Duration::from_secs(5));
+        assert!(!app.config.ui.ascii);
+        assert_eq!(app.theme.resolved_name, "catppuccin-mocha");
+        assert!(app.config.extra_columns.is_empty());
+    }
+    app.config_path = directory.path().join("missing.toml");
+    app.reload_config();
+    assert!(matches!(app.modal, Some(Modal::Text {
+        kind: ContentKind::SmallError,
+        ref content,
+        ..
+    }) if content.contains("configuration file does not exist")));
+    assert_eq!(app.theme.resolved_name, "catppuccin-mocha");
+}
+
+#[test]
+fn reload_failure_modal_is_compact_error_styled_and_dismissible() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = app();
+    app.config_path = directory.path().join("missing.toml");
+    app.mode = InputMode::Command;
+    app.input = "reload".into();
+    let area = Rect::new(0, 0, 100, 30);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+
+    assert_eq!(app.mode, InputMode::Normal);
+    let popup = content_modal_area(area, ContentKind::SmallError);
+    assert_eq!(popup, Rect::new(14, 9, 72, 12));
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(
+        buffer.cell((popup.x, popup.y)).unwrap().fg,
+        app.theme.palette.red
+    );
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Configuration reload failed"));
+    assert!(rendered.contains("configuration file does not exist"));
+    assert!(rendered.contains("Esc/q:close"));
+
+    app.apply_resource_not_found();
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Text {
+            kind: ContentKind::SmallError,
+            ..
+        })
+    ));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    assert!(app.modal.is_none());
+    app.reload_config();
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), area);
+    assert!(app.modal.is_none());
+    assert!(!app.quit);
+}
+
+#[test]
+fn reload_error_modal_wraps_scrolls_and_fits_small_terminals() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = app();
+    app.config_path = directory.path().join("config.toml");
+    std::fs::write(&app.config_path, "unknown_field = true\n".repeat(30)).unwrap();
+    app.reload_config();
+    let area = Rect::new(0, 0, 40, 10);
+    assert_eq!(
+        content_modal_area(area, ContentKind::SmallError),
+        Rect::new(1, 1, 38, 8)
+    );
+    let Some(Modal::Text {
+        content, wrapped, ..
+    }) = &app.modal
+    else {
+        panic!("expected error modal");
+    };
+    assert!(*wrapped);
+    assert!(!content.contains('\u{1b}'));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Text {
+            vertical_scroll: 1,
+            ..
+        })
+    ));
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+}
+
+#[tokio::test]
+async fn configuration_reload_updates_the_refresh_timer_only_when_interval_changes() {
+    let mut refresh = time::interval(Duration::from_secs(5));
+    super::runtime::update_refresh_interval(&mut refresh, Duration::from_secs(12));
+    assert_eq!(refresh.period(), Duration::from_secs(12));
+    assert_eq!(
+        refresh.missed_tick_behavior(),
+        time::MissedTickBehavior::Skip
+    );
+    // An unchanged interval must not postpone the existing refresh deadline.
+    refresh.reset_at(time::Instant::now());
+    super::runtime::update_refresh_interval(&mut refresh, Duration::from_secs(12));
+    assert!(
+        time::timeout(Duration::from_millis(100), refresh.tick())
+            .await
+            .is_ok()
+    );
+}
+
+#[test]
 fn health_palette_command_filters_unhealthy_resources_with_ancestors() {
     let mut app = app();
     let trace = serde_json::json!({

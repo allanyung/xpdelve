@@ -26,6 +26,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     request_refresh(&mut app, cli, &sender, &mut active, true);
 
     while !app.quit {
+        update_refresh_interval(&mut refresh, app.config.interval());
         app.apply_deferred_snapshot();
         terminal.set_mouse_capture(app.captures_mouse())?;
         terminal.terminal.draw(|frame| {
@@ -162,6 +163,13 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
         time::sleep(Duration::from_millis(800)).await;
     }
     Ok(())
+}
+
+pub(super) fn update_refresh_interval(refresh: &mut time::Interval, interval: Duration) {
+    if refresh.period() != interval {
+        *refresh = time::interval_at(time::Instant::now() + interval, interval);
+        refresh.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    }
 }
 
 fn connect_kubernetes(cli: &Cli, sender: &mpsc::Sender<AppEvent>) {

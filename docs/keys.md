@@ -95,6 +95,7 @@ is a separate exact-match filter and does not retain non-matching ancestors.
 | `:exclude` | Choose resource kinds to hide for the current session |
 | `:health` | Show all resources, only healthy resources, or resources requiring attention |
 | `:skin` | Open the built-in theme picker; applying a theme also saves it to the active configuration file |
+| `:reload` | Reload the active configuration file, preserving command-line overrides and session state |
 | `:quit` | Exit xpdelve through the normal shutdown path |
 
 Esc while the palette is open closes it without changing the current kind.

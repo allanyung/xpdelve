@@ -5,6 +5,14 @@ to select another file. Command-line arguments override configuration, which
 overrides built-in defaults. Unknown fields and invalid or unsupported schema
 versions are errors.
 
+Use `:reload` in the command palette to reload the active configuration file.
+Command-line arguments still take precedence. UI settings, themes, extra columns,
+and the automatic refresh interval update immediately; trace settings apply to
+the next trace run (press `r` to refresh now). Session filters, selection, and
+pause state are preserved. If the file is missing or invalid, a small error modal
+is shown and the current configuration remains active. Use Up/Down or `j`/`k` to
+scroll the error and Esc or `q` to close it.
+
 ```toml
 schema_version = 1
 read_only = false
@@ -112,9 +120,8 @@ of their contents. Other resources may contain sensitive values; choose paths
 accordingly.
 
 Values come from the current trace snapshot and update on trace refresh, without
-additional Kubernetes requests. Configuration is loaded at startup; restart
-xpdelve after editing it. Extra values are not included in text filtering or
-find navigation.
+additional Kubernetes requests. Use `:reload` after editing configuration.
+Extra values are not included in text filtering or find navigation.
 
 ### Mixed-resource trees
 
