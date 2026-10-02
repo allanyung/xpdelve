@@ -1,5 +1,6 @@
 pub mod app;
 pub mod cli;
+pub mod columns;
 pub mod config;
 pub mod kubernetes;
 pub mod model;

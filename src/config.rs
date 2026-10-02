@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,15 @@ pub struct Config {
     pub trace: TraceConfig,
     pub ui: UiConfig,
     pub skin: SkinConfig,
+    pub extra_columns: BTreeMap<String, Vec<ExtraColumnConfig>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtraColumnConfig {
+    pub name: String,
+    pub path: String,
+    pub width: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -69,6 +78,7 @@ impl Default for Config {
             trace: TraceConfig::default(),
             ui: UiConfig::default(),
             skin: SkinConfig::default(),
+            extra_columns: BTreeMap::new(),
         }
     }
 }
@@ -177,6 +187,7 @@ impl Config {
         validate_placeholder(&self.trace.context_args, "{context}", false)?;
         validate_placeholder(&self.trace.namespace_args, "{namespace}", false)?;
         crate::theme::validate_skin(&self.skin)?;
+        crate::columns::validate(&self.extra_columns)?;
         Ok(())
     }
 }
@@ -316,6 +327,47 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn loads_extra_columns_and_rejects_invalid_configuration() {
+        use clap::Parser;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let cli = Cli::parse_from(["xpdelve", "--config", path.to_str().unwrap(), "Root/root"]);
+        fs::write(
+            &path,
+            "[[extra_columns.\"Widget.example.org\"]]\nname='VALUE'\npath='/status/value'",
+        )
+        .unwrap();
+        let config = Config::load(&cli).unwrap();
+        assert_eq!(config.schema_version, 1);
+        let column = &config.extra_columns["Widget.example.org"][0];
+        assert_eq!(column.name, "VALUE");
+        assert_eq!(column.path, "/status/value");
+        assert_eq!(column.width, None);
+
+        fs::write(
+            &path,
+            "[[extra_columns.\"Widget.example.org\"]]\nname='VALUE'\npath='status.value'",
+        )
+        .unwrap();
+        let error = Config::load(&cli).unwrap_err().to_string();
+        assert!(error.contains("extra_columns.Widget.example.org"));
+        assert!(error.contains("JSON Pointer"));
+    }
+
+    #[test]
+    fn skin_updates_preserve_extra_column_arrays() {
+        let source = "# keep columns\n[[extra_columns.Secret]]\nname='OWNER'\npath='/metadata/name'\n[[extra_columns.Secret]]\nname='NAMESPACE'\npath='/metadata/namespace'\nwidth=20\n";
+        let updated = update_skin_name(source, "nord");
+        assert!(updated.starts_with(source));
+        let config: Config = toml::from_str(&updated).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.extra_columns["Secret"].len(), 2);
+        assert_eq!(config.extra_columns["Secret"][1].width, Some(20));
+        assert_eq!(config.skin.name.as_deref(), Some("nord"));
     }
 
     #[test]

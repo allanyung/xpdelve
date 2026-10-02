@@ -145,6 +145,23 @@ context, resource, API group, and name through the variables in `args`.
 - `h`/`l`, Shift+Left/Right: scroll columns while resource names stay pinned; thumbwheel or Shift+wheel also works over the tree
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
+### Extra tree columns
+
+Configure extra columns for any resource kind/API group in
+`~/.config/xpdelve/config.toml`:
+
+```toml
+[[extra_columns."Bucket.s3.aws.upbound.io"]]
+name = "REGION"
+path = "/spec/forProvider/region"
+```
+
+Definitions apply to all matching resources. The main tree shows the union of
+configured columns for visible kinds, immediately before STATUS; unrelated rows
+show `-`. Paths use JSON Pointer syntax, and an optional `width` fixes a column's
+width. See [extra-column configuration](docs/configuration.md#extra-columns)
+for matching, shared headers, and display rules.
+
 ### Command palette, filtering, and exclusion
 
 Press `:`—shown as `::command` in the main-view legend—to open the command

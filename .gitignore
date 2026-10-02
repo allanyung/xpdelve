@@ -2,3 +2,4 @@
 *.log
 *.profraw
 .DS_Store
+opencode.json

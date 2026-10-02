@@ -1,5 +1,6 @@
 use super::selection::*;
 use super::*;
+use crate::columns::{self, ExtraColumn};
 
 pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
     let area = frame.area();
@@ -309,14 +310,21 @@ impl TreeHorizontalLayout {
 
 pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Option<TablePlan> {
     let snapshot = app.snapshot.as_ref()?;
-    Some(TablePlan::new(
-        snapshot,
-        visible,
-        area.width.saturating_sub(2) as usize,
-        snapshot.nodes.first().is_some_and(|node| node.is_package),
-        app.config.ui.short,
-        app.config.ui.ascii,
-    ))
+    Some(
+        TablePlan::new(
+            snapshot,
+            visible,
+            area.width.saturating_sub(2) as usize,
+            snapshot.nodes.first().is_some_and(|node| node.is_package),
+            app.config.ui.short,
+            app.config.ui.ascii,
+        )
+        .with_extra_columns(columns::resolve(
+            &app.config.extra_columns,
+            snapshot,
+            visible,
+        )),
+    )
 }
 
 pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
@@ -464,6 +472,7 @@ pub(super) struct TablePlan {
     version: usize,
     state: usize,
     ascii: bool,
+    extra_columns: Vec<ExtraColumn>,
 }
 
 impl TablePlan {
@@ -527,7 +536,13 @@ impl TablePlan {
             version,
             state,
             ascii,
+            extra_columns: Vec::new(),
         }
+    }
+
+    fn with_extra_columns(mut self, columns: Vec<ExtraColumn>) -> Self {
+        self.extra_columns = columns;
+        self
     }
 
     pub(super) fn fixed_width(&self) -> usize {
@@ -549,8 +564,13 @@ impl TablePlan {
         let pinned_width = (self.object + 2).min(self.available);
         let viewport_width = self.available.saturating_sub(pinned_width);
         let group = if self.package { 0 } else { self.group };
-        let content_width =
-            (self.object + group + self.fixed_width() + self.status).saturating_sub(pinned_width);
+        let extra_width: usize = self
+            .extra_columns
+            .iter()
+            .map(|column| column.width + 2)
+            .sum();
+        let content_width = (self.object + group + self.fixed_width() + extra_width + self.status)
+            .saturating_sub(pinned_width);
         let max_offset = content_width.saturating_sub(viewport_width);
         TreeHorizontalLayout {
             pinned_width,
@@ -561,7 +581,7 @@ impl TablePlan {
     }
 
     pub(super) fn header(&self) -> String {
-        if self.package {
+        let mut columns = if self.package {
             let mut columns = vec![("OBJECT", self.object)];
             if self.version > 0 {
                 columns.push(("VERSION", self.version));
@@ -577,27 +597,31 @@ impl TablePlan {
             if self.state > 0 {
                 columns.push(("STATE", self.state));
             }
-            columns.push(("STATUS", self.status));
-            format_columns(&columns)
+            columns
         } else if self.timestamps {
-            format_columns(&[
+            vec![
                 ("OBJECT", self.object),
                 ("GROUP", self.group),
                 ("SYNCED", 6),
                 ("SYNCED LAST", 15),
                 ("READY", 5),
                 ("READY LAST", 15),
-                ("STATUS", self.status),
-            ])
+            ]
         } else {
-            format_columns(&[
+            vec![
                 ("OBJECT", self.object),
                 ("GROUP", self.group),
                 ("SYNCED", 6),
                 ("READY", 5),
-                ("STATUS", self.status),
-            ])
-        }
+            ]
+        };
+        columns.extend(
+            self.extra_columns
+                .iter()
+                .map(|column| (column.header.as_str(), column.width)),
+        );
+        columns.push(("STATUS", self.status));
+        format_columns(&columns)
     }
 
     pub(super) fn row(
@@ -609,11 +633,16 @@ impl TablePlan {
     ) -> String {
         let object =
             object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix, collapsed);
+        let object = compact_object(&object, self.object);
         let group = group_cell(node);
-        if self.package {
-            let object = compact_object(&object, self.object);
-            let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
-            let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
+        let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
+        let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
+        let extra_values: Vec<_> = self
+            .extra_columns
+            .iter()
+            .map(|column| column.value(node))
+            .collect();
+        let mut columns = if self.package {
             let mut columns = vec![(object.as_str(), self.object)];
             if self.version > 0 {
                 columns.push((version.as_str(), self.version));
@@ -629,27 +658,32 @@ impl TablePlan {
             if self.state > 0 {
                 columns.push((state.as_str(), self.state));
             }
-            columns.push((&node.status, self.status));
-            format_columns_owned(&columns)
+            columns
         } else if self.timestamps {
-            format_columns_owned(&[
-                (&compact_object(&object, self.object), self.object),
-                (&group, self.group),
+            vec![
+                (object.as_str(), self.object),
+                (group.as_str(), self.group),
                 (condition_text(node.synced), 6),
                 (node.synced_last.as_deref().unwrap_or("-"), 15),
                 (condition_text(node.ready), 5),
                 (node.ready_last.as_deref().unwrap_or("-"), 15),
-                (&node.status, self.status),
-            ])
+            ]
         } else {
-            format_columns_owned(&[
-                (&compact_object(&object, self.object), self.object),
-                (&group, self.group),
+            vec![
+                (object.as_str(), self.object),
+                (group.as_str(), self.group),
                 (condition_text(node.synced), 6),
                 (condition_text(node.ready), 5),
-                (&node.status, self.status),
-            ])
-        }
+            ]
+        };
+        columns.extend(
+            self.extra_columns
+                .iter()
+                .zip(&extra_values)
+                .map(|(column, value)| (value.as_str(), column.width)),
+        );
+        columns.push((&node.status, self.status));
+        format_columns_owned(&columns)
     }
 }
 
