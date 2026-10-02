@@ -12,6 +12,23 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
         );
         return;
     }
+    if let Some(
+        modal @ Modal::Text {
+            kind: ContentKind::Describe | ContentKind::Yaml | ContentKind::Events,
+            ..
+        },
+    ) = &app.modal
+    {
+        // These views cover the terminal. Formatting the hidden resource tree
+        // on every scroll frame is wasted work, especially for large traces.
+        render_modal(frame, area, modal, &app.theme);
+        if let Some(toast) = &app.toast
+            && toast.expires_at > Instant::now()
+        {
+            render_toast(frame, area, toast, &app.theme);
+        }
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1140,16 +1157,16 @@ pub(super) fn render_modal(
             frame.render_widget(block, area);
             let regions =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-            let lines = content
-                .lines()
-                .map(|line| styled_content_line(line, *kind, query, theme))
-                .collect::<Vec<_>>();
-            let mut paragraph =
-                Paragraph::new(lines).scroll((*vertical_scroll, *horizontal_scroll));
-            if *wrapped {
-                paragraph = paragraph.wrap(Wrap { trim: false });
-            }
-            frame.render_widget(paragraph, regions[0]);
+            content.render(
+                frame,
+                regions[0],
+                *kind,
+                query,
+                *wrapped,
+                *vertical_scroll,
+                *horizontal_scroll,
+                theme,
+            );
             if let Some(selection) = selection {
                 render_text_selection(
                     frame,

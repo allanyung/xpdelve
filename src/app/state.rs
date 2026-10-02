@@ -280,7 +280,7 @@ impl App {
                 self.status = "Could not reload configuration".into();
                 self.modal = Some(Modal::Text {
                     title: "Configuration reload failed".into(),
-                    content: text::sanitize(&format!("{error:#}")),
+                    content: text::sanitize(&format!("{error:#}")).into(),
                     kind: ContentKind::SmallError,
                     wrapped: true,
                     vertical_scroll: 0,
@@ -347,7 +347,7 @@ impl App {
         );
         self.modal = Some(Modal::Text {
             title,
-            content,
+            content: content.into(),
             kind: ContentKind::Yaml,
             wrapped: true,
             vertical_scroll: 0,
@@ -367,7 +367,7 @@ impl App {
         };
         self.modal = Some(Modal::Text {
             title: format!("Resource details: {}", node.identity),
-            content: content.clone(),
+            content: content.clone().into(),
             kind: ContentKind::Error,
             wrapped: true,
             vertical_scroll: 0,
@@ -396,7 +396,7 @@ impl App {
                 };
                 self.modal = Some(Modal::Text {
                     title: label.to_owned(),
-                    content,
+                    content: content.into(),
                     kind,
                     wrapped: content_wraps_by_default(kind),
                     vertical_scroll: 0,
@@ -416,7 +416,8 @@ impl App {
                     self.status = format!("{label} failed");
                     self.modal = Some(Modal::Text {
                         title: format!("{label} failed"),
-                        content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n")),
+                        content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n"))
+                            .into(),
                         kind: ContentKind::Error,
                         wrapped: true,
                         vertical_scroll: 0,

@@ -2,6 +2,24 @@ use super::render::*;
 use super::selection::*;
 use super::*;
 
+fn vertical_wheel_delta(mouse: MouseEvent, count: usize) -> Option<isize> {
+    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        return None;
+    }
+    let distance = count.saturating_mul(3).try_into().unwrap_or(isize::MAX);
+    match mouse.kind {
+        MouseEventKind::ScrollUp => Some(-distance),
+        MouseEventKind::ScrollDown => Some(distance),
+        _ => None,
+    }
+}
+
+fn scroll_vertical(scroll: u16, delta: isize, max_scroll: u16) -> u16 {
+    usize::from(scroll)
+        .saturating_add_signed(delta)
+        .min(usize::from(max_scroll)) as u16
+}
+
 impl App {
     pub(super) fn clamp_tree_horizontal_scroll(&mut self, terminal_area: Rect) {
         let Some(tree_area) = resource_tree_area(terminal_area) else {
@@ -29,15 +47,17 @@ impl App {
         self.resource_horizontal_scroll = offset;
     }
 
-    fn scroll_tree_horizontal(&mut self, terminal_area: Rect, right: bool) {
+    fn scroll_tree_horizontal(&mut self, terminal_area: Rect, right: bool, count: usize) {
         if resource_tree_area(terminal_area).is_none() {
             return;
         }
         self.clamp_tree_horizontal_scroll(terminal_area);
         self.resource_horizontal_scroll = if right {
-            self.resource_horizontal_scroll.saturating_add(4)
+            self.resource_horizontal_scroll
+                .saturating_add(count.saturating_mul(4))
         } else {
-            self.resource_horizontal_scroll.saturating_sub(4)
+            self.resource_horizontal_scroll
+                .saturating_sub(count.saturating_mul(4))
         };
         self.clamp_tree_horizontal_scroll(terminal_area);
         self.tree_selection = None;
@@ -49,8 +69,28 @@ impl App {
         mouse: MouseEvent,
         terminal_area: Rect,
     ) -> Option<MouseAction> {
+        self.handle_mouse_events(mouse, 1, terminal_area)
+    }
+
+    pub(super) fn handle_mouse_events(
+        &mut self,
+        mouse: MouseEvent,
+        count: usize,
+        terminal_area: Rect,
+    ) -> Option<MouseAction> {
+        if self.modal.is_none() && self.mode == InputMode::Help {
+            let area = centered(terminal_area, 72, 20);
+            if area.contains((mouse.column, mouse.row).into())
+                && let Some(delta) = vertical_wheel_delta(mouse, count)
+            {
+                let max_scroll =
+                    (HELP_LINES.len() as u16).saturating_sub(area.height.saturating_sub(3));
+                self.help_scroll = scroll_vertical(self.help_scroll, delta, max_scroll);
+            }
+            return None;
+        }
         if self.modal.is_none() {
-            let action = self.handle_tree_mouse(mouse, terminal_area);
+            let action = self.handle_tree_mouse(mouse, count, terminal_area);
             self.apply_deferred_snapshot();
             return action;
         }
@@ -73,6 +113,14 @@ impl App {
             return None;
         }
         let body = content_modal_body(terminal_area, *kind);
+        if let Some(delta) = vertical_wheel_delta(mouse, count) {
+            if content_modal_area(terminal_area, *kind).contains((mouse.column, mouse.row).into()) {
+                let (max_scroll, _) = content.scroll_bounds(body.width, body.height, *wrapped);
+                *vertical_scroll = scroll_vertical(*vertical_scroll, delta, max_scroll);
+                *selection = None;
+            }
+            return None;
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 *selection = selection_point_at(
@@ -197,6 +245,7 @@ impl App {
     pub(super) fn handle_tree_mouse(
         &mut self,
         mouse: MouseEvent,
+        count: usize,
         terminal_area: Rect,
     ) -> Option<MouseAction> {
         if !self.captures_mouse() {
@@ -220,7 +269,14 @@ impl App {
                 _ => None,
             };
             if let Some(right) = right {
-                self.scroll_tree_horizontal(terminal_area, right);
+                self.scroll_tree_horizontal(terminal_area, right, count);
+                return None;
+            }
+            if let Some(delta) = vertical_wheel_delta(mouse, count) {
+                self.tree_selection = None;
+                self.last_tree_click = None;
+                self.move_selection(delta);
+                self.ensure_selection_visible(usize::from(tree_area.height.saturating_sub(3)));
                 return None;
             }
         }
@@ -362,9 +418,10 @@ impl App {
                 | Modal::ExcludePicker { .. },
             ) => false,
             None => {
-                !matches!(self.mode, InputMode::Help | InputMode::Command)
-                    && self.snapshot.is_some()
-                    && !self.resource_missing
+                self.mode == InputMode::Help
+                    || (self.mode != InputMode::Command
+                        && self.snapshot.is_some()
+                        && !self.resource_missing)
             }
         }
     }
@@ -394,16 +451,20 @@ impl App {
                     search_input,
                     ..
                 } => {
+                    if search_input.is_none()
+                        && matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+                    {
+                        self.modal = None;
+                        return UiAction::None;
+                    }
                     let modal_area = content_modal_area(terminal_area, *kind);
                     let body_width = modal_area.width.saturating_sub(2) as usize;
                     let body_height = modal_area.height.saturating_sub(3) as usize;
-                    let max_vertical =
-                        modal_max_vertical(content, body_width, body_height, *wrapped);
-                    let max_horizontal = if *wrapped {
-                        0
-                    } else {
-                        modal_max_horizontal(content, body_width)
-                    };
+                    let (max_vertical, max_horizontal) = content.scroll_bounds(
+                        modal_area.width.saturating_sub(2),
+                        modal_area.height.saturating_sub(3),
+                        *wrapped,
+                    );
                     if let Some(input) = search_input {
                         match key.code {
                             KeyCode::Esc => *search_input = None,
@@ -794,10 +855,10 @@ impl App {
             }
             (KeyCode::Enter, _) => self.show_resource_details(),
             (KeyCode::Right, KeyModifiers::SHIFT) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-                self.scroll_tree_horizontal(terminal_area, true);
+                self.scroll_tree_horizontal(terminal_area, true, 1);
             }
             (KeyCode::Left, KeyModifiers::SHIFT) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
-                self.scroll_tree_horizontal(terminal_area, false);
+                self.scroll_tree_horizontal(terminal_area, false, 1);
             }
             (KeyCode::Right, _) => self.expand_or_child(),
             (KeyCode::Left, _) => self.collapse_or_parent(),

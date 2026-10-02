@@ -235,28 +235,3 @@ pub(super) fn render_text_selection(
         }
     }
 }
-
-pub(super) fn modal_max_vertical(content: &str, width: usize, height: usize, wrapped: bool) -> u16 {
-    let rows = content
-        .lines()
-        .map(|line| {
-            if wrapped {
-                line.width().max(1).div_ceil(width.max(1))
-            } else {
-                1
-            }
-        })
-        .sum::<usize>();
-    rows.saturating_sub(height).try_into().unwrap_or(u16::MAX)
-}
-
-pub(super) fn modal_max_horizontal(content: &str, width: usize) -> u16 {
-    content
-        .lines()
-        .map(UnicodeWidthStr::width)
-        .max()
-        .unwrap_or_default()
-        .saturating_sub(width)
-        .try_into()
-        .unwrap_or(u16::MAX)
-}

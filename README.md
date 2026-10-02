@@ -142,6 +142,7 @@ context, resource, API group, and name through the variables in `args`.
 - `e`: run `kubectl edit`
 - `c`: copy the canonical resource identifier using OSC 52
 - `h`/`l`, Shift+Left/Right: scroll middle columns while resource names and status stay pinned; thumbwheel or Shift+wheel also works over the tree
+- Mouse wheel: move up/down through the tree, or scroll text views and help vertically (three rows per wheel event)
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
 ### Extra tree columns
