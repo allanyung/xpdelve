@@ -42,7 +42,6 @@ pub struct TraceConfig {
 pub struct UiConfig {
     pub color: ColorMode,
     pub ascii: bool,
-    pub horizontal_scroll: bool,
     pub short: bool,
 }
 
@@ -101,7 +100,6 @@ impl Default for UiConfig {
         Self {
             color: ColorMode::Auto,
             ascii: false,
-            horizontal_scroll: false,
             short: false,
         }
     }
@@ -324,6 +322,12 @@ mod tests {
     fn rejects_unknown_fields() {
         let error = toml::from_str::<Config>("schema_version = 1\nunknown = true").unwrap_err();
         assert!(error.to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn rejects_unknown_ui_fields() {
+        let error = toml::from_str::<Config>("[ui]\nunknown = true").unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]

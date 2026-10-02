@@ -59,9 +59,22 @@ retain their Installed/Healthy, image/version, and desired-state semantics.
 
 The main view is a full-width, initially expanded tree. Ordinary traces display
 `OBJECT`, `GROUP`, `SYNCED`, `SYNCED LAST`, `READY`, `READY LAST`, and `STATUS`.
-Package traces use their Installed/Healthy schema. `OBJECT` and `GROUP` receive
-width priority; transition columns disappear together before either is
-truncated. The composition-resource annotation is not a table column.
+Package traces use their Installed/Healthy schema. All requested columns retain
+their natural widths, except `OBJECT`, which is capped to leave space for the
+scrolling columns. Transition-time columns are omitted only with `ui.short` or
+`--short`. The composition-resource annotation is not a table column.
+
+Horizontal scrolling is always available with `h`/`l`, Shift+Left/Right, a
+thumbwheel, or Shift+wheel; there is no width-mode toggle.
+The `OBJECT` column remains pinned, capped at half the inner width, while headers
+and remaining columns scroll by terminal cells. The scroll offset is preserved
+and clamped as the viewport or content changes. Overflow
+is indicated by a scrollbar on the existing bottom border. A vertical divider
+in the subtle style separates the pinned column from the scrolling content;
+the scrollbar uses static, centred `▪` squares in the subtle style and a dotted
+track, with arrowheads dimmed at the limits. The left arrow sits below the gap
+immediately after the divider, while the right arrow remains at the right edge.
+Both have ASCII alternatives and remain distinguishable in monochrome.
 
 Describe, YAML, and Events use the full terminal; confirmation dialogs remain
 compact. Content views provide local search plus vertical navigation. Describe

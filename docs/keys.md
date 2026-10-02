@@ -15,13 +15,33 @@
 | Left | Collapse the subtree or select its parent |
 | `[` | Collapse every subtree below the root, leaving the root expanded |
 | `]` | Expand every subtree |
-| `z` | Toggle fitted and untruncated table widths |
+| `h`, Shift+Left | Scroll columns left by four terminal cells |
+| `l`, Shift+Right | Scroll columns right by four terminal cells |
 
 Expandable rows reserve a fixed disclosure slot immediately before the resource
 name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-` and
 `+`. A leaf's tree branch extends through the same slot, so toggling a row never
 shifts resource names or table columns while leaf rows remain visually connected
 to the tree.
+
+The tree is always horizontally scrollable. `OBJECT` stays pinned while the
+other columns and their headers scroll together. The object column occupies at
+most half the inner tree width; longer names are compacted. Columns can be
+partially visible at either edge. A horizontal scrollbar appears on the bottom
+border beneath the scrolling
+columns when they overflow, with static, centred `▪` squares in the subtle
+colour, a dotted track, and arrowheads. The left arrow sits below the gap just
+after the divider; the right arrow sits at the right edge.
+An arrow is dimmed when that end has been reached. A vertical divider separates
+the pinned object column from the other headers and resource cells. ASCII mode
+uses `|` for the divider and `<`, `>`, `.`, and `-` for the scrollbar.
+Resizing, refreshing, filtering, and collapsing preserve the scroll position,
+clamped to the remaining content. Columns are not hidden automatically in narrow
+windows; `ui.short` or `--short` can explicitly omit the transition-time columns.
+
+Over the tree, a mouse thumbwheel (native horizontal-wheel events) or
+Shift+vertical-wheel scrolls the columns in four-cell steps. Terminal support is
+required for these mouse events. Ordinary vertical-wheel behavior is unchanged.
 
 ## Discovery
 
@@ -127,5 +147,7 @@ lines. In Describe, live YAML, Events, and mutation errors, drag across text to
 copy it on mouse release; visual soft wraps do not add newlines to the copied
 text. The main resource table also supports drag-to-copy, while a click without
 dragging selects the clicked resource row and a double-click opens its live YAML.
+Tree copying uses the displayed text, including the pinned column and the visible
+portion of horizontally scrolled columns.
 Right-clicking a resource opens a menu for YAML, Edit, Status, Events, and
 Describe.

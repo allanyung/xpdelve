@@ -24,7 +24,6 @@ retry_backoff_max_seconds = 60
 [ui]
 color = "auto"
 ascii = false
-horizontal_scroll = false
 short = false
 
 [skin]
@@ -55,7 +54,6 @@ name = "catppuccin-mocha"
 | `trace.retry_backoff_max_seconds` | Maximum delay between retries after repeated failures |
 | `ui.color` | Color policy: `auto`, `always`, or `never` |
 | `ui.ascii` | Use ASCII rather than Unicode tree lines when `true` |
-| `ui.horizontal_scroll` | Start with untruncated full-width columns when `true`; `z` toggles this mode during a session |
 | `ui.short` | Hide condition transition-time columns when `true` |
 | `skin.name` | Built-in theme name; omit it for terminal-background detection |
 | `skin.colors` | Optional per-swatch RGB overrides |

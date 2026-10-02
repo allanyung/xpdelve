@@ -142,7 +142,7 @@ context, resource, API group, and name through the variables in `args`.
 - `ctrl+x`: selectively remove finalizers after confirmation
 - `e`: run `kubectl edit`
 - `c`: copy the canonical resource identifier using OSC 52
-- `z`: toggle fitted/full-width columns
+- `h`/`l`, Shift+Left/Right: scroll columns while resource names stay pinned; thumbwheel or Shift+wheel also works over the tree
 - `r`: refresh; `P`: pause automatic refresh; `?`: help; `q`: quit
 
 ### Command palette, filtering, and exclusion
