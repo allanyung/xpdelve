@@ -525,20 +525,11 @@ impl App {
     }
 
     pub(super) fn resource_view_start(&self, viewport: usize) -> usize {
-        if viewport == 0 {
-            return 0;
-        }
         let len = self.visible().len();
-        let mut start = self.resource_scroll.min(len.saturating_sub(viewport));
-        if self.selection.visible_index < start {
-            start = self.selection.visible_index;
-        } else if self.selection.visible_index >= start.saturating_add(viewport) {
-            start = self
-                .selection
-                .visible_index
-                .saturating_sub(viewport.saturating_sub(1));
-        }
-        start
+        let max = len.saturating_sub(viewport);
+        Scroller::with_offset(self.resource_scroll, max)
+            .ensure_visible(self.selection.visible_index, viewport)
+            .offset()
     }
 
     pub(super) fn expand_or_child(&mut self) {

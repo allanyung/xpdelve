@@ -15,9 +15,9 @@ fn vertical_wheel_delta(mouse: MouseEvent, count: usize) -> Option<isize> {
 }
 
 fn scroll_vertical(scroll: u16, delta: isize, max_scroll: u16) -> u16 {
-    usize::from(scroll)
-        .saturating_add_signed(delta)
-        .min(usize::from(max_scroll)) as u16
+    Scroller::with_offset(usize::from(scroll), usize::from(max_scroll))
+        .scroll_by(delta)
+        .offset_u16()
 }
 
 impl App {

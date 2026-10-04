@@ -70,6 +70,51 @@ impl Selection {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Scroller {
+    offset: usize,
+    max: usize,
+}
+
+impl Scroller {
+    fn new(max: usize) -> Self {
+        Self { offset: 0, max }
+    }
+
+    fn with_offset(offset: usize, max: usize) -> Self {
+        Self {
+            offset: offset.min(max),
+            max,
+        }
+    }
+
+    fn scroll_by(mut self, delta: isize) -> Self {
+        self.offset = self.offset.saturating_add_signed(delta).min(self.max);
+        self
+    }
+
+    fn ensure_visible(mut self, item: usize, viewport: usize) -> Self {
+        if viewport == 0 {
+            return self;
+        }
+        if item < self.offset {
+            self.offset = item;
+        } else if item >= self.offset.saturating_add(viewport) {
+            self.offset = item.saturating_sub(viewport.saturating_sub(1));
+        }
+        self.offset = self.offset.min(self.max);
+        self
+    }
+
+    fn offset(self) -> usize {
+        self.offset
+    }
+
+    fn offset_u16(self) -> u16 {
+        self.offset.try_into().unwrap_or(u16::MAX)
+    }
+}
+
 const EVENT_BUFFER: usize = 128;
 const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
