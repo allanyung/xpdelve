@@ -73,12 +73,15 @@ const HELP_LINES: &[&str] = &[
     "",
     "Discovery",
     "  :                 open command palette",
+    "  :clear            clear kind filter",
     "  :exclude          exclude resource kinds",
     "  :health           filter by resource health",
+    "  :skin             choose theme",
+    "  :quit             exit xpdelve",
     "  /                 filter tree",
     "  f                 find text",
     "  n / N             next / previous match",
-    "  Esc               clear find, text filter, and kind",
+    "  Esc               clear find, text filter, kind, and health",
     "",
     "Session",
     "  r                 refresh now",
@@ -92,7 +95,7 @@ const HELP_LINES: &[&str] = &[
     "  c                 copy resource identifier",
     "  p / u             pause / unpause resource",
     "  Ctrl+D            delete resource",
-    "  Ctrl+X            remove all finalizers",
+    "  Ctrl+X            select finalizers to remove",
 ];
 
 enum AppEvent {

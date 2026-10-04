@@ -196,6 +196,14 @@ Enter `:reload` to reload the active configuration file without restarting.
 Command-line overrides and session filters, selection, and pause state are
 preserved. Invalid configuration leaves the current settings unchanged.
 
+Enter `:health` to filter resources by health status. Choose `All` to show every
+resource, `Unhealthy` to show only resources requiring attention (including
+warning and unknown states), or `Healthy` to show only resources without problems.
+Matching resources retain their ancestor paths for tree context. The health filter
+combines with text and kind filters and remains active across trace refreshes.
+Press Esc from the main view to clear the health filter along with kind, text,
+and find filters.
+
 See [the full keybinding and filtering guide](docs/keys.md) for palette controls
 and the distinction between kind filtering, text filtering, and find.
 
@@ -213,8 +221,8 @@ restores the tree and normal refresh behavior.
 On the main resource table, click a row to select it, double-click to open its
 live YAML, or drag across displayed text to highlight and copy it on release.
 Right-click a row for YAML, Edit, Status, Events, and Describe actions. Describe,
-live YAML, and Events offer the same drag-to-copy behavior; visual soft wraps are
-not included as newlines.
+live YAML, Events, Error, and SmallError views offer the same drag-to-copy behavior;
+visual soft wraps are not included as newlines.
 Describe, YAML, and Events use the full terminal and wrap long lines. Content
 views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
 `h`/`l` or Left/Right scroll unwrapped YAML horizontally.
