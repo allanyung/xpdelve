@@ -113,8 +113,7 @@ impl App {
         let body = content_modal_body(terminal_area, *kind);
         if let Some(delta) = vertical_wheel_delta(mouse, count) {
             if content_modal_area(terminal_area, *kind).contains((mouse.column, mouse.row).into()) {
-                let (max_scroll, _) =
-                    content.scroll_bounds(body.width, body.height, state.wrapped);
+                let (max_scroll, _) = content.scroll_bounds(body.width, body.height, state.wrapped);
                 state.vertical_scroll = scroll_vertical(state.vertical_scroll, delta, max_scroll);
                 *modal_selection = None;
             }
@@ -449,8 +448,13 @@ impl App {
                     let modal_area = content_modal_area(terminal_area, *kind);
                     let body_width = modal_area.width.saturating_sub(2) as usize;
                     let body_height = modal_area.height.saturating_sub(3) as usize;
-                    match state.handle_key(key, content, *kind, (body_width, body_height), page_size)
-                    {
+                    match state.handle_key(
+                        key,
+                        content,
+                        *kind,
+                        (body_width, body_height),
+                        page_size,
+                    ) {
                         TextModalAction::Close => self.modal = None,
                         TextModalAction::FindNext => {
                             move_modal_match(
@@ -525,10 +529,8 @@ impl App {
                     }
                 }
                 Modal::SkinPicker { selected } => {
-                    let mut picker = ListPicker::with_cursor(
-                        *selected,
-                        crate::theme::BUILTIN_NAMES.len(),
-                    );
+                    let mut picker =
+                        ListPicker::with_cursor(*selected, crate::theme::BUILTIN_NAMES.len());
                     match picker.handle_key(key, 10) {
                         ListPickerAction::Close => self.modal = None,
                         ListPickerAction::Select(index) => {

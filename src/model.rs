@@ -613,8 +613,7 @@ fn problem_status(projection: ConditionProjection<'_>) -> Option<&'static str> {
     };
     match (projection.ready, synced) {
         (_, ConditionState::False) => Some("Error"),
-        (ConditionState::False, _) if projection.ready_condition.is_reason("Creating") =>
-        {
+        (ConditionState::False, _) if projection.ready_condition.is_reason("Creating") => {
             Some("Creating")
         }
         (ConditionState::False, _) => Some("Unready"),

@@ -369,7 +369,8 @@ impl TextModalState {
                 TextModalAction::None
             }
             (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-                self.horizontal_scroll = self.horizontal_scroll.saturating_add(4).min(max_horizontal);
+                self.horizontal_scroll =
+                    self.horizontal_scroll.saturating_add(4).min(max_horizontal);
                 TextModalAction::None
             }
             (KeyCode::Char('w'), KeyModifiers::NONE) if kind == ContentKind::Yaml => {

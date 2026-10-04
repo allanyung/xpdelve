@@ -726,10 +726,7 @@ fn reload_error_modal_wraps_scrolls_and_fits_small_terminals() {
         content_modal_area(area, ContentKind::SmallError),
         Rect::new(1, 1, 38, 8)
     );
-    let Some(Modal::Text {
-        content, state, ..
-    }) = &app.modal
-    else {
+    let Some(Modal::Text { content, state, .. }) = &app.modal else {
         panic!("expected error modal");
     };
     assert!(state.wrapped);
@@ -3600,10 +3597,8 @@ fn coalesced_wheels_match_individual_wheels_in_tree_help_and_yaml() {
                 batched.resource_horizontal_scroll
             );
             assert_eq!(individual.help_scroll, batched.help_scroll);
-            if let (
-                Some(Modal::Text { state: a, .. }),
-                Some(Modal::Text { state: b, .. }),
-            ) = (&individual.modal, &batched.modal)
+            if let (Some(Modal::Text { state: a, .. }), Some(Modal::Text { state: b, .. })) =
+                (&individual.modal, &batched.modal)
             {
                 assert_eq!(a.vertical_scroll, b.vertical_scroll);
             }

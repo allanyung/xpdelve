@@ -120,8 +120,18 @@ impl App {
             })
             .collect::<Vec<_>>();
         maybe_add_command(&mut entries, query, "clear", PaletteAction::ClearKindFilter);
-        maybe_add_command(&mut entries, query, "exclude", PaletteAction::OpenExcludePicker);
-        maybe_add_command(&mut entries, query, "health", PaletteAction::OpenHealthPicker);
+        maybe_add_command(
+            &mut entries,
+            query,
+            "exclude",
+            PaletteAction::OpenExcludePicker,
+        );
+        maybe_add_command(
+            &mut entries,
+            query,
+            "health",
+            PaletteAction::OpenHealthPicker,
+        );
         maybe_add_command(&mut entries, query, "skin", PaletteAction::OpenSkinPicker);
         maybe_add_command(&mut entries, query, "reload", PaletteAction::ReloadConfig);
         maybe_add_command(&mut entries, query, "quit", PaletteAction::Quit);

@@ -1446,7 +1446,6 @@ pub(super) fn styled_content_line<'a>(
     highlighted_line(line, query, base, theme)
 }
 
-
 pub(super) fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
     match (kind, wrapped) {
         (ContentKind::SmallError, _) => " j/k or ↑/↓:scroll  Esc/q:close",

@@ -76,10 +76,7 @@ impl Kubernetes {
             .as_deref()
             .context("trace object has no UID; refresh before mutating it")?;
         let (api, current) = self.api_and_current(target).await?;
-        let uid = current
-            .metadata
-            .uid
-            .context("live object has no UID")?;
+        let uid = current.metadata.uid.context("live object has no UID")?;
         let resource_version = current
             .metadata
             .resource_version
