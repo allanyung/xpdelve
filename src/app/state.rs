@@ -240,11 +240,7 @@ impl App {
                     title: "Configuration reload failed".into(),
                     content: text::sanitize(&format!("{error:#}")).into(),
                     kind: ContentKind::SmallError,
-                    wrapped: true,
-                    vertical_scroll: 0,
-                    horizontal_scroll: 0,
-                    query: String::new(),
-                    search_input: None,
+                    state: TextModalState::new(ContentKind::SmallError),
                     selection: None,
                 });
             }
@@ -307,11 +303,7 @@ impl App {
             title,
             content: content.into(),
             kind: ContentKind::Yaml,
-            wrapped: true,
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-            query: String::new(),
-            search_input: None,
+            state: TextModalState::new(ContentKind::Yaml),
             selection: None,
         });
     }
@@ -327,11 +319,7 @@ impl App {
             title: format!("Resource details: {}", node.identity),
             content: content.clone().into(),
             kind: ContentKind::Error,
-            wrapped: true,
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-            query: String::new(),
-            search_input: None,
+            state: TextModalState::new(ContentKind::Error),
             selection: None,
         });
     }
@@ -356,11 +344,7 @@ impl App {
                     title: label.to_owned(),
                     content: content.into(),
                     kind,
-                    wrapped: kind.wraps_by_default(),
-                    vertical_scroll: 0,
-                    horizontal_scroll: 0,
-                    query: String::new(),
-                    search_input: None,
+                    state: TextModalState::new(kind),
                     selection: None,
                 });
                 true
@@ -377,11 +361,7 @@ impl App {
                         content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n"))
                             .into(),
                         kind: ContentKind::Error,
-                        wrapped: true,
-                        vertical_scroll: 0,
-                        horizontal_scroll: 0,
-                        query: String::new(),
-                        search_input: None,
+                        state: TextModalState::new(ContentKind::Error),
                         selection: None,
                     });
                 } else {

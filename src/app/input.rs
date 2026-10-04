@@ -100,10 +100,8 @@ impl App {
         let Some(Modal::Text {
             content,
             kind,
-            wrapped,
-            vertical_scroll,
-            horizontal_scroll,
-            selection,
+            state,
+            selection: modal_selection,
             ..
         }) = &mut self.modal
         else {
@@ -115,22 +113,23 @@ impl App {
         let body = content_modal_body(terminal_area, *kind);
         if let Some(delta) = vertical_wheel_delta(mouse, count) {
             if content_modal_area(terminal_area, *kind).contains((mouse.column, mouse.row).into()) {
-                let (max_scroll, _) = content.scroll_bounds(body.width, body.height, *wrapped);
-                *vertical_scroll = scroll_vertical(*vertical_scroll, delta, max_scroll);
-                *selection = None;
+                let (max_scroll, _) =
+                    content.scroll_bounds(body.width, body.height, state.wrapped);
+                state.vertical_scroll = scroll_vertical(state.vertical_scroll, delta, max_scroll);
+                *modal_selection = None;
             }
             return None;
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                *selection = selection_point_at(
+                *modal_selection = selection_point_at(
                     content,
                     body,
                     mouse.column,
                     mouse.row,
-                    *vertical_scroll,
-                    *horizontal_scroll,
-                    *wrapped,
+                    state.vertical_scroll,
+                    state.horizontal_scroll,
+                    state.wrapped,
                     false,
                 )
                 .map(|point| TextSelection {
@@ -140,15 +139,15 @@ impl App {
                 });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(active) = selection
+                if let Some(active) = modal_selection
                     && let Some(point) = selection_point_at(
                         content,
                         body,
                         mouse.column,
                         mouse.row,
-                        *vertical_scroll,
-                        *horizontal_scroll,
-                        *wrapped,
+                        state.vertical_scroll,
+                        state.horizontal_scroll,
+                        state.wrapped,
                         true,
                     )
                 {
@@ -157,7 +156,7 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                let mut active = selection.take()?;
+                let mut active = modal_selection.take()?;
                 if !active.dragged {
                     return None;
                 }
@@ -166,15 +165,15 @@ impl App {
                     body,
                     mouse.column,
                     mouse.row,
-                    *vertical_scroll,
-                    *horizontal_scroll,
-                    *wrapped,
+                    state.vertical_scroll,
+                    state.horizontal_scroll,
+                    state.wrapped,
                     true,
                 ) {
                     active.focus = point;
                 }
                 let range = active.range();
-                *selection = Some(active);
+                *modal_selection = Some(active);
                 if !range.is_empty() {
                     return Some(MouseAction::Copy(content[range].to_owned()));
                 }
@@ -444,108 +443,36 @@ impl App {
                 Modal::Text {
                     content,
                     kind,
-                    wrapped,
-                    vertical_scroll,
-                    horizontal_scroll,
-                    query,
-                    search_input,
+                    state,
                     ..
                 } => {
-                    if search_input.is_none()
-                        && matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
-                    {
-                        self.modal = None;
-                        return UiAction::None;
-                    }
                     let modal_area = content_modal_area(terminal_area, *kind);
                     let body_width = modal_area.width.saturating_sub(2) as usize;
                     let body_height = modal_area.height.saturating_sub(3) as usize;
-                    let (max_vertical, max_horizontal) = content.scroll_bounds(
-                        modal_area.width.saturating_sub(2),
-                        modal_area.height.saturating_sub(3),
-                        *wrapped,
-                    );
-                    if let Some(input) = search_input {
-                        match key.code {
-                            KeyCode::Esc => *search_input = None,
-                            KeyCode::Enter => {
-                                *query = input.trim().to_owned();
-                                *search_input = None;
-                                move_modal_match(
-                                    content,
-                                    query,
-                                    vertical_scroll,
-                                    false,
-                                    body_width,
-                                    *wrapped,
-                                );
-                            }
-                            KeyCode::Backspace => {
-                                input.pop();
-                            }
-                            KeyCode::Char(character) => input.push(character),
-                            _ => {}
+                    match state.handle_key(key, content, *kind, (body_width, body_height), page_size)
+                    {
+                        TextModalAction::Close => self.modal = None,
+                        TextModalAction::FindNext => {
+                            move_modal_match(
+                                content,
+                                &state.query,
+                                &mut state.vertical_scroll,
+                                false,
+                                body_width,
+                                state.wrapped,
+                            );
                         }
-                    } else {
-                        match (key.code, key.modifiers) {
-                            (KeyCode::Esc | KeyCode::Char('q'), _) => self.modal = None,
-                            (KeyCode::Down | KeyCode::Char('j'), _) => {
-                                *vertical_scroll =
-                                    vertical_scroll.saturating_add(1).min(max_vertical);
-                            }
-                            (KeyCode::Up | KeyCode::Char('k'), _) => {
-                                *vertical_scroll = vertical_scroll.saturating_sub(1);
-                            }
-                            (KeyCode::PageDown, _) => {
-                                *vertical_scroll = vertical_scroll
-                                    .saturating_add(body_height.try_into().unwrap_or(u16::MAX))
-                                    .min(max_vertical);
-                            }
-                            (KeyCode::PageUp, _) => {
-                                *vertical_scroll = vertical_scroll
-                                    .saturating_sub(page_size.try_into().unwrap_or(u16::MAX));
-                            }
-                            (KeyCode::Home | KeyCode::Char('g'), _) => *vertical_scroll = 0,
-                            (KeyCode::End | KeyCode::Char('G'), _) => {
-                                *vertical_scroll = max_vertical;
-                            }
-                            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
-                                *horizontal_scroll = horizontal_scroll.saturating_sub(4);
-                            }
-                            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-                                *horizontal_scroll =
-                                    horizontal_scroll.saturating_add(4).min(max_horizontal);
-                            }
-                            (KeyCode::Char('w'), KeyModifiers::NONE)
-                                if *kind == ContentKind::Yaml =>
-                            {
-                                *wrapped = !*wrapped;
-                                *vertical_scroll = 0;
-                                *horizontal_scroll = 0;
-                            }
-                            (KeyCode::Char('/'), _) => *search_input = Some(query.clone()),
-                            (KeyCode::Char('n'), _) => {
-                                move_modal_match(
-                                    content,
-                                    query,
-                                    vertical_scroll,
-                                    false,
-                                    body_width,
-                                    *wrapped,
-                                );
-                            }
-                            (KeyCode::Char('N'), _) => {
-                                move_modal_match(
-                                    content,
-                                    query,
-                                    vertical_scroll,
-                                    true,
-                                    body_width,
-                                    *wrapped,
-                                );
-                            }
-                            _ => {}
+                        TextModalAction::FindPrevious => {
+                            move_modal_match(
+                                content,
+                                &state.query,
+                                &mut state.vertical_scroll,
+                                true,
+                                body_width,
+                                state.wrapped,
+                            );
                         }
+                        TextModalAction::None => {}
                     }
                 }
                 Modal::Delete {

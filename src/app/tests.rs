@@ -66,7 +66,7 @@ fn mutation_failure_opens_persistent_error_modal() {
         title,
         content,
         kind,
-        wrapped,
+        state,
         ..
     }) = &app.modal
     else {
@@ -76,7 +76,7 @@ fn mutation_failure_opens_persistent_error_modal() {
     assert!(content.contains(&format!("Resource: {identity}")));
     assert!(content.contains("admission webhook denied the request"));
     assert_eq!(*kind, ContentKind::Error);
-    assert!(*wrapped);
+    assert!(state.wrapped);
 
     app.apply_snapshot(
         Snapshot::parse(
@@ -181,7 +181,7 @@ fn resource_details_support_long_safe_text_scrolling_and_search() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), area);
     assert!(
-        matches!(&app.modal, Some(Modal::Text { content, vertical_scroll, .. }) if *vertical_scroll > 0 && content.contains("needle\\x1b[31m\\u{202E}") && !content.contains('\u{1b}') && !content.contains('\u{202e}'))
+        matches!(&app.modal, Some(Modal::Text { content, state, .. }) if state.vertical_scroll > 0 && content.contains("needle\\x1b[31m\\u{202E}") && !content.contains('\u{1b}') && !content.contains('\u{202e}'))
     );
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
     for character in "needle".chars() {
@@ -192,7 +192,7 @@ fn resource_details_support_long_safe_text_scrolling_and_search() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
     assert!(
-        matches!(&app.modal, Some(Modal::Text { query, vertical_scroll, .. }) if query == "needle" && *vertical_scroll > 40)
+        matches!(&app.modal, Some(Modal::Text { state, .. }) if state.query == "needle" && state.vertical_scroll > 40)
     );
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -216,7 +216,7 @@ fn enter_opens_wrapped_problem_details_that_survive_refresh() {
         title,
         content,
         kind,
-        wrapped,
+        state,
         ..
     }) = &app.modal
     else {
@@ -226,7 +226,7 @@ fn enter_opens_wrapped_problem_details_that_survive_refresh() {
     assert!(content.contains("Error: cannot connect"));
     assert!(content.contains("Ready=False\nWaiting: a long diagnostic"));
     assert_eq!(*kind, ContentKind::Error);
-    assert!(*wrapped);
+    assert!(state.wrapped);
     let original = content.clone();
     app.apply_snapshot(
         Snapshot::parse(
@@ -727,20 +727,17 @@ fn reload_error_modal_wraps_scrolls_and_fits_small_terminals() {
         Rect::new(1, 1, 38, 8)
     );
     let Some(Modal::Text {
-        content, wrapped, ..
+        content, state, ..
     }) = &app.modal
     else {
         panic!("expected error modal");
     };
-    assert!(*wrapped);
+    assert!(state.wrapped);
     assert!(!content.contains('\u{1b}'));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
     assert!(matches!(
         app.modal,
-        Some(Modal::Text {
-            vertical_scroll: 1,
-            ..
-        })
+        Some(Modal::Text { ref state, .. }) if state.vertical_scroll == 1
     ));
     let backend = TestBackend::new(area.width, area.height);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -1136,11 +1133,7 @@ fn resource_not_found_clears_stale_trace_state() {
         title: "YAML".into(),
         content: "kind: Root".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     });
 
@@ -2683,11 +2676,7 @@ fn yaml_key_legend_uses_sofka_subtle_color() {
         title: "YAML: Widget/example".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     };
     let backend = TestBackend::new(100, 20);
@@ -2728,11 +2717,7 @@ fn yaml_modal_wraps_long_lines() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     };
     let backend = TestBackend::new(20, 8);
@@ -2754,11 +2739,7 @@ fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
             "Resource: Widget/example\n\nadmission webhook rejected abcdefghijklmnopqrstuvwxyz"
                 .into(),
         kind: ContentKind::Error,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Error),
         selection: None,
     };
     let backend = TestBackend::new(24, 16);
@@ -2785,11 +2766,7 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     });
 
@@ -2826,13 +2803,10 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
         Rect::new(0, 0, 20, 8),
     );
 
-    let Some(Modal::Text {
-        horizontal_scroll, ..
-    }) = app.modal
-    else {
+    let Some(Modal::Text { state, .. }) = app.modal else {
         panic!("expected text modal");
     };
-    assert_eq!(horizontal_scroll, 8);
+    assert_eq!(state.horizontal_scroll, 8);
 }
 
 #[test]
@@ -2912,11 +2886,11 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 title: "content".into(),
                 content: content.into(),
                 kind,
-                wrapped,
-                vertical_scroll: 0,
-                horizontal_scroll: 0,
-                query: String::new(),
-                search_input: None,
+                state: {
+                    let mut state = TextModalState::new(kind);
+                    state.wrapped = wrapped;
+                    state
+                },
                 selection: None,
             });
             let event = MouseEvent {
@@ -2933,11 +2907,8 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 area,
             );
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 0,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, .. }) if state.vertical_scroll == 0
             ));
             app.handle_mouse(
                 MouseEvent {
@@ -2955,12 +2926,8 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
             ));
             assert!(app.handle_mouse(event, area).is_none());
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 3,
-                    selection: None,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, selection: None, .. }) if state.vertical_scroll == 3
             ));
             app.handle_mouse(
                 MouseEvent {
@@ -2970,17 +2937,14 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 area,
             );
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 3,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, .. }) if state.vertical_scroll == 3
             ));
             for _ in 0..100 {
                 app.handle_mouse(event, area);
             }
             assert!(
-                matches!(app.modal, Some(Modal::Text { vertical_scroll, .. }) if vertical_scroll == max_scroll)
+                matches!(&app.modal, Some(Modal::Text { state, .. }) if state.vertical_scroll == max_scroll)
             );
             for _ in 0..100 {
                 app.handle_mouse(
@@ -2992,12 +2956,8 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 );
             }
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 0,
-                    horizontal_scroll: 0,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, .. }) if state.vertical_scroll == 0 && state.horizontal_scroll == 0
             ));
             assert_eq!(app.selection.visible_index, 0);
         }
@@ -3018,11 +2978,7 @@ fn content_mouse_drag_copies_selected_source_text() {
             title: "Content".into(),
             content: "kind: Widget\nmetadata: {}".into(),
             kind: content_kind,
-            wrapped: true,
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-            query: String::new(),
-            search_input: None,
+            state: TextModalState::new(content_kind),
             selection: None,
         });
         let body = content_modal_body(area, content_kind);
@@ -3078,11 +3034,7 @@ fn content_mouse_click_does_not_copy_text() {
         title: "YAML".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     });
     let area = Rect::new(0, 0, 40, 10);
@@ -3649,15 +3601,11 @@ fn coalesced_wheels_match_individual_wheels_in_tree_help_and_yaml() {
             );
             assert_eq!(individual.help_scroll, batched.help_scroll);
             if let (
-                Some(Modal::Text {
-                    vertical_scroll: a, ..
-                }),
-                Some(Modal::Text {
-                    vertical_scroll: b, ..
-                }),
+                Some(Modal::Text { state: a, .. }),
+                Some(Modal::Text { state: b, .. }),
             ) = (&individual.modal, &batched.modal)
             {
-                assert_eq!(a, b);
+                assert_eq!(a.vertical_scroll, b.vertical_scroll);
             }
         }
     }

@@ -1140,11 +1140,7 @@ pub(super) fn render_modal(
             title,
             content,
             kind,
-            wrapped,
-            vertical_scroll,
-            horizontal_scroll,
-            query,
-            search_input,
+            state,
             selection,
         } => {
             let title = format!(" {} ", text::sanitize(title));
@@ -1161,26 +1157,26 @@ pub(super) fn render_modal(
                 frame,
                 regions[0],
                 *kind,
-                query,
-                *wrapped,
-                *vertical_scroll,
-                *horizontal_scroll,
+                &state.query,
+                state.wrapped,
+                state.vertical_scroll,
+                state.horizontal_scroll,
                 theme,
             );
-            if let Some(selection) = selection {
+            if let Some(text_selection) = selection {
                 render_text_selection(
                     frame,
                     regions[0],
                     content,
-                    *selection,
-                    *vertical_scroll,
-                    *horizontal_scroll,
-                    *wrapped,
+                    *text_selection,
+                    state.vertical_scroll,
+                    state.horizontal_scroll,
+                    state.wrapped,
                     theme,
                 );
             }
-            let footer = search_input.as_ref().map_or_else(
-                || content_modal_footer(*kind, *wrapped).into(),
+            let footer = state.search_input.as_ref().map_or_else(
+                || content_modal_footer(*kind, state.wrapped).into(),
                 |input| format!(" Find: {input}_"),
             );
             frame.render_widget(Paragraph::new(footer).style(theme.subtle()), regions[1]);

@@ -283,16 +283,127 @@ struct PaletteEntry {
 }
 
 #[derive(Clone, Debug)]
+struct TextModalState {
+    wrapped: bool,
+    vertical_scroll: u16,
+    horizontal_scroll: u16,
+    query: String,
+    search_input: Option<String>,
+}
+
+impl TextModalState {
+    fn new(kind: ContentKind) -> Self {
+        Self {
+            wrapped: kind.wraps_by_default(),
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+        }
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        content: &content::TextContent,
+        kind: ContentKind,
+        body_size: (usize, usize),
+        page_size: usize,
+    ) -> TextModalAction {
+        let (body_width, body_height) = body_size;
+        let (max_vertical, max_horizontal) =
+            content.scroll_bounds(body_width as u16, body_height as u16, self.wrapped);
+
+        if let Some(input) = &mut self.search_input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.search_input = None;
+                }
+                KeyCode::Enter => {
+                    self.query = input.trim().to_owned();
+                    self.search_input = None;
+                    return TextModalAction::FindNext;
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(character) => input.push(character),
+                _ => {}
+            }
+            return TextModalAction::None;
+        }
+
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc | KeyCode::Char('q'), _) => TextModalAction::Close,
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.vertical_scroll = self.vertical_scroll.saturating_add(1).min(max_vertical);
+                TextModalAction::None
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) => {
+                self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
+                TextModalAction::None
+            }
+            (KeyCode::PageDown, _) => {
+                self.vertical_scroll = self
+                    .vertical_scroll
+                    .saturating_add(body_height.try_into().unwrap_or(u16::MAX))
+                    .min(max_vertical);
+                TextModalAction::None
+            }
+            (KeyCode::PageUp, _) => {
+                self.vertical_scroll = self
+                    .vertical_scroll
+                    .saturating_sub(page_size.try_into().unwrap_or(u16::MAX));
+                TextModalAction::None
+            }
+            (KeyCode::Home | KeyCode::Char('g'), _) => {
+                self.vertical_scroll = 0;
+                TextModalAction::None
+            }
+            (KeyCode::End | KeyCode::Char('G'), _) => {
+                self.vertical_scroll = max_vertical;
+                TextModalAction::None
+            }
+            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                self.horizontal_scroll = self.horizontal_scroll.saturating_sub(4);
+                TextModalAction::None
+            }
+            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                self.horizontal_scroll = self.horizontal_scroll.saturating_add(4).min(max_horizontal);
+                TextModalAction::None
+            }
+            (KeyCode::Char('w'), KeyModifiers::NONE) if kind == ContentKind::Yaml => {
+                self.wrapped = !self.wrapped;
+                self.vertical_scroll = 0;
+                self.horizontal_scroll = 0;
+                TextModalAction::None
+            }
+            (KeyCode::Char('/'), _) => {
+                self.search_input = Some(self.query.clone());
+                TextModalAction::None
+            }
+            (KeyCode::Char('n'), _) => TextModalAction::FindNext,
+            (KeyCode::Char('N'), _) => TextModalAction::FindPrevious,
+            _ => TextModalAction::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum TextModalAction {
+    None,
+    Close,
+    FindNext,
+    FindPrevious,
+}
+
+#[derive(Clone, Debug)]
 enum Modal {
     Text {
         title: String,
         content: content::TextContent,
         kind: ContentKind,
-        wrapped: bool,
-        vertical_scroll: u16,
-        horizontal_scroll: u16,
-        query: String,
-        search_input: Option<String>,
+        state: TextModalState,
         selection: Option<TextSelection>,
     },
     Delete {

@@ -219,7 +219,7 @@ impl Kubernetes {
 
     pub async fn set_paused(&self, target: &Target, paused: bool) -> Result<()> {
         const KEY: &str = "crossplane.io/paused";
-        let (api, current) = self.api_and_current(target).await?;
+        let (_api, current) = self.api_and_current(target).await?;
         let current_value = current
             .metadata
             .annotations
@@ -259,7 +259,7 @@ impl Kubernetes {
     }
 
     pub async fn remove_finalizers(&self, target: &Target, selected: &[String]) -> Result<()> {
-        let (api, current) = self.api_and_current(target).await?;
+        let (_api, current) = self.api_and_current(target).await?;
         let mut finalizers = current.metadata.finalizers.clone().unwrap_or_default();
         let original_len = finalizers.len();
         finalizers.retain(|finalizer| !selected.contains(finalizer));
