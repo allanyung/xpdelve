@@ -77,10 +77,6 @@ struct Scroller {
 }
 
 impl Scroller {
-    fn new(max: usize) -> Self {
-        Self { offset: 0, max }
-    }
-
     fn with_offset(offset: usize, max: usize) -> Self {
         Self {
             offset: offset.min(max),
@@ -131,10 +127,6 @@ struct ListPicker {
 }
 
 impl ListPicker {
-    fn new(len: usize) -> Self {
-        Self { cursor: 0, len }
-    }
-
     fn with_cursor(cursor: usize, len: usize) -> Self {
         Self {
             cursor: cursor.min(len.saturating_sub(1)),
