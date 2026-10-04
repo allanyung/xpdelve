@@ -83,7 +83,7 @@ required for these mouse events. Ordinary vertical-wheel behavior is unchanged.
 | `/` | Filter rows while retaining matching ancestor paths |
 | `f` | Find text without hiding rows |
 | `n`, `N` | Select the next or previous find match |
-| `Esc` | Clear find, text filter, and kind filter |
+| `Esc` | Clear find, text filter, kind filter, and health filter |
 | `d` | Open captured `kubectl describe` output |
 | `y` | Open redacted live YAML |
 | `s` | Show the selected resource status |
@@ -132,8 +132,8 @@ is a separate exact-match filter and does not retain non-matching ancestors.
 | `:quit` | Exit xpdelve through the normal shutdown path |
 
 Esc while the palette is open closes it without changing the current kind.
-Esc from the main view clears the kind filter, `/` text filter, and find query
-together; it does not reset excluded kinds.
+Esc from the main view clears the kind filter, `/` text filter, find query, and
+health filter together; it does not reset excluded kinds.
 
 The exclusion picker identifies entries by API group and kind, with `Usage`
 kinds listed first. Checked entries are hidden. Use Up/Down or `j`/`k` to move,

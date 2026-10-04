@@ -131,8 +131,9 @@ kinds remain visible by default. Usage kinds receive priority in the picker.
 The typed `:skin` action opens a built-in-theme picker; accepting a choice
 applies it to the live theme and atomically persists `skin.name` without
 replacing unrelated configuration. The typed `:quit` action exits through the
-normal application shutdown path. This action-based catalog leaves room for
-commands such as reload without coupling them to popup input or rendering.
+normal application shutdown path. The typed `:reload` action reloads the active
+configuration file without restarting. The typed `:health` action filters
+resources by health status.
 
 ## Kubernetes operations
 
