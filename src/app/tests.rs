@@ -2644,7 +2644,7 @@ fn help_modal_scrolls_to_actions_on_a_standard_terminal() {
     assert!(rendered.contains("Session"));
     assert!(rendered.contains("refresh now"));
     assert!(rendered.contains("Actions"));
-    assert!(rendered.contains("remove all finalizers"));
+    assert!(rendered.contains("select finalizers to remove"));
     assert!(rendered.contains("Esc/q/?:close"));
 }
 
