@@ -1,5 +1,24 @@
-use super::render::{content_wraps_by_default, fuzzy_score, resource_kind_label};
+use super::render::{fuzzy_score, resource_kind_label};
 use super::*;
+
+fn maybe_add_command(
+    entries: &mut Vec<(usize, PaletteEntry)>,
+    query: &str,
+    label: &str,
+    action: PaletteAction,
+) {
+    if !query.is_empty()
+        && let Some(score) = fuzzy_score(label, query)
+    {
+        entries.push((
+            score,
+            PaletteEntry {
+                label: label.into(),
+                action,
+            },
+        ));
+    }
+}
 
 impl App {
     pub(super) fn new(resource: String, config: Config, cli: &Cli, theme: Theme) -> Self {
@@ -101,72 +120,12 @@ impl App {
                 })
             })
             .collect::<Vec<_>>();
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("clear", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "clear".into(),
-                    action: PaletteAction::ClearKindFilter,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("exclude", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "exclude".into(),
-                    action: PaletteAction::OpenExcludePicker,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("health", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "health".into(),
-                    action: PaletteAction::OpenHealthPicker,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("skin", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "skin".into(),
-                    action: PaletteAction::OpenSkinPicker,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("reload", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "reload".into(),
-                    action: PaletteAction::ReloadConfig,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("quit", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "quit".into(),
-                    action: PaletteAction::Quit,
-                },
-            ));
-        }
+        maybe_add_command(&mut entries, query, "clear", PaletteAction::ClearKindFilter);
+        maybe_add_command(&mut entries, query, "exclude", PaletteAction::OpenExcludePicker);
+        maybe_add_command(&mut entries, query, "health", PaletteAction::OpenHealthPicker);
+        maybe_add_command(&mut entries, query, "skin", PaletteAction::OpenSkinPicker);
+        maybe_add_command(&mut entries, query, "reload", PaletteAction::ReloadConfig);
+        maybe_add_command(&mut entries, query, "quit", PaletteAction::Quit);
         entries.sort_by(|(left_score, left), (right_score, right)| {
             right_score
                 .cmp(left_score)
@@ -398,7 +357,7 @@ impl App {
                     title: label.to_owned(),
                     content: content.into(),
                     kind,
-                    wrapped: content_wraps_by_default(kind),
+                    wrapped: kind.wraps_by_default(),
                     vertical_scroll: 0,
                     horizontal_scroll: 0,
                     query: String::new(),

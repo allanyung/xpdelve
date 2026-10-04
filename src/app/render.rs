@@ -1450,16 +1450,6 @@ pub(super) fn styled_content_line<'a>(
     highlighted_line(line, query, base, theme)
 }
 
-pub(super) fn content_wraps_by_default(kind: ContentKind) -> bool {
-    matches!(
-        kind,
-        ContentKind::Describe
-            | ContentKind::Yaml
-            | ContentKind::Events
-            | ContentKind::Error
-            | ContentKind::SmallError
-    )
-}
 
 pub(super) fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {
     match (kind, wrapped) {

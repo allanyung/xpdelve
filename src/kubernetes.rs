@@ -58,12 +58,39 @@ pub struct Target {
     pub expected_uid: Option<String>,
 }
 
+struct PatchContext {
+    api: Api<DynamicObject>,
+    uid: String,
+    resource_version: String,
+}
+
 pub struct Kubernetes {
     client: Client,
     discovery: RwLock<Discovery>,
 }
 
 impl Kubernetes {
+    async fn verified_patch_context(&self, target: &Target) -> Result<PatchContext> {
+        let expected_uid = target
+            .expected_uid
+            .as_deref()
+            .context("trace object has no UID; refresh before mutating it")?;
+        let (api, current) = self.api_and_current(target).await?;
+        let uid = current
+            .metadata
+            .uid
+            .context("live object has no UID")?;
+        let resource_version = current
+            .metadata
+            .resource_version
+            .context("live object has no resourceVersion")?;
+        ensure_uid(expected_uid, &uid, &target.identity)?;
+        Ok(PatchContext {
+            api,
+            uid,
+            resource_version,
+        })
+    }
     pub async fn connect(kubeconfig: Option<&Path>, context: Option<&str>) -> Result<Arc<Self>> {
         let options = KubeConfigOptions {
             context: context.map(str::to_owned),
@@ -167,55 +194,32 @@ impl Kubernetes {
     }
 
     pub async fn delete(&self, target: &Target, propagation: DeletePropagation) -> Result<()> {
-        let expected_uid = target
-            .expected_uid
-            .as_deref()
-            .context("trace object has no UID; refresh before deleting")?;
-        let (api, current) = self.api_and_current(target).await?;
-        let uid = current.metadata.uid.context("live object has no UID")?;
-        let resource_version = current
-            .metadata
-            .resource_version
-            .context("live object has no resourceVersion")?;
-        ensure_uid(expected_uid, &uid, &target.identity)?;
+        let context = self.verified_patch_context(target).await?;
         let propagation_policy = match propagation {
             DeletePropagation::Foreground => PropagationPolicy::Foreground,
             DeletePropagation::Background => PropagationPolicy::Background,
             DeletePropagation::Orphan => PropagationPolicy::Orphan,
         };
-        api.delete(
-            &target.identity.name,
-            &DeleteParams {
-                propagation_policy: Some(propagation_policy),
-                preconditions: Some(Preconditions {
-                    uid: Some(uid),
-                    resource_version: Some(resource_version),
-                }),
-                ..DeleteParams::default()
-            },
-        )
-        .await?;
+        context
+            .api
+            .delete(
+                &target.identity.name,
+                &DeleteParams {
+                    propagation_policy: Some(propagation_policy),
+                    preconditions: Some(Preconditions {
+                        uid: Some(context.uid),
+                        resource_version: Some(context.resource_version),
+                    }),
+                    ..DeleteParams::default()
+                },
+            )
+            .await?;
         Ok(())
     }
 
     pub async fn set_paused(&self, target: &Target, paused: bool) -> Result<()> {
         const KEY: &str = "crossplane.io/paused";
-        let expected_uid = target
-            .expected_uid
-            .as_deref()
-            .context("trace object has no UID; refresh before mutating it")?;
         let (api, current) = self.api_and_current(target).await?;
-        let uid = current
-            .metadata
-            .uid
-            .as_deref()
-            .context("live object has no UID")?;
-        ensure_uid(expected_uid, uid, &target.identity)?;
-        let resource_version = current
-            .metadata
-            .resource_version
-            .as_deref()
-            .context("live object has no resourceVersion")?;
         let current_value = current
             .metadata
             .annotations
@@ -227,16 +231,17 @@ impl Kubernetes {
             return Ok(());
         }
 
+        let context = self.verified_patch_context(target).await?;
         let mut operations = vec![
             json!({
                 "op": "test",
                 "path": "/metadata/uid",
-                "value": uid,
+                "value": context.uid,
             }),
             json!({
                 "op": "test",
                 "path": "/metadata/resourceVersion",
-                "value": resource_version,
+                "value": context.resource_version,
             }),
         ];
         let path = "/metadata/annotations/crossplane.io~1paused";
@@ -249,39 +254,25 @@ impl Kubernetes {
             operations.push(json!({"op": "test", "path": path, "value": current_value}));
             operations.push(json!({"op": "remove", "path": path}));
         }
-        patch(&api, &target.identity.name, operations).await?;
+        patch(&context.api, &target.identity.name, operations).await?;
         Ok(())
     }
 
     pub async fn remove_finalizers(&self, target: &Target, selected: &[String]) -> Result<()> {
-        let expected_uid = target
-            .expected_uid
-            .as_deref()
-            .context("trace object has no UID; refresh before mutating it")?;
         let (api, current) = self.api_and_current(target).await?;
-        let uid = current
-            .metadata
-            .uid
-            .as_deref()
-            .context("live object has no UID")?;
-        ensure_uid(expected_uid, uid, &target.identity)?;
-        let resource_version = current
-            .metadata
-            .resource_version
-            .as_deref()
-            .context("live object has no resourceVersion")?;
         let mut finalizers = current.metadata.finalizers.clone().unwrap_or_default();
         let original_len = finalizers.len();
         finalizers.retain(|finalizer| !selected.contains(finalizer));
         if finalizers.len() == original_len {
             return Ok(());
         }
+        let context = self.verified_patch_context(target).await?;
         patch(
-            &api,
+            &context.api,
             &target.identity.name,
             vec![
-                json!({"op": "test", "path": "/metadata/uid", "value": uid}),
-                json!({"op": "test", "path": "/metadata/resourceVersion", "value": resource_version}),
+                json!({"op": "test", "path": "/metadata/uid", "value": context.uid}),
+                json!({"op": "test", "path": "/metadata/resourceVersion", "value": context.resource_version}),
                 json!({"op": "add", "path": "/metadata/finalizers", "value": finalizers}),
             ],
         )

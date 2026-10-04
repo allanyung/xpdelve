@@ -94,8 +94,8 @@ enum ConditionState {
 struct ConditionProjection<'a> {
     ready: ConditionState,
     synced: ConditionState,
-    ready_condition: Option<&'a Value>,
-    synced_condition: Option<&'a Value>,
+    ready_condition: ConditionView<'a>,
+    synced_condition: ConditionView<'a>,
     package: bool,
     package_revision: bool,
 }
@@ -295,14 +295,17 @@ fn project_node(
         "Ready"
     };
     let synced_type = if package_kind { "Installed" } else { "Synced" };
-    let ready_condition = condition(&node.object, ready_type).or_else(|| {
-        package_revision
-            .then(|| condition(&node.object, "Healthy"))
-            .flatten()
-    });
-    let synced_condition = condition(&node.object, synced_type);
-    let ready_state = condition_state(ready_condition);
-    let synced_state = condition_state(synced_condition);
+    let ready_condition = {
+        let primary = ConditionView::find(&node.object, ready_type);
+        if package_revision && primary.inner().is_none() {
+            ConditionView::find(&node.object, "Healthy")
+        } else {
+            primary
+        }
+    };
+    let synced_condition = ConditionView::find(&node.object, synced_type);
+    let ready_state = ready_condition.state();
+    let synced_state = synced_condition.state();
     let ready = state_bool(ready_state);
     let synced = state_bool(synced_state);
     let trace_error = node.error.as_ref().map(error_text);
@@ -354,8 +357,8 @@ fn project_node(
         status_details,
         ready,
         synced,
-        ready_last: ready_condition.and_then(condition_transition),
-        synced_last: synced_condition.and_then(condition_transition),
+        ready_last: ready_condition.transition(),
+        synced_last: synced_condition.transition(),
         paused,
         is_package: package_kind,
         package,
@@ -416,27 +419,78 @@ fn pointer_string(value: &Value, pointer: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn condition<'a>(object: &'a Value, condition_type: &str) -> Option<&'a Value> {
-    object
-        .pointer("/status/conditions")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find(|condition| {
-                condition.get("type").and_then(Value::as_str) == Some(condition_type)
-            })
-        })
-}
+#[derive(Clone, Copy, Debug)]
+struct ConditionView<'a>(Option<&'a Value>);
 
-fn condition_state(condition: Option<&Value>) -> ConditionState {
-    match condition
-        .and_then(|condition| condition.get("status"))
-        .and_then(Value::as_str)
-    {
-        Some("True") => ConditionState::True,
-        Some("False") => ConditionState::False,
-        Some(_) => ConditionState::Unknown,
-        None if condition.is_some() => ConditionState::Unknown,
-        None => ConditionState::Missing,
+impl<'a> ConditionView<'a> {
+    fn find(object: &'a Value, condition_type: &str) -> Self {
+        Self(
+            object
+                .pointer("/status/conditions")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items.iter().find(|condition| {
+                        condition.get("type").and_then(Value::as_str) == Some(condition_type)
+                    })
+                }),
+        )
+    }
+
+    fn state(self) -> ConditionState {
+        match self
+            .0
+            .and_then(|condition| condition.get("status"))
+            .and_then(Value::as_str)
+        {
+            Some("True") => ConditionState::True,
+            Some("False") => ConditionState::False,
+            Some(_) => ConditionState::Unknown,
+            None if self.0.is_some() => ConditionState::Unknown,
+            None => ConditionState::Missing,
+        }
+    }
+
+    fn reason(self) -> Option<String> {
+        let condition = self.0?;
+        let reason = text::sanitize(
+            condition
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
+        let message = text::sanitize(
+            condition
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
+        match (reason.is_empty(), message.is_empty()) {
+            (true, true) => None,
+            (false, true) => Some(reason.to_owned()),
+            (true, false) => Some(message.to_owned()),
+            (false, false) => Some(format!("{reason}: {message}")),
+        }
+    }
+
+    fn transition(self) -> Option<String> {
+        let condition = self.0?;
+        let timestamp = condition.get("lastTransitionTime")?.as_str()?;
+        DateTime::parse_from_rfc3339(timestamp).ok().map(|time| {
+            time.with_timezone(&Local)
+                .format("%d %b %y %H:%M")
+                .to_string()
+        })
+    }
+
+    fn is_reason(self, expected: &str) -> bool {
+        self.0
+            .and_then(|condition| condition.get("reason"))
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.eq_ignore_ascii_case(expected))
+    }
+
+    fn inner(self) -> Option<&'a Value> {
+        self.0
     }
 }
 
@@ -479,46 +533,8 @@ fn resource_health(
     }
 }
 
-fn condition_reason(condition: &Value) -> Option<String> {
-    let reason = text::sanitize(
-        condition
-            .get("reason")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
-    let message = text::sanitize(
-        condition
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
-    match (reason.is_empty(), message.is_empty()) {
-        (true, true) => None,
-        (false, true) => Some(reason.to_owned()),
-        (true, false) => Some(message.to_owned()),
-        (false, false) => Some(format!("{reason}: {message}")),
-    }
-}
-
-fn relevant_reason_is(
-    ready_condition: Option<&Value>,
-    synced_condition: Option<&Value>,
-    expected: &str,
-) -> bool {
-    [ready_condition, synced_condition]
-        .into_iter()
-        .flatten()
-        .filter_map(|condition| condition.get("reason").and_then(Value::as_str))
-        .any(|reason| reason.eq_ignore_ascii_case(expected))
-}
-
-fn condition_transition(condition: &Value) -> Option<String> {
-    let timestamp = condition.get("lastTransitionTime")?.as_str()?;
-    DateTime::parse_from_rfc3339(timestamp).ok().map(|time| {
-        time.with_timezone(&Local)
-            .format("%d %b %y %H:%M")
-            .to_string()
-    })
+fn relevant_reason_is(ready: ConditionView<'_>, synced: ConditionView<'_>, expected: &str) -> bool {
+    ready.is_reason(expected) || synced.is_reason(expected)
 }
 
 fn status_text(
@@ -541,23 +557,17 @@ fn status_text(
         return status.into();
     }
     if projection.package_revision {
-        return projection
-            .ready_condition
-            .and_then(condition_reason)
-            .unwrap_or_default();
+        return projection.ready_condition.reason().unwrap_or_default();
     }
     if projection.ready == ConditionState::True && projection.synced == ConditionState::True {
-        return projection
-            .ready_condition
-            .and_then(condition_reason)
-            .unwrap_or_else(|| {
-                if projection.package {
-                    "Healthy"
-                } else {
-                    "Ready"
-                }
-                .into()
-            });
+        return projection.ready_condition.reason().unwrap_or_else(|| {
+            if projection.package {
+                "Healthy"
+            } else {
+                "Ready"
+            }
+            .into()
+        });
     }
     if !projection.package
         && projection.ready == ConditionState::True
@@ -565,7 +575,7 @@ fn status_text(
     {
         return projection
             .ready_condition
-            .and_then(condition_reason)
+            .reason()
             .unwrap_or_else(|| "Ready".into());
     }
     if !projection.package
@@ -574,7 +584,7 @@ fn status_text(
     {
         return projection
             .synced_condition
-            .and_then(condition_reason)
+            .reason()
             .unwrap_or_else(|| "Synced".into());
     }
     "-".into()
@@ -603,8 +613,7 @@ fn problem_status(projection: ConditionProjection<'_>) -> Option<&'static str> {
     };
     match (projection.ready, synced) {
         (_, ConditionState::False) => Some("Error"),
-        (ConditionState::False, _)
-            if relevant_reason_is(projection.ready_condition, None, "Creating") =>
+        (ConditionState::False, _) if projection.ready_condition.is_reason("Creating") =>
         {
             Some("Creating")
         }
@@ -622,20 +631,23 @@ fn status_details(
     if let Some(error) = trace_error {
         details.push(format!("Error: {error}"));
     }
-    let synced_condition = projection.synced_condition.filter(|condition| {
-        !projection.package_revision
-            || relevant_reason_is(Some(condition), None, "Warning")
-            || relevant_reason_is(Some(condition), None, "Unknown")
-    });
-    for condition in [synced_condition, projection.ready_condition]
-        .into_iter()
-        .flatten()
+    let include_synced = !projection.package_revision
+        || projection.synced_condition.is_reason("Warning")
+        || projection.synced_condition.is_reason("Unknown");
+    for condition_view in [
+        include_synced.then_some(projection.synced_condition),
+        Some(projection.ready_condition),
+    ]
+    .into_iter()
+    .flatten()
     {
-        if !matches!(
-            condition_state(Some(condition)),
-            ConditionState::False | ConditionState::Unknown
-        ) && !relevant_reason_is(Some(condition), None, "Warning")
-            && !relevant_reason_is(Some(condition), None, "Unknown")
+        let Some(condition) = condition_view.inner() else {
+            continue;
+        };
+        let state = condition_view.state();
+        if !matches!(state, ConditionState::False | ConditionState::Unknown)
+            && !condition_view.is_reason("Warning")
+            && !condition_view.is_reason("Unknown")
         {
             continue;
         }
@@ -643,14 +655,15 @@ fn status_details(
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("Condition");
-        let state = condition
+        let state_str = condition
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("Unknown");
-        let message =
-            condition_reason(condition).unwrap_or_else(|| "No reason or message reported.".into());
+        let message = condition_view
+            .reason()
+            .unwrap_or_else(|| "No reason or message reported.".into());
         details.push(text::sanitize(&format!(
-            "{condition_type}={state}\n{message}"
+            "{condition_type}={state_str}\n{message}"
         )));
     }
     (!details.is_empty()).then(|| details.join("\n\n"))

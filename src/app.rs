@@ -245,6 +245,13 @@ impl ContentKind {
             Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
         )
     }
+
+    fn wraps_by_default(self) -> bool {
+        matches!(
+            self,
+            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
+        )
+    }
 }
 
 struct App {
