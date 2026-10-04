@@ -44,6 +44,32 @@ use crate::text;
 use crate::theme::Theme;
 use crate::trace::{self, TraceRequest};
 
+#[derive(Clone, Debug)]
+struct Selection {
+    visible_index: usize,
+    identity: Option<Identity>,
+}
+
+impl Selection {
+    fn new(visible_index: usize, nodes: &[ProjectedNode], visible: &[usize]) -> Self {
+        let identity = visible
+            .get(visible_index)
+            .and_then(|index| nodes.get(*index))
+            .map(|node| node.identity.clone());
+        Self {
+            visible_index,
+            identity,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            visible_index: 0,
+            identity: None,
+        }
+    }
+}
+
 const EVENT_BUFFER: usize = 128;
 const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
@@ -257,8 +283,7 @@ impl ContentKind {
 struct App {
     resource: String,
     snapshot: Option<Arc<Snapshot>>,
-    selected_identity: Option<Identity>,
-    selected_visible: usize,
+    selection: Selection,
     resource_scroll: usize,
     resource_horizontal_scroll: usize,
     collapsed: HashSet<Identity>,

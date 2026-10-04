@@ -345,7 +345,7 @@ impl App {
                         rendered.row_count,
                     ) {
                         self.set_selection(position);
-                        let identity = self.selected_identity.clone()?;
+                        let identity = self.selection.identity.clone()?;
                         let now = Instant::now();
                         let double_click = self.last_tree_click.as_ref().is_some_and(|click| {
                             click.identity == identity
@@ -692,7 +692,7 @@ impl App {
                                 _ => format!("{count} resource kinds excluded"),
                             };
                             self.modal = None;
-                            self.set_selection(self.selected_visible);
+                            self.set_selection(self.selection.visible_index);
                             return UiAction::None;
                         }
                         _ => {}
@@ -890,7 +890,7 @@ impl App {
                 self.find.clear();
                 self.kind_filter = None;
                 self.health_filter = HealthFilter::All;
-                self.set_selection(self.selected_visible);
+                self.set_selection(self.selection.visible_index);
             }
             (KeyCode::Char('?'), _) => {
                 self.help_scroll = 0;
@@ -915,7 +915,7 @@ impl App {
                 }
             }
             (KeyCode::Char('s'), _) => {
-                if let Some(identity) = self.selected_identity.clone() {
+                if let Some(identity) = self.selection.identity.clone() {
                     self.show_status(&identity);
                 }
             }

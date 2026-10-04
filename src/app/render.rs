@@ -198,7 +198,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     {
         let node = &snapshot.nodes[*index];
         let content = rendered.lines[row + 1].clone();
-        let selected = visible_position == app.selected_visible;
+        let selected = visible_position == app.selection.visible_index;
         let mut style = if selected {
             app.theme.selected_row()
         } else {
