@@ -597,40 +597,37 @@ impl App {
                         self.modal = None;
                     }
                 }
-                Modal::SkinPicker { selected } => match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        *selected = (*selected + 1) % crate::theme::BUILTIN_NAMES.len();
+                Modal::SkinPicker { selected } => {
+                    let mut picker = ListPicker::with_cursor(
+                        *selected,
+                        crate::theme::BUILTIN_NAMES.len(),
+                    );
+                    match picker.handle_key(key, 10) {
+                        ListPickerAction::Close => self.modal = None,
+                        ListPickerAction::Select(index) => {
+                            let name = crate::theme::BUILTIN_NAMES[index].to_owned();
+                            self.modal = None;
+                            self.apply_skin(&name);
+                        }
+                        ListPickerAction::None => *selected = picker.cursor(),
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        *selected = selected
-                            .checked_sub(1)
-                            .unwrap_or(crate::theme::BUILTIN_NAMES.len() - 1);
+                }
+                Modal::HealthPicker { selected } => {
+                    let mut picker = ListPicker::with_cursor(*selected, HEALTH_FILTERS.len());
+                    match picker.handle_key(key, 3) {
+                        ListPickerAction::Close => self.modal = None,
+                        ListPickerAction::Select(index) => {
+                            self.health_filter = HEALTH_FILTERS[index];
+                            self.status = format!(
+                                "Health filter: {}",
+                                health_filter_label(self.health_filter)
+                            );
+                            self.modal = None;
+                            self.set_selection(0);
+                        }
+                        ListPickerAction::None => *selected = picker.cursor(),
                     }
-                    KeyCode::Enter => {
-                        let name = crate::theme::BUILTIN_NAMES[*selected].to_owned();
-                        self.modal = None;
-                        self.apply_skin(&name);
-                    }
-                    _ => {}
-                },
-                Modal::HealthPicker { selected } => match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        *selected = (*selected + 1) % HEALTH_FILTERS.len();
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        *selected = selected.checked_sub(1).unwrap_or(HEALTH_FILTERS.len() - 1);
-                    }
-                    KeyCode::Enter => {
-                        self.health_filter = HEALTH_FILTERS[*selected];
-                        self.status =
-                            format!("Health filter: {}", health_filter_label(self.health_filter));
-                        self.modal = None;
-                        self.set_selection(0);
-                    }
-                    _ => {}
-                },
+                }
                 Modal::ExcludePicker {
                     kinds,
                     excluded,
@@ -643,47 +640,13 @@ impl App {
                             .saturating_sub(3),
                     )
                     .max(1);
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Char('q') => {
+                    let mut picker = ListPicker::with_cursor(*cursor, kinds.len());
+                    match picker.handle_key(key, viewport) {
+                        ListPickerAction::Close => {
                             self.modal = None;
                             return UiAction::None;
                         }
-                        KeyCode::Down | KeyCode::Char('j') if !kinds.is_empty() => {
-                            *cursor = (*cursor + 1) % kinds.len();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') if !kinds.is_empty() => {
-                            *cursor = cursor.checked_sub(1).unwrap_or(kinds.len() - 1);
-                        }
-                        KeyCode::PageDown if !kinds.is_empty() => {
-                            *cursor = cursor
-                                .saturating_add(viewport)
-                                .min(kinds.len().saturating_sub(1));
-                        }
-                        KeyCode::PageUp if !kinds.is_empty() => {
-                            *cursor = cursor.saturating_sub(viewport);
-                        }
-                        KeyCode::Home | KeyCode::Char('g') if !kinds.is_empty() => *cursor = 0,
-                        KeyCode::End | KeyCode::Char('G') if !kinds.is_empty() => {
-                            *cursor = kinds.len() - 1;
-                        }
-                        KeyCode::Char(' ') => {
-                            if let Some(kind) = kinds.get(*cursor)
-                                && !excluded.remove(kind)
-                            {
-                                excluded.insert(kind.clone());
-                            }
-                        }
-                        KeyCode::Char('a') => excluded.clear(),
-                        KeyCode::Char('x') => {
-                            excluded.extend(kinds.iter().cloned());
-                        }
-                        KeyCode::Char('o') => {
-                            if let Some(visible) = kinds.get(*cursor).cloned() {
-                                excluded.extend(kinds.iter().cloned());
-                                excluded.remove(&visible);
-                            }
-                        }
-                        KeyCode::Enter => {
+                        ListPickerAction::Select(_) => {
                             self.excluded_kinds.clone_from(excluded);
                             let count = self.excluded_kinds.len();
                             self.status = match count {
@@ -695,13 +658,35 @@ impl App {
                             self.set_selection(self.selection.visible_index);
                             return UiAction::None;
                         }
-                        _ => {}
-                    }
-                    if !kinds.is_empty() {
-                        if *cursor < *scroll {
-                            *scroll = *cursor;
-                        } else if *cursor >= scroll.saturating_add(viewport) {
-                            *scroll = cursor.saturating_add(1).saturating_sub(viewport);
+                        ListPickerAction::None => {
+                            match key.code {
+                                KeyCode::Char(' ') => {
+                                    if let Some(kind) = kinds.get(picker.cursor())
+                                        && !excluded.remove(kind)
+                                    {
+                                        excluded.insert(kind.clone());
+                                    }
+                                }
+                                KeyCode::Char('a') => excluded.clear(),
+                                KeyCode::Char('x') => {
+                                    excluded.extend(kinds.iter().cloned());
+                                }
+                                KeyCode::Char('o') => {
+                                    if let Some(visible) = kinds.get(picker.cursor()).cloned() {
+                                        excluded.extend(kinds.iter().cloned());
+                                        excluded.remove(&visible);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            *cursor = picker.cursor();
+                            if !kinds.is_empty() {
+                                if *cursor < *scroll {
+                                    *scroll = *cursor;
+                                } else if *cursor >= scroll.saturating_add(viewport) {
+                                    *scroll = cursor.saturating_add(1).saturating_sub(viewport);
+                                }
+                            }
                         }
                     }
                 }

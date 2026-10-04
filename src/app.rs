@@ -116,6 +116,70 @@ impl Scroller {
 }
 
 const EVENT_BUFFER: usize = 128;
+
+#[derive(Clone, Debug)]
+enum ListPickerAction {
+    None,
+    Close,
+    Select(usize),
+}
+
+#[derive(Clone, Debug)]
+struct ListPicker {
+    cursor: usize,
+    len: usize,
+}
+
+impl ListPicker {
+    fn new(len: usize) -> Self {
+        Self { cursor: 0, len }
+    }
+
+    fn with_cursor(cursor: usize, len: usize) -> Self {
+        Self {
+            cursor: cursor.min(len.saturating_sub(1)),
+            len,
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, page_size: usize) -> ListPickerAction {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            return ListPickerAction::Close;
+        }
+        if self.len == 0 {
+            return ListPickerAction::None;
+        }
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor = (self.cursor + 1) % self.len;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor = self.cursor.checked_sub(1).unwrap_or(self.len - 1);
+            }
+            KeyCode::PageDown => {
+                self.cursor = self.cursor.saturating_add(page_size).min(self.len - 1);
+            }
+            KeyCode::PageUp => {
+                self.cursor = self.cursor.saturating_sub(page_size);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.cursor = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.cursor = self.len - 1;
+            }
+            KeyCode::Enter => {
+                return ListPickerAction::Select(self.cursor);
+            }
+            _ => {}
+        }
+        ListPickerAction::None
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+}
 const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
