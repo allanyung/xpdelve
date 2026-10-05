@@ -44,7 +44,134 @@ use crate::text;
 use crate::theme::Theme;
 use crate::trace::{self, TraceRequest};
 
+#[derive(Clone, Debug)]
+struct Selection {
+    visible_index: usize,
+    identity: Option<Identity>,
+}
+
+impl Selection {
+    fn new(visible_index: usize, nodes: &[ProjectedNode], visible: &[usize]) -> Self {
+        let identity = visible
+            .get(visible_index)
+            .and_then(|index| nodes.get(*index))
+            .map(|node| node.identity.clone());
+        Self {
+            visible_index,
+            identity,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            visible_index: 0,
+            identity: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Scroller {
+    offset: usize,
+    max: usize,
+}
+
+impl Scroller {
+    fn with_offset(offset: usize, max: usize) -> Self {
+        Self {
+            offset: offset.min(max),
+            max,
+        }
+    }
+
+    fn scroll_by(mut self, delta: isize) -> Self {
+        self.offset = self.offset.saturating_add_signed(delta).min(self.max);
+        self
+    }
+
+    fn ensure_visible(mut self, item: usize, viewport: usize) -> Self {
+        if viewport == 0 {
+            return self;
+        }
+        if item < self.offset {
+            self.offset = item;
+        } else if item >= self.offset.saturating_add(viewport) {
+            self.offset = item.saturating_sub(viewport.saturating_sub(1));
+        }
+        self.offset = self.offset.min(self.max);
+        self
+    }
+
+    fn offset(self) -> usize {
+        self.offset
+    }
+
+    fn offset_u16(self) -> u16 {
+        self.offset.try_into().unwrap_or(u16::MAX)
+    }
+}
+
 const EVENT_BUFFER: usize = 128;
+
+#[derive(Clone, Debug)]
+enum ListPickerAction {
+    None,
+    Close,
+    Select(usize),
+}
+
+#[derive(Clone, Debug)]
+struct ListPicker {
+    cursor: usize,
+    len: usize,
+}
+
+impl ListPicker {
+    fn with_cursor(cursor: usize, len: usize) -> Self {
+        Self {
+            cursor: cursor.min(len.saturating_sub(1)),
+            len,
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, page_size: usize) -> ListPickerAction {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            return ListPickerAction::Close;
+        }
+        if self.len == 0 {
+            return ListPickerAction::None;
+        }
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor = (self.cursor + 1) % self.len;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor = self.cursor.checked_sub(1).unwrap_or(self.len - 1);
+            }
+            KeyCode::PageDown => {
+                self.cursor = self.cursor.saturating_add(page_size).min(self.len - 1);
+            }
+            KeyCode::PageUp => {
+                self.cursor = self.cursor.saturating_sub(page_size);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.cursor = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.cursor = self.len - 1;
+            }
+            KeyCode::Enter => {
+                return ListPickerAction::Select(self.cursor);
+            }
+            _ => {}
+        }
+        ListPickerAction::None
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+}
 const DESCRIBE_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -148,16 +275,128 @@ struct PaletteEntry {
 }
 
 #[derive(Clone, Debug)]
+struct TextModalState {
+    wrapped: bool,
+    vertical_scroll: u16,
+    horizontal_scroll: u16,
+    query: String,
+    search_input: Option<String>,
+}
+
+impl TextModalState {
+    fn new(kind: ContentKind) -> Self {
+        Self {
+            wrapped: kind.wraps_by_default(),
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+            query: String::new(),
+            search_input: None,
+        }
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        content: &content::TextContent,
+        kind: ContentKind,
+        body_size: (usize, usize),
+        page_size: usize,
+    ) -> TextModalAction {
+        let (body_width, body_height) = body_size;
+        let (max_vertical, max_horizontal) =
+            content.scroll_bounds(body_width as u16, body_height as u16, self.wrapped);
+
+        if let Some(input) = &mut self.search_input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.search_input = None;
+                }
+                KeyCode::Enter => {
+                    self.query = input.trim().to_owned();
+                    self.search_input = None;
+                    return TextModalAction::FindNext;
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(character) => input.push(character),
+                _ => {}
+            }
+            return TextModalAction::None;
+        }
+
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc | KeyCode::Char('q'), _) => TextModalAction::Close,
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.vertical_scroll = self.vertical_scroll.saturating_add(1).min(max_vertical);
+                TextModalAction::None
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) => {
+                self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
+                TextModalAction::None
+            }
+            (KeyCode::PageDown, _) => {
+                self.vertical_scroll = self
+                    .vertical_scroll
+                    .saturating_add(body_height.try_into().unwrap_or(u16::MAX))
+                    .min(max_vertical);
+                TextModalAction::None
+            }
+            (KeyCode::PageUp, _) => {
+                self.vertical_scroll = self
+                    .vertical_scroll
+                    .saturating_sub(page_size.try_into().unwrap_or(u16::MAX));
+                TextModalAction::None
+            }
+            (KeyCode::Home | KeyCode::Char('g'), _) => {
+                self.vertical_scroll = 0;
+                TextModalAction::None
+            }
+            (KeyCode::End | KeyCode::Char('G'), _) => {
+                self.vertical_scroll = max_vertical;
+                TextModalAction::None
+            }
+            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                self.horizontal_scroll = self.horizontal_scroll.saturating_sub(4);
+                TextModalAction::None
+            }
+            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                self.horizontal_scroll =
+                    self.horizontal_scroll.saturating_add(4).min(max_horizontal);
+                TextModalAction::None
+            }
+            (KeyCode::Char('w'), KeyModifiers::NONE) if kind == ContentKind::Yaml => {
+                self.wrapped = !self.wrapped;
+                self.vertical_scroll = 0;
+                self.horizontal_scroll = 0;
+                TextModalAction::None
+            }
+            (KeyCode::Char('/'), _) => {
+                self.search_input = Some(self.query.clone());
+                TextModalAction::None
+            }
+            (KeyCode::Char('n'), _) => TextModalAction::FindNext,
+            (KeyCode::Char('N'), _) => TextModalAction::FindPrevious,
+            _ => TextModalAction::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum TextModalAction {
+    None,
+    Close,
+    FindNext,
+    FindPrevious,
+}
+
+#[derive(Clone, Debug)]
 enum Modal {
     Text {
         title: String,
         content: content::TextContent,
         kind: ContentKind,
-        wrapped: bool,
-        vertical_scroll: u16,
-        horizontal_scroll: u16,
-        query: String,
-        search_input: Option<String>,
+        state: TextModalState,
         selection: Option<TextSelection>,
     },
     Delete {
@@ -245,13 +484,19 @@ impl ContentKind {
             Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
         )
     }
+
+    fn wraps_by_default(self) -> bool {
+        matches!(
+            self,
+            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
+        )
+    }
 }
 
 struct App {
     resource: String,
     snapshot: Option<Arc<Snapshot>>,
-    selected_identity: Option<Identity>,
-    selected_visible: usize,
+    selection: Selection,
     resource_scroll: usize,
     resource_horizontal_scroll: usize,
     collapsed: HashSet<Identity>,

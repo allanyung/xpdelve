@@ -198,7 +198,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     {
         let node = &snapshot.nodes[*index];
         let content = rendered.lines[row + 1].clone();
-        let selected = visible_position == app.selected_visible;
+        let selected = visible_position == app.selection.visible_index;
         let mut style = if selected {
             app.theme.selected_row()
         } else {
@@ -1140,11 +1140,7 @@ pub(super) fn render_modal(
             title,
             content,
             kind,
-            wrapped,
-            vertical_scroll,
-            horizontal_scroll,
-            query,
-            search_input,
+            state,
             selection,
         } => {
             let title = format!(" {} ", text::sanitize(title));
@@ -1161,26 +1157,26 @@ pub(super) fn render_modal(
                 frame,
                 regions[0],
                 *kind,
-                query,
-                *wrapped,
-                *vertical_scroll,
-                *horizontal_scroll,
+                &state.query,
+                state.wrapped,
+                state.vertical_scroll,
+                state.horizontal_scroll,
                 theme,
             );
-            if let Some(selection) = selection {
+            if let Some(text_selection) = selection {
                 render_text_selection(
                     frame,
                     regions[0],
                     content,
-                    *selection,
-                    *vertical_scroll,
-                    *horizontal_scroll,
-                    *wrapped,
+                    *text_selection,
+                    state.vertical_scroll,
+                    state.horizontal_scroll,
+                    state.wrapped,
                     theme,
                 );
             }
-            let footer = search_input.as_ref().map_or_else(
-                || content_modal_footer(*kind, *wrapped).into(),
+            let footer = state.search_input.as_ref().map_or_else(
+                || content_modal_footer(*kind, state.wrapped).into(),
                 |input| format!(" Find: {input}_"),
             );
             frame.render_widget(Paragraph::new(footer).style(theme.subtle()), regions[1]);
@@ -1448,17 +1444,6 @@ pub(super) fn styled_content_line<'a>(
         | ContentKind::SmallError => Style::default(),
     };
     highlighted_line(line, query, base, theme)
-}
-
-pub(super) fn content_wraps_by_default(kind: ContentKind) -> bool {
-    matches!(
-        kind,
-        ContentKind::Describe
-            | ContentKind::Yaml
-            | ContentKind::Events
-            | ContentKind::Error
-            | ContentKind::SmallError
-    )
 }
 
 pub(super) fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static str {

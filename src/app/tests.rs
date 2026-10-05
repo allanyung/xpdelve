@@ -66,7 +66,7 @@ fn mutation_failure_opens_persistent_error_modal() {
         title,
         content,
         kind,
-        wrapped,
+        state,
         ..
     }) = &app.modal
     else {
@@ -76,7 +76,7 @@ fn mutation_failure_opens_persistent_error_modal() {
     assert!(content.contains(&format!("Resource: {identity}")));
     assert!(content.contains("admission webhook denied the request"));
     assert_eq!(*kind, ContentKind::Error);
-    assert!(*wrapped);
+    assert!(state.wrapped);
 
     app.apply_snapshot(
         Snapshot::parse(
@@ -181,7 +181,7 @@ fn resource_details_support_long_safe_text_scrolling_and_search() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), area);
     assert!(
-        matches!(&app.modal, Some(Modal::Text { content, vertical_scroll, .. }) if *vertical_scroll > 0 && content.contains("needle\\x1b[31m\\u{202E}") && !content.contains('\u{1b}') && !content.contains('\u{202e}'))
+        matches!(&app.modal, Some(Modal::Text { content, state, .. }) if state.vertical_scroll > 0 && content.contains("needle\\x1b[31m\\u{202E}") && !content.contains('\u{1b}') && !content.contains('\u{202e}'))
     );
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
     for character in "needle".chars() {
@@ -192,7 +192,7 @@ fn resource_details_support_long_safe_text_scrolling_and_search() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
     assert!(
-        matches!(&app.modal, Some(Modal::Text { query, vertical_scroll, .. }) if query == "needle" && *vertical_scroll > 40)
+        matches!(&app.modal, Some(Modal::Text { state, .. }) if state.query == "needle" && state.vertical_scroll > 40)
     );
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -210,13 +210,13 @@ fn enter_opens_wrapped_problem_details_that_survive_refresh() {
     let area = Rect::new(0, 0, 100, 20);
     app.find = "cannot connect".into();
     app.find_next(false);
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.visible_index, 1);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
     let Some(Modal::Text {
         title,
         content,
         kind,
-        wrapped,
+        state,
         ..
     }) = &app.modal
     else {
@@ -226,7 +226,7 @@ fn enter_opens_wrapped_problem_details_that_survive_refresh() {
     assert!(content.contains("Error: cannot connect"));
     assert!(content.contains("Ready=False\nWaiting: a long diagnostic"));
     assert_eq!(*kind, ContentKind::Error);
-    assert!(*wrapped);
+    assert!(state.wrapped);
     let original = content.clone();
     app.apply_snapshot(
         Snapshot::parse(
@@ -279,7 +279,7 @@ fn collapse_all_keeps_root_expanded() {
     assert!(!app.collapsed.contains(&root));
     assert!(app.collapsed.contains(&child));
     assert_eq!(app.visible(), vec![0, 1]);
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn right_expands_a_collapsed_node() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
 
     assert_eq!(app.visible().len(), 2);
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn right_selects_the_first_child_of_an_expanded_node() {
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
 
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.visible_index, 1);
     assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
 }
 
@@ -335,11 +335,11 @@ fn moving_up_only_scrolls_after_selection_leaves_viewport() {
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), area);
-    assert_eq!(app.selected_visible, 6);
+    assert_eq!(app.selection.visible_index, 6);
     assert_eq!(app.resource_scroll, 6);
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), area);
-    assert_eq!(app.selected_visible, 5);
+    assert_eq!(app.selection.visible_index, 5);
     assert_eq!(app.resource_scroll, 5);
 }
 
@@ -554,7 +554,7 @@ path = "/metadata/name"
     let mut app = app();
     app.config_path = path;
     app.set_selection(1);
-    let selected = app.selected_identity.clone();
+    let selected = app.selection.identity.clone();
     let snapshot = app.snapshot.clone().unwrap();
     app.collapsed.insert(selected.clone().unwrap());
     app.excluded_kinds.insert(resource_kind("", "Unused"));
@@ -584,8 +584,8 @@ path = "/metadata/name"
     assert_eq!(app.config.interval(), Duration::from_secs(12));
     assert_eq!(app.config.timeout(), Some(Duration::from_secs(30)));
     assert_eq!(app.retry_delay, Duration::from_secs(2));
-    assert_eq!(app.selected_identity, selected);
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.identity, selected);
+    assert_eq!(app.selection.visible_index, 1);
     assert!(Arc::ptr_eq(app.snapshot.as_ref().unwrap(), &snapshot));
     assert!(app.collapsed.contains(selected.as_ref().unwrap()));
     assert!(app.excluded_kinds.contains(&resource_kind("", "Unused")));
@@ -726,21 +726,15 @@ fn reload_error_modal_wraps_scrolls_and_fits_small_terminals() {
         content_modal_area(area, ContentKind::SmallError),
         Rect::new(1, 1, 38, 8)
     );
-    let Some(Modal::Text {
-        content, wrapped, ..
-    }) = &app.modal
-    else {
+    let Some(Modal::Text { content, state, .. }) = &app.modal else {
         panic!("expected error modal");
     };
-    assert!(*wrapped);
+    assert!(state.wrapped);
     assert!(!content.contains('\u{1b}'));
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
     assert!(matches!(
         app.modal,
-        Some(Modal::Text {
-            vertical_scroll: 1,
-            ..
-        })
+        Some(Modal::Text { ref state, .. }) if state.vertical_scroll == 1
     ));
     let backend = TestBackend::new(area.width, area.height);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -804,7 +798,7 @@ fn health_palette_command_filters_unhealthy_resources_with_ancestors() {
 
     assert_eq!(app.health_filter, HealthFilter::Unhealthy);
     assert_eq!(app.visible(), vec![0, 1]);
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
     assert!(app.modal.is_none());
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
@@ -1136,11 +1130,7 @@ fn resource_not_found_clears_stale_trace_state() {
         title: "YAML".into(),
         content: "kind: Root".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     });
 
@@ -1148,7 +1138,7 @@ fn resource_not_found_clears_stale_trace_state() {
 
     assert!(app.resource_missing);
     assert!(app.snapshot.is_none());
-    assert!(app.selected_identity.is_none());
+    assert!(app.selection.identity.is_none());
     assert!(app.collapsed.is_empty());
     assert!(app.modal.is_none());
     assert!(!app.loading);
@@ -1499,7 +1489,7 @@ fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
         horizontal_slice(&after.lines[1], 0, pinned)
     );
     assert_eq!(horizontal_slice(&after.lines[0], pinned, 1), "P");
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
     app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), area);
     assert_eq!(rendered_tree(&app, tree).unwrap().lines, before.lines);
 }
@@ -1705,9 +1695,9 @@ fn tree_horizontal_scroll_is_always_available_and_z_does_not_reset_it() {
     assert_eq!(app.resource_horizontal_scroll, 0);
     // Unmodified arrows still navigate the tree.
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.visible_index, 1);
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
 }
 
 #[test]
@@ -1830,27 +1820,27 @@ fn tree_vertical_wheel_moves_selection_scrolls_and_clamps() {
     );
     assert!(app.tree_selection.is_some());
     app.last_tree_click = Some(TreeClick {
-        identity: app.selected_identity.clone().unwrap(),
+        identity: app.selection.identity.clone().unwrap(),
         at: Instant::now(),
     });
     assert!(app.handle_mouse(event, area).is_none());
-    assert_eq!(app.selected_visible, 3);
+    assert_eq!(app.selection.visible_index, 3);
     assert!(app.tree_selection.is_none());
     assert!(app.last_tree_click.is_none());
     app.handle_mouse(event, area);
-    assert_eq!(app.selected_visible, 6);
+    assert_eq!(app.selection.visible_index, 6);
     assert!(app.resource_scroll > 0);
     assert_eq!(
-        app.selected_identity,
+        app.selection.identity,
         Some(app.selected_node().unwrap().identity.clone())
     );
     let rendered = rendered_tree(&app, tree_area).unwrap();
-    assert!(rendered.start <= app.selected_visible);
-    assert!(app.selected_visible < rendered.start + rendered.row_count);
+    assert!(rendered.start <= app.selection.visible_index);
+    assert!(app.selection.visible_index < rendered.start + rendered.row_count);
     for _ in 0..20 {
         app.handle_mouse(event, area);
     }
-    assert_eq!(app.selected_visible, 20);
+    assert_eq!(app.selection.visible_index, 20);
     for _ in 0..20 {
         app.handle_mouse(
             MouseEvent {
@@ -1860,7 +1850,7 @@ fn tree_vertical_wheel_moves_selection_scrolls_and_clamps() {
             area,
         );
     }
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
     assert_eq!(app.resource_scroll, 0);
     assert_eq!(app.resource_horizontal_scroll, 0);
 }
@@ -1891,7 +1881,7 @@ fn tree_vertical_wheel_ignores_outside_pointer_and_blocked_views() {
     app.resource_missing = false;
     app.snapshot = None;
     app.handle_mouse(event, area);
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
     assert_eq!(app.resource_scroll, 0);
 }
 
@@ -2683,11 +2673,7 @@ fn yaml_key_legend_uses_sofka_subtle_color() {
         title: "YAML: Widget/example".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     };
     let backend = TestBackend::new(100, 20);
@@ -2728,11 +2714,7 @@ fn yaml_modal_wraps_long_lines() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     };
     let backend = TestBackend::new(20, 8);
@@ -2754,11 +2736,7 @@ fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
             "Resource: Widget/example\n\nadmission webhook rejected abcdefghijklmnopqrstuvwxyz"
                 .into(),
         kind: ContentKind::Error,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Error),
         selection: None,
     };
     let backend = TestBackend::new(24, 16);
@@ -2785,11 +2763,7 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     });
 
@@ -2826,13 +2800,10 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
         Rect::new(0, 0, 20, 8),
     );
 
-    let Some(Modal::Text {
-        horizontal_scroll, ..
-    }) = app.modal
-    else {
+    let Some(Modal::Text { state, .. }) = app.modal else {
         panic!("expected text modal");
     };
-    assert_eq!(horizontal_scroll, 8);
+    assert_eq!(state.horizontal_scroll, 8);
 }
 
 #[test]
@@ -2912,11 +2883,11 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 title: "content".into(),
                 content: content.into(),
                 kind,
-                wrapped,
-                vertical_scroll: 0,
-                horizontal_scroll: 0,
-                query: String::new(),
-                search_input: None,
+                state: {
+                    let mut state = TextModalState::new(kind);
+                    state.wrapped = wrapped;
+                    state
+                },
                 selection: None,
             });
             let event = MouseEvent {
@@ -2933,11 +2904,8 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 area,
             );
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 0,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, .. }) if state.vertical_scroll == 0
             ));
             app.handle_mouse(
                 MouseEvent {
@@ -2955,12 +2923,8 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
             ));
             assert!(app.handle_mouse(event, area).is_none());
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 3,
-                    selection: None,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, selection: None, .. }) if state.vertical_scroll == 3
             ));
             app.handle_mouse(
                 MouseEvent {
@@ -2970,17 +2934,14 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 area,
             );
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 3,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, .. }) if state.vertical_scroll == 3
             ));
             for _ in 0..100 {
                 app.handle_mouse(event, area);
             }
             assert!(
-                matches!(app.modal, Some(Modal::Text { vertical_scroll, .. }) if vertical_scroll == max_scroll)
+                matches!(&app.modal, Some(Modal::Text { state, .. }) if state.vertical_scroll == max_scroll)
             );
             for _ in 0..100 {
                 app.handle_mouse(
@@ -2992,14 +2953,10 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 );
             }
             assert!(matches!(
-                app.modal,
-                Some(Modal::Text {
-                    vertical_scroll: 0,
-                    horizontal_scroll: 0,
-                    ..
-                })
+                &app.modal,
+                Some(Modal::Text { state, .. }) if state.vertical_scroll == 0 && state.horizontal_scroll == 0
             ));
-            assert_eq!(app.selected_visible, 0);
+            assert_eq!(app.selection.visible_index, 0);
         }
     }
 }
@@ -3018,11 +2975,7 @@ fn content_mouse_drag_copies_selected_source_text() {
             title: "Content".into(),
             content: "kind: Widget\nmetadata: {}".into(),
             kind: content_kind,
-            wrapped: true,
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-            query: String::new(),
-            search_input: None,
+            state: TextModalState::new(content_kind),
             selection: None,
         });
         let body = content_modal_body(area, content_kind);
@@ -3078,11 +3031,7 @@ fn content_mouse_click_does_not_copy_text() {
         title: "YAML".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        wrapped: true,
-        vertical_scroll: 0,
-        horizontal_scroll: 0,
-        query: String::new(),
-        search_input: None,
+        state: TextModalState::new(ContentKind::Yaml),
         selection: None,
     });
     let area = Rect::new(0, 0, 40, 10);
@@ -3229,7 +3178,7 @@ fn tree_mouse_click_selects_resource_row_without_copying() {
         modifiers: KeyModifiers::NONE,
     };
 
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
     assert!(
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left)), area)
             .is_none()
@@ -3238,7 +3187,7 @@ fn tree_mouse_click_selects_resource_row_without_copying() {
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left)), area)
             .is_none()
     );
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.visible_index, 1);
     assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
     assert!(app.tree_selection.is_none());
 }
@@ -3296,7 +3245,7 @@ fn tree_right_click_opens_context_menu_for_clicked_resource() {
     };
     assert_eq!(target.identity.kind, "Child");
     assert_eq!((*column, *row), (mouse.column, mouse.row));
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.visible_index, 1);
 }
 
 #[test]
@@ -3587,7 +3536,7 @@ fn yaml_scroll_flood_escape_and_following_keys_do_not_scroll_the_tree() {
         assert!(batch.is_none());
         assert!(event.is_none());
     }
-    assert_eq!(app.selected_visible, 0);
+    assert_eq!(app.selection.visible_index, 0);
     assert_eq!(app.resource_scroll, 0);
     for code in [KeyCode::Down, KeyCode::Char('q')] {
         let (batch, event) = input.push(
@@ -3600,7 +3549,7 @@ fn yaml_scroll_flood_escape_and_following_keys_do_not_scroll_the_tree() {
         };
         app.handle_key(key, area);
     }
-    assert_eq!(app.selected_visible, 1);
+    assert_eq!(app.selection.visible_index, 1);
     assert!(app.quit);
 }
 
@@ -3638,23 +3587,20 @@ fn coalesced_wheels_match_individual_wheels_in_tree_help_and_yaml() {
                 individual.handle_mouse(mouse, area);
             }
             batched.handle_mouse_events(mouse, 30, area);
-            assert_eq!(individual.selected_visible, batched.selected_visible);
+            assert_eq!(
+                individual.selection.visible_index,
+                batched.selection.visible_index
+            );
             assert_eq!(individual.resource_scroll, batched.resource_scroll);
             assert_eq!(
                 individual.resource_horizontal_scroll,
                 batched.resource_horizontal_scroll
             );
             assert_eq!(individual.help_scroll, batched.help_scroll);
-            if let (
-                Some(Modal::Text {
-                    vertical_scroll: a, ..
-                }),
-                Some(Modal::Text {
-                    vertical_scroll: b, ..
-                }),
-            ) = (&individual.modal, &batched.modal)
+            if let (Some(Modal::Text { state: a, .. }), Some(Modal::Text { state: b, .. })) =
+                (&individual.modal, &batched.modal)
             {
-                assert_eq!(a, b);
+                assert_eq!(a.vertical_scroll, b.vertical_scroll);
             }
         }
     }

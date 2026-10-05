@@ -1,13 +1,31 @@
-use super::render::{content_wraps_by_default, fuzzy_score, resource_kind_label};
+use super::render::{fuzzy_score, resource_kind_label};
 use super::*;
+
+fn maybe_add_command(
+    entries: &mut Vec<(usize, PaletteEntry)>,
+    query: &str,
+    label: &str,
+    action: PaletteAction,
+) {
+    if !query.is_empty()
+        && let Some(score) = fuzzy_score(label, query)
+    {
+        entries.push((
+            score,
+            PaletteEntry {
+                label: label.into(),
+                action,
+            },
+        ));
+    }
+}
 
 impl App {
     pub(super) fn new(resource: String, config: Config, cli: &Cli, theme: Theme) -> Self {
         Self {
             resource,
             snapshot: None,
-            selected_identity: None,
-            selected_visible: 0,
+            selection: Selection::empty(),
             resource_scroll: 0,
             resource_horizontal_scroll: 0,
             collapsed: HashSet::new(),
@@ -101,72 +119,22 @@ impl App {
                 })
             })
             .collect::<Vec<_>>();
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("clear", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "clear".into(),
-                    action: PaletteAction::ClearKindFilter,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("exclude", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "exclude".into(),
-                    action: PaletteAction::OpenExcludePicker,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("health", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "health".into(),
-                    action: PaletteAction::OpenHealthPicker,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("skin", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "skin".into(),
-                    action: PaletteAction::OpenSkinPicker,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("reload", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "reload".into(),
-                    action: PaletteAction::ReloadConfig,
-                },
-            ));
-        }
-        if !query.is_empty()
-            && let Some(score) = fuzzy_score("quit", query)
-        {
-            entries.push((
-                score,
-                PaletteEntry {
-                    label: "quit".into(),
-                    action: PaletteAction::Quit,
-                },
-            ));
-        }
+        maybe_add_command(&mut entries, query, "clear", PaletteAction::ClearKindFilter);
+        maybe_add_command(
+            &mut entries,
+            query,
+            "exclude",
+            PaletteAction::OpenExcludePicker,
+        );
+        maybe_add_command(
+            &mut entries,
+            query,
+            "health",
+            PaletteAction::OpenHealthPicker,
+        );
+        maybe_add_command(&mut entries, query, "skin", PaletteAction::OpenSkinPicker);
+        maybe_add_command(&mut entries, query, "reload", PaletteAction::ReloadConfig);
+        maybe_add_command(&mut entries, query, "quit", PaletteAction::Quit);
         entries.sort_by(|(left_score, left), (right_score, right)| {
             right_score
                 .cmp(left_score)
@@ -282,11 +250,7 @@ impl App {
                     title: "Configuration reload failed".into(),
                     content: text::sanitize(&format!("{error:#}")).into(),
                     kind: ContentKind::SmallError,
-                    wrapped: true,
-                    vertical_scroll: 0,
-                    horizontal_scroll: 0,
-                    query: String::new(),
-                    search_input: None,
+                    state: TextModalState::new(ContentKind::SmallError),
                     selection: None,
                 });
             }
@@ -314,7 +278,7 @@ impl App {
 
     pub(super) fn selected_node(&self) -> Option<&ProjectedNode> {
         let visible = self.visible();
-        let index = *visible.get(self.selected_visible)?;
+        let index = *visible.get(self.selection.visible_index)?;
         self.snapshot.as_ref()?.nodes.get(index)
     }
 
@@ -349,11 +313,7 @@ impl App {
             title,
             content: content.into(),
             kind: ContentKind::Yaml,
-            wrapped: true,
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-            query: String::new(),
-            search_input: None,
+            state: TextModalState::new(ContentKind::Yaml),
             selection: None,
         });
     }
@@ -369,11 +329,7 @@ impl App {
             title: format!("Resource details: {}", node.identity),
             content: content.clone().into(),
             kind: ContentKind::Error,
-            wrapped: true,
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-            query: String::new(),
-            search_input: None,
+            state: TextModalState::new(ContentKind::Error),
             selection: None,
         });
     }
@@ -398,11 +354,7 @@ impl App {
                     title: label.to_owned(),
                     content: content.into(),
                     kind,
-                    wrapped: content_wraps_by_default(kind),
-                    vertical_scroll: 0,
-                    horizontal_scroll: 0,
-                    query: String::new(),
-                    search_input: None,
+                    state: TextModalState::new(kind),
                     selection: None,
                 });
                 true
@@ -419,11 +371,7 @@ impl App {
                         content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n"))
                             .into(),
                         kind: ContentKind::Error,
-                        wrapped: true,
-                        vertical_scroll: 0,
-                        horizontal_scroll: 0,
-                        query: String::new(),
-                        search_input: None,
+                        state: TextModalState::new(ContentKind::Error),
                         selection: None,
                     });
                 } else {
@@ -451,7 +399,7 @@ impl App {
         self.collapsed
             .retain(|identity| snapshot.by_identity.contains_key(identity));
         let visible = self.visible();
-        self.selected_visible = selection_chain
+        let visible_index = selection_chain
             .iter()
             .find_map(|identity| snapshot.by_identity.get(identity))
             .and_then(|index| {
@@ -459,8 +407,12 @@ impl App {
                     .iter()
                     .position(|visible_index| visible_index == index)
             })
-            .unwrap_or_else(|| self.selected_visible.min(visible.len().saturating_sub(1)));
-        self.sync_selected_identity();
+            .unwrap_or_else(|| {
+                self.selection
+                    .visible_index
+                    .min(visible.len().saturating_sub(1))
+            });
+        self.selection = Selection::new(visible_index, &snapshot.nodes, &visible);
         if let Some(selection) = &self.tree_selection
             && super::render::rendered_tree(self, selection.area)
                 .is_none_or(|rendered| rendered.content != selection.content)
@@ -488,8 +440,7 @@ impl App {
     pub(super) fn apply_resource_not_found(&mut self) {
         self.deferred_snapshot = None;
         self.snapshot = None;
-        self.selected_identity = None;
-        self.selected_visible = 0;
+        self.selection = Selection::empty();
         self.resource_scroll = 0;
         self.resource_horizontal_scroll = 0;
         self.collapsed.clear();
@@ -516,7 +467,7 @@ impl App {
             return Vec::new();
         };
         let visible = self.visible();
-        let Some(mut index) = visible.get(self.selected_visible).copied() else {
+        let Some(mut index) = visible.get(self.selection.visible_index).copied() else {
             return Vec::new();
         };
         let mut identities = Vec::new();
@@ -531,27 +482,32 @@ impl App {
         identities
     }
 
-    pub(super) fn sync_selected_identity(&mut self) {
-        self.selected_identity = self.selected_node().map(|node| node.identity.clone());
-    }
-
     pub(super) fn move_selection(&mut self, delta: isize) {
-        let len = self.visible().len();
-        if len == 0 {
-            self.selected_visible = 0;
-            self.selected_identity = None;
+        let Some(snapshot) = &self.snapshot else {
+            self.selection = Selection::empty();
+            return;
+        };
+        let visible = self.visible();
+        if visible.is_empty() {
+            self.selection = Selection::empty();
             return;
         }
-        self.selected_visible = self
-            .selected_visible
+        let visible_index = self
+            .selection
+            .visible_index
             .saturating_add_signed(delta)
-            .min(len.saturating_sub(1));
-        self.sync_selected_identity();
+            .min(visible.len().saturating_sub(1));
+        self.selection = Selection::new(visible_index, &snapshot.nodes, &visible);
     }
 
     pub(super) fn set_selection(&mut self, index: usize) {
-        self.selected_visible = index.min(self.visible().len().saturating_sub(1));
-        self.sync_selected_identity();
+        let Some(snapshot) = &self.snapshot else {
+            self.selection = Selection::empty();
+            return;
+        };
+        let visible = self.visible();
+        let visible_index = index.min(visible.len().saturating_sub(1));
+        self.selection = Selection::new(visible_index, &snapshot.nodes, &visible);
     }
 
     pub(super) fn ensure_selection_visible(&mut self, viewport: usize) {
@@ -559,19 +515,11 @@ impl App {
     }
 
     pub(super) fn resource_view_start(&self, viewport: usize) -> usize {
-        if viewport == 0 {
-            return 0;
-        }
         let len = self.visible().len();
-        let mut start = self.resource_scroll.min(len.saturating_sub(viewport));
-        if self.selected_visible < start {
-            start = self.selected_visible;
-        } else if self.selected_visible >= start.saturating_add(viewport) {
-            start = self
-                .selected_visible
-                .saturating_sub(viewport.saturating_sub(1));
-        }
-        start
+        let max = len.saturating_sub(viewport);
+        Scroller::with_offset(self.resource_scroll, max)
+            .ensure_visible(self.selection.visible_index, viewport)
+            .offset()
     }
 
     pub(super) fn expand_or_child(&mut self) {
@@ -579,7 +527,7 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let Some(index) = visible.get(self.selected_visible).copied() else {
+        let Some(index) = visible.get(self.selection.visible_index).copied() else {
             return;
         };
         let node = &snapshot.nodes[index];
@@ -602,7 +550,7 @@ impl App {
             return;
         };
         let visible = self.visible();
-        let Some(index) = visible.get(self.selected_visible).copied() else {
+        let Some(index) = visible.get(self.selection.visible_index).copied() else {
             return;
         };
         let node = &snapshot.nodes[index];
@@ -643,13 +591,13 @@ impl App {
                 .iter()
                 .rev()
                 .copied()
-                .find(|position| *position < self.selected_visible)
+                .find(|position| *position < self.selection.visible_index)
                 .unwrap_or_else(|| *matches.last().expect("matches is not empty"))
         } else {
             matches
                 .iter()
                 .copied()
-                .find(|position| *position > self.selected_visible)
+                .find(|position| *position > self.selection.visible_index)
                 .unwrap_or(matches[0])
         };
         self.set_selection(next);
@@ -666,6 +614,6 @@ impl App {
         }
         self.mode = InputMode::Normal;
         self.input.clear();
-        self.set_selection(self.selected_visible);
+        self.set_selection(self.selection.visible_index);
     }
 }
