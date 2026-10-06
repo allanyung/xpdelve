@@ -52,6 +52,7 @@ pub struct UiConfig {
     pub color: ColorMode,
     pub ascii: bool,
     pub short: bool,
+    pub show_logical_name: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -111,6 +112,7 @@ impl Default for UiConfig {
             color: ColorMode::Auto,
             ascii: false,
             short: false,
+            show_logical_name: true,
         }
     }
 }
@@ -327,6 +329,27 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().unwrap();
+        assert!(Config::default().ui.show_logical_name);
+    }
+
+    #[test]
+    fn logical_name_visibility_defaults_to_true_and_accepts_only_booleans() {
+        for source in [
+            "",
+            "[ui]",
+            "[ui]\nshort = true",
+            "[ui]\nshow_logical_name = true",
+        ] {
+            let config: Config = toml::from_str(source).unwrap();
+            assert!(config.ui.show_logical_name, "{source}");
+        }
+        let config: Config = toml::from_str("[ui]\nshow_logical_name = false").unwrap();
+        assert!(!config.ui.show_logical_name);
+        for value in ["'false'", "0", "[]"] {
+            assert!(
+                toml::from_str::<Config>(&format!("[ui]\nshow_logical_name = {value}")).is_err()
+            );
+        }
     }
 
     #[test]

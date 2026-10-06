@@ -774,6 +774,10 @@ impl App {
             (KeyCode::Left, KeyModifiers::SHIFT) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
                 self.scroll_tree_horizontal(terminal_area, false, 1);
             }
+            (KeyCode::Char('L'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                self.show_logical_name = !self.show_logical_name;
+                self.clamp_tree_horizontal_scroll(terminal_area);
+            }
             (KeyCode::Right, _) => self.expand_or_child(),
             (KeyCode::Left, _) => self.collapse_or_parent(),
             (KeyCode::Char(']'), _) => self.collapsed.clear(),

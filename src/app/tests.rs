@@ -617,6 +617,7 @@ fn reload_configuration_preserves_command_line_overrides_and_filters() {
     app.filter = "child".into();
     app.kind_filter = Some(resource_kind("", "Child"));
     app.health_filter = HealthFilter::Unhealthy;
+    app.show_logical_name = false;
     std::fs::write(
         path,
         "read_only = false\n[trace]\nprogram = 'other-trace'\ninterval_seconds = 20\n[ui]\nshort = false\n[skin]\nname = 'nord'\n",
@@ -635,6 +636,7 @@ fn reload_configuration_preserves_command_line_overrides_and_filters() {
     assert_eq!(app.filter, "child");
     assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
     assert_eq!(app.health_filter, HealthFilter::Unhealthy);
+    assert!(!app.show_logical_name);
 }
 
 #[test]
@@ -1441,6 +1443,261 @@ fn unmatched_extra_columns_preserve_existing_table_rendering() {
 }
 
 #[test]
+fn logical_name_is_the_first_scrollable_column_in_all_table_modes() {
+    for (api_version, kind) in [
+        ("example.io/v1", "Root"),
+        ("pkg.crossplane.io/v1", "Provider"),
+    ] {
+        let mut app = app();
+        let logical_name = "composed-界界-resource";
+        let trace = serde_json::json!({
+            "object": {
+                "apiVersion": api_version,
+                "kind": kind,
+                "metadata": {"name": "root"}
+            },
+            "children": [{"object": {
+                "apiVersion": "v1",
+                "kind": "Child",
+                "metadata": {
+                    "name": "child",
+                    "annotations": {"crossplane.io/composition-resource-name": logical_name}
+                }
+            }}]
+        });
+        app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+        for short in [false, true] {
+            app.config.ui.short = short;
+            for ascii in [false, true] {
+                app.config.ui.ascii = ascii;
+                let tree = resource_tree_area(Rect::new(0, 0, 240, 16)).unwrap();
+                let rendered = rendered_tree(&app, tree).unwrap();
+                let start = rendered.horizontal.pinned_width;
+                assert_eq!(
+                    horizontal_slice(&rendered.lines[0], start, "LOGICAL NAME".len()),
+                    "LOGICAL NAME"
+                );
+                assert_eq!(
+                    horizontal_slice(&rendered.lines[1], start, logical_name.width()).trim(),
+                    "-"
+                );
+                assert_eq!(
+                    horizontal_slice(&rendered.lines[2], start, logical_name.width()),
+                    logical_name
+                );
+                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                assert_eq!(
+                    plan.header().width() + 1,
+                    rendered.horizontal.pinned_width
+                        + rendered.horizontal.content_width
+                        + rendered.horizontal.right_pinned_width
+                );
+                let narrow = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
+                let before = rendered_tree(&app, narrow).unwrap();
+                app.resource_horizontal_scroll = 4;
+                let after = rendered_tree(&app, narrow).unwrap();
+                assert_eq!(
+                    horizontal_slice(&after.lines[0], after.horizontal.pinned_width, 7),
+                    "CAL NAM"
+                );
+                assert_eq!(
+                    horizontal_slice(&before.lines[2], 0, before.horizontal.pinned_width),
+                    horizontal_slice(&after.lines[2], 0, after.horizontal.pinned_width)
+                );
+                app.resource_horizontal_scroll = 0;
+            }
+        }
+    }
+}
+
+#[test]
+fn logical_name_visibility_uses_config_and_reload_applies_changed_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "[ui]\nshow_logical_name = false\n").unwrap();
+    let cli = Cli::parse_from(["xpdelve", "--config", path.to_str().unwrap(), "Root/root"]);
+    let config = Config::load(&cli).unwrap();
+    let theme = Theme::resolve(&config.skin, config.ui.color).unwrap();
+    let mut app = App::new("Root/root".into(), config, &cli, theme);
+    let trace = br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}}}"#;
+    app.apply_snapshot(Snapshot::parse(trace).unwrap());
+    let area = Rect::new(0, 0, 240, 16);
+    let tree = resource_tree_area(area).unwrap();
+    assert!(!app.show_logical_name);
+    assert!(!rendered_tree(&app, tree).unwrap().lines[0].contains("LOGICAL NAME"));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+    assert!(app.show_logical_name);
+    app.reload_config();
+    assert!(app.show_logical_name);
+    assert!(!app.config.ui.show_logical_name);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[ui]\nshow_logical_name = false\n"
+    );
+
+    std::fs::write(&path, "[ui]\nshow_logical_name = true\n").unwrap();
+    app.reload_config();
+    assert!(app.show_logical_name);
+
+    // Reloading a changed setting takes precedence over the session toggle.
+    std::fs::write(&path, "[ui]\nshow_logical_name = false\n").unwrap();
+    app.reload_config();
+    assert!(!app.show_logical_name);
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+    assert!(app.show_logical_name);
+    std::fs::write(&path, "[ui]\nshow_logical_name = true\n").unwrap();
+    app.reload_config();
+    assert!(app.show_logical_name);
+
+    std::fs::write(&path, "[ui]\nshow_logical_name = false\n").unwrap();
+    app.reload_config();
+    assert!(!app.show_logical_name);
+    std::fs::write(&path, "[ui]\nshort = true\n").unwrap();
+    app.reload_config();
+    assert!(app.show_logical_name);
+    assert!(rendered_tree(&app, tree).unwrap().lines[0].contains("LOGICAL NAME"));
+}
+
+#[test]
+fn logical_name_toggle_removes_the_column_and_preserves_pinned_regions() {
+    for (api_version, kind) in [
+        ("example.io/v1", "Root"),
+        ("pkg.crossplane.io/v1", "Provider"),
+    ] {
+        for short in [false, true] {
+            for ascii in [false, true] {
+                let mut app = app();
+                let trace = serde_json::json!({"object": {
+                    "apiVersion": api_version, "kind": kind,
+                    "metadata": {"name": "root", "annotations": {
+                        "crossplane.io/composition-resource-name": "logical-resource"
+                    }}
+                }});
+                app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+                app.config.ui.short = short;
+                app.config.ui.ascii = ascii;
+                let area = Rect::new(0, 0, 240, 16);
+                let tree = resource_tree_area(area).unwrap();
+                let before = rendered_tree(&app, tree).unwrap();
+                assert!(app.show_logical_name);
+                assert!(before.lines[0].contains("LOGICAL NAME"));
+                app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+                let hidden = rendered_tree(&app, tree).unwrap();
+                assert!(!app.show_logical_name);
+                assert!(!hidden.lines[0].contains("LOGICAL NAME"));
+                assert!(!hidden.lines[1].contains("logical-resource"));
+                assert_eq!(
+                    before.horizontal.content_width - hidden.horizontal.content_width,
+                    "logical-resource".len() + 2
+                );
+                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                assert_eq!(
+                    plan.header().width() + 1,
+                    hidden.horizontal.pinned_width
+                        + hidden.horizontal.content_width
+                        + hidden.horizontal.right_pinned_width
+                );
+                let right = hidden.horizontal.pinned_width + hidden.horizontal.viewport_width;
+                let pinned = hidden.horizontal.pinned_width;
+                let right_pinned = hidden.horizontal.right_pinned_width;
+                for (before, hidden) in before.lines.iter().zip(&hidden.lines) {
+                    assert_eq!(
+                        horizontal_slice(before, 0, pinned),
+                        horizontal_slice(hidden, 0, pinned)
+                    );
+                    assert_eq!(
+                        horizontal_slice(before, right, right_pinned),
+                        horizontal_slice(hidden, right, right_pinned)
+                    );
+                }
+                app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+                assert!(!app.show_logical_name);
+                assert_eq!(rendered_tree(&app, tree).unwrap().lines, hidden.lines);
+                app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE), area);
+                assert!(app.show_logical_name);
+                assert_eq!(rendered_tree(&app, tree).unwrap().lines, before.lines);
+            }
+        }
+    }
+}
+
+#[test]
+fn logical_name_toggle_clamps_horizontal_scroll_without_changing_selection() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let tree = resource_tree_area(area).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), area);
+    let selected = app.selected_node().unwrap().identity.clone();
+    app.resource_horizontal_scroll = usize::MAX;
+    app.clamp_tree_horizontal_scroll(area);
+    let before = app.resource_horizontal_scroll;
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+    let hidden = rendered_tree(&app, tree).unwrap();
+    assert_eq!(
+        app.resource_horizontal_scroll,
+        hidden.horizontal.max_offset()
+    );
+    assert!(app.resource_horizontal_scroll < before);
+    assert_eq!(app.selected_node().unwrap().identity, selected);
+    let offset = app.resource_horizontal_scroll;
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+    assert_eq!(app.resource_horizontal_scroll, offset);
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    assert!(app.show_logical_name);
+    assert_eq!(app.resource_horizontal_scroll, offset + 4);
+}
+
+#[test]
+fn logical_name_toggle_does_not_intercept_text_inputs_or_help() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 16);
+    for key in ['/', 'f', ':'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+        assert!(app.show_logical_name);
+        assert_eq!(app.input, "L");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+    assert!(app.show_logical_name);
+    assert_eq!(app.mode, InputMode::Help);
+}
+
+#[test]
+fn logical_name_annotation_is_sanitized_and_missing_or_non_string_values_use_dash() {
+    for (annotation, expected) in [
+        (
+            serde_json::json!("first\nsecond\t\u{1b}[31m"),
+            "first second \\x1b[31m",
+        ),
+        (serde_json::Value::Null, "-"),
+        (serde_json::json!(42), "-"),
+    ] {
+        let mut app = app();
+        let trace = serde_json::json!({"object": {
+            "apiVersion": "v1", "kind": "Root",
+            "metadata": {"name": "root", "annotations": {
+                "crossplane.io/composition-resource-name": annotation
+            }}
+        }});
+        app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+        let rendered =
+            rendered_tree(&app, resource_tree_area(Rect::new(0, 0, 240, 16)).unwrap()).unwrap();
+        assert_eq!(
+            horizontal_slice(
+                &rendered.lines[1],
+                rendered.horizontal.pinned_width,
+                expected.width()
+            ),
+            expected
+        );
+        assert!(!rendered.lines[1].contains(['\n', '\t', '\u{1b}']));
+    }
+}
+
+#[test]
 fn narrow_table_keeps_timestamp_columns_scrollable_unless_short_is_enabled() {
     let app = app();
     let snapshot = app.snapshot.as_ref().unwrap();
@@ -1488,7 +1745,7 @@ fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
         horizontal_slice(&before.lines[1], 0, pinned),
         horizontal_slice(&after.lines[1], 0, pinned)
     );
-    assert_eq!(horizontal_slice(&after.lines[0], pinned, 1), "P");
+    assert_eq!(horizontal_slice(&after.lines[0], pinned, 1), "C");
     assert_eq!(app.selection.visible_index, 0);
     app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), area);
     assert_eq!(rendered_tree(&app, tree).unwrap().lines, before.lines);
@@ -2049,7 +2306,7 @@ fn tree_divider_separates_pinned_objects_without_changing_column_widths() {
             );
             assert_eq!(line.width(), usize::from(tree.width - 2));
         }
-        assert_eq!(horizontal_slice(&before.lines[0], divider + 2, 5), "GROUP");
+        assert_eq!(horizontal_slice(&before.lines[0], divider + 2, 5), "LOGIC");
         app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
         let after = rendered_tree(&app, tree).unwrap();
         for (before, after) in before.lines.iter().zip(&after.lines) {
@@ -2531,6 +2788,7 @@ fn main_key_legend_uses_sofka_subtle_color() {
     let rendered = terminal.backend().to_string();
     assert!(!rendered.contains("Enter:details"));
     assert!(rendered.contains("Left/Right:collapse/expand"));
+    assert!(rendered.contains("L:logical-name"));
     assert!(!rendered.contains("Enter/Space"));
     assert!(rendered.contains("ctrl-d:delete"));
     assert!(!rendered.contains("h/l:scroll"));
@@ -2539,6 +2797,31 @@ fn main_key_legend_uses_sofka_subtle_color() {
     assert!(!HELP_LINES.iter().any(|line| line.starts_with("  z ")));
     assert!(rendered.contains("::command"));
     assert!(!rendered.contains("j/k:move"));
+}
+
+#[test]
+fn main_footer_groups_logical_name_toggle_with_tree_controls() {
+    let mut app = app();
+    for visible in [true, false] {
+        app.show_logical_name = visible;
+        let mut terminal = Terminal::new(TestBackend::new(240, 16)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let footer = (0..240)
+            .map(|column| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((column, 14))
+                    .unwrap()
+                    .symbol()
+            })
+            .collect::<String>();
+        let navigation = footer.find("Left/Right:collapse/expand").unwrap();
+        let logical_name = footer.find("L:logical-name").unwrap();
+        let command = footer.find("::command").unwrap();
+        let actions = footer.find("ctrl-d:delete").unwrap();
+        assert!(navigation < logical_name && logical_name < command && command < actions);
+    }
 }
 
 #[test]

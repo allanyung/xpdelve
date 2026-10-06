@@ -10,6 +10,7 @@ use crate::text;
 
 const BUILTIN_HEADERS: &[&str] = &[
     "OBJECT",
+    "LOGICAL NAME",
     "GROUP",
     "SYNCED",
     "SYNCED LAST",
@@ -255,6 +256,7 @@ mod tests {
             ("Widget.example..org", "VALUE", "/status/url", 10),
             ("Widget.example.org", " ", "/status/url", 10),
             ("Widget.example.org", "status", "/status/url", 10),
+            ("Widget.example.org", "logical name", "/status/url", 10),
             ("Widget.example.org", "READY LAST", "/status/url", 10),
             ("Widget.example.org", "VALUE", "status.url", 10),
             ("Widget.example.org", "VALUE", "/status/~2url", 10),
