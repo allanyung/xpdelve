@@ -13,7 +13,7 @@ Set CursorBlink false
 Set Theme {"name":"Catppuccin Mocha","black":"#45475a","red":"#f38ba8","green":"#a6e3a1","yellow":"#f9e2af","blue":"#89b4fa","magenta":"#cba6f7","cyan":"#94e2d5","white":"#bac2de","brightBlack":"#585b70","brightRed":"#f38ba8","brightGreen":"#a6e3a1","brightYellow":"#f9e2af","brightBlue":"#89b4fa","brightMagenta":"#cba6f7","brightCyan":"#94e2d5","brightWhite":"#a6adc8","background":"#1e1e2e","foreground":"#cdd6f4","selection":"#585b70","cursor":"#f5e0dc"}
 
 Hide
-Type "target/release/xpdelve --kubeconfig target/demo/kubeconfig --namespace xpdelve-demo --watch-interval 1s DemoPlatform.demo.xpdelve.io/xpdelve-demo"
+Type "target/release/xpdelve --kubeconfig target/demo/kubeconfig --namespace xpdelve-demo --watch-interval 2s DemoPlatform.demo.xpdelve.io/xpdelve-demo"
 Enter
 Wait+Screen /OBJECT/
 Show
@@ -23,6 +23,18 @@ Sleep 2s
 Type "["
 Sleep 1s
 Type "]"
+Sleep 2s
+
+# Hide and restore the logical name column with Shift+L.
+Type "L"
+Sleep 2s
+Type "L"
+Sleep 2s
+
+# Scroll the middle columns while OBJECT and STATUS remain pinned.
+Type "llllll"
+Sleep 2s
+Type "hhhhhh"
 Sleep 2s
 
 # Inspect the nested application XR as live YAML.

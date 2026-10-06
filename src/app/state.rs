@@ -28,6 +28,7 @@ impl App {
             selection: Selection::empty(),
             resource_scroll: 0,
             resource_horizontal_scroll: 0,
+            show_logical_name: config.ui.show_logical_name,
             collapsed: HashSet::new(),
             excluded_kinds: HashSet::new(),
             mode: InputMode::Normal,
@@ -235,6 +236,9 @@ impl App {
         });
         match result {
             Ok((config, theme)) => {
+                if config.ui.show_logical_name != self.config.ui.show_logical_name {
+                    self.show_logical_name = config.ui.show_logical_name;
+                }
                 self.config = config;
                 self.theme = theme;
                 self.retry_delay = self.retry_delay.min(Duration::from_secs(

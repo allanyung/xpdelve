@@ -134,6 +134,7 @@ context, resource, API group, and name through the variables in `args`.
 - `Right`: expand or select the first child
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
+- `L` (Shift+L): show or hide the logical name column (`crossplane.io/composition-resource-name`); visible by default, configurable with `ui.show_logical_name`
 - `:`: choose a resource kind; `/`: filter; `f`: find; `n`/`N`: next or previous match
 - `d`, `y`, `s`, `E`: describe, live YAML, status, and events
 - `p`/`u`: pause or unpause the selected Crossplane resource

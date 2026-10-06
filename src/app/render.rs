@@ -370,6 +370,7 @@ pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Optio
             app.config.ui.short,
             app.config.ui.ascii,
         )
+        .with_logical_name(app.show_logical_name)
         .with_extra_columns(columns::resolve(
             &app.config.extra_columns,
             snapshot,
@@ -516,6 +517,7 @@ pub(super) fn condition_text(value: Option<bool>) -> &'static str {
 pub(super) struct TablePlan {
     available: usize,
     object: usize,
+    logical_name: usize,
     group: usize,
     status: usize,
     package: bool,
@@ -541,6 +543,12 @@ impl TablePlan {
             .max()
             .unwrap_or(6)
             .max("OBJECT".len());
+        let logical_name = visible
+            .iter()
+            .map(|index| logical_name_cell(&snapshot.nodes[*index]).width())
+            .max()
+            .unwrap_or_default()
+            .max("LOGICAL NAME".len());
         let group = visible
             .iter()
             .map(|index| group_cell(&snapshot.nodes[*index]).width())
@@ -583,6 +591,7 @@ impl TablePlan {
         Self {
             available,
             object,
+            logical_name,
             group,
             status,
             package,
@@ -594,13 +603,20 @@ impl TablePlan {
         }
     }
 
+    fn with_logical_name(mut self, visible: bool) -> Self {
+        if !visible {
+            self.logical_name = 0;
+        }
+        self
+    }
+
     fn with_extra_columns(mut self, columns: Vec<ExtraColumn>) -> Self {
         self.extra_columns = columns;
         self
     }
 
     pub(super) fn fixed_width(&self) -> usize {
-        if self.package {
+        let width = if self.package {
             let displayed = 3
                 + usize::from(self.version > 0)
                 + usize::from(self.state > 0)
@@ -611,7 +627,13 @@ impl TablePlan {
             53
         } else {
             19
-        }
+        };
+        width
+            + if self.logical_name > 0 {
+                self.logical_name + 2
+            } else {
+                0
+            }
     }
 
     pub(super) fn horizontal_layout(&self, offset: usize) -> TreeHorizontalLayout {
@@ -674,6 +696,9 @@ impl TablePlan {
                 ("READY", 5),
             ]
         };
+        if self.logical_name > 0 {
+            columns.insert(1, ("LOGICAL NAME", self.logical_name));
+        }
         columns.extend(
             self.extra_columns
                 .iter()
@@ -693,6 +718,7 @@ impl TablePlan {
         let object =
             object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix, collapsed);
         let object = compact_object(&object, self.object);
+        let logical_name = logical_name_cell(node);
         let group = group_cell(node);
         let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
         let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
@@ -736,6 +762,9 @@ impl TablePlan {
                 (condition_text(node.ready), 5),
             ]
         };
+        if self.logical_name > 0 {
+            columns.insert(1, (logical_name.as_str(), self.logical_name));
+        }
         columns.extend(
             self.extra_columns
                 .iter()
@@ -790,6 +819,15 @@ pub(super) fn object_cell_with_tree_state(
         text::sanitize(&node.identity.kind),
         text::sanitize(&node.identity.name)
     )
+}
+
+fn logical_name_cell(node: &ProjectedNode) -> String {
+    let value = node
+        .object
+        .pointer("/metadata/annotations/crossplane.io~1composition-resource-name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-");
+    text::sanitize(value).replace(['\n', '\t'], " ")
 }
 
 pub(super) fn group_cell(node: &ProjectedNode) -> String {
@@ -979,7 +1017,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                     ""
                 };
                 format!(
-                    "{details} Left/Right:collapse/expand  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  E:events"
+                    "{details} Left/Right:collapse/expand  L:logical-name  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  E:events"
                 )
             }
         }

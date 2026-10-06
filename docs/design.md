@@ -58,11 +58,17 @@ retain their Installed/Healthy, image/version, and desired-state semantics.
 ## UI
 
 The main view is a full-width, initially expanded tree. Ordinary traces display
-`OBJECT`, `GROUP`, `SYNCED`, `SYNCED LAST`, `READY`, `READY LAST`, and `STATUS`.
+`OBJECT`, `LOGICAL NAME`, `GROUP`, `SYNCED`, `SYNCED LAST`, `READY`, `READY LAST`, and `STATUS`.
 Package traces use their Installed/Healthy schema. Middle columns retain their
 natural widths; `OBJECT` and `STATUS` have bounded widths to leave space for the
 scrolling columns. Transition-time columns are omitted only with `ui.short` or
-`--short`. The composition-resource annotation is not a table column.
+`--short`. `LOGICAL NAME` is the first scrolling column in both schemas and shows
+the `crossplane.io/composition-resource-name` annotation, or `-` when absent.
+It is visible by default and can be toggled with `L` (Shift+L); visibility is
+session-local and survives refreshes and configuration reloads unless
+`ui.show_logical_name` changes. That setting defaults to `true` and determines
+initial visibility. Toggling preserves
+the horizontal scroll offset, clamped to the remaining content.
 
 Problem statuses use fixed labels (`Deleted`, `Error`, `Creating`, `Unready`,
 `Unknown`, or `Warning`), with `Deleting` retaining precedence. `Deleted` uses
