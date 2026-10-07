@@ -224,6 +224,8 @@ live YAML, or drag across displayed text to highlight and copy it on release.
 Right-click a row for YAML, Edit, Status, Events, and Describe actions. Describe,
 live YAML, Events, Error, and SmallError views offer the same drag-to-copy behavior;
 visual soft wraps are not included as newlines.
+Hold a text-view drag at the top or bottom edge to scroll and extend the
+selection beyond the visible screen. The mouse wheel also preserves an active drag.
 Describe, YAML, and Events use the full terminal and wrap long lines. Content
 views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
 `h`/`l` or Left/Right scroll unwrapped YAML horizontally.

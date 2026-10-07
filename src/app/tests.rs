@@ -3308,6 +3308,220 @@ fn content_mouse_drag_copies_selected_source_text() {
 }
 
 #[test]
+fn content_drag_auto_scrolls_both_directions_and_copies_offscreen_text() {
+    let area = Rect::new(0, 0, 40, 10);
+    for kind in [
+        ContentKind::Yaml,
+        ContentKind::Describe,
+        ContentKind::Events,
+        ContentKind::Error,
+        ContentKind::SmallError,
+    ] {
+        for wrapped in [false, true] {
+            for upwards in [false, true] {
+                let mut app = app();
+                let source = (0..30)
+                    .map(|index| format!("{index:02}: 界e\u{301} {}", "word ".repeat(12)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let body = content_modal_body(area, kind);
+                let content = content::TextContent::from(source.clone());
+                let max_scroll = content.scroll_bounds(body.width, body.height, wrapped).0;
+                let mut state = TextModalState::new(kind);
+                state.wrapped = wrapped;
+                state.vertical_scroll = if upwards { max_scroll } else { 0 };
+                app.modal = Some(Modal::Text {
+                    title: "Content".into(),
+                    content,
+                    kind,
+                    state,
+                    selection: None,
+                });
+                let mouse = |kind, row| MouseEvent {
+                    kind,
+                    column: body.x,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                };
+                let start_row = body.y + body.height / 2;
+                // Drag beyond the body, then hold still: no further mouse events.
+                let edge = if upwards { body.y - 1 } else { body.bottom() };
+                app.handle_mouse(
+                    mouse(MouseEventKind::Down(MouseButton::Left), start_row),
+                    area,
+                );
+                app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), edge), area);
+                let Some(Modal::Text {
+                    selection: Some(initial),
+                    ..
+                }) = &app.modal
+                else {
+                    panic!("expected selection");
+                };
+                let anchor = initial.anchor;
+                let first_tick = app.text_drag.unwrap().next_scroll;
+                assert!(!app.scroll_text_drag(area, first_tick - Duration::from_millis(1)));
+                for step in 0..max_scroll {
+                    assert!(app.scroll_text_drag(
+                        area,
+                        first_tick + SELECTION_SCROLL_INTERVAL * u32::from(step)
+                    ));
+                }
+                assert!(!app.scroll_text_drag(
+                    area,
+                    first_tick + SELECTION_SCROLL_INTERVAL * u32::from(max_scroll)
+                ));
+                let Some(Modal::Text {
+                    state,
+                    selection: Some(active),
+                    ..
+                }) = &app.modal
+                else {
+                    panic!("expected selection");
+                };
+                assert_eq!(state.vertical_scroll, if upwards { 0 } else { max_scroll });
+                assert_eq!(active.anchor, anchor);
+                let expected_focus = selection_point_at(
+                    &source,
+                    body,
+                    body.x,
+                    edge,
+                    state.vertical_scroll,
+                    0,
+                    wrapped,
+                    true,
+                )
+                .unwrap();
+                assert_eq!(active.focus, expected_focus);
+                let expected = source[active.range()].to_owned();
+                assert!(expected.lines().count() > usize::from(body.height));
+                assert_eq!(
+                    copied_mouse_text(
+                        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), edge), area)
+                    ),
+                    Some(expected)
+                );
+                assert!(app.text_drag.is_none());
+                assert!(!app.scroll_text_drag(area, first_tick + Duration::from_secs(60)));
+            }
+        }
+    }
+}
+
+#[test]
+fn content_drag_stops_scrolling_inside_body_and_on_key_or_document_change() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 40, 10);
+    let kind = ContentKind::Yaml;
+    let source = "line\n".repeat(30);
+    app.modal = Some(Modal::Text {
+        title: "Content".into(),
+        content: source.clone().into(),
+        kind,
+        state: TextModalState::new(kind),
+        selection: None,
+    });
+    let body = content_modal_body(area, kind);
+    let mouse = |kind, row| MouseEvent {
+        kind,
+        column: body.x,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), body.y + 1),
+        area,
+    );
+    app.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), body.bottom()),
+        area,
+    );
+    let tick = app.text_drag.unwrap().next_scroll;
+    assert!(app.scroll_text_drag(area, tick));
+    app.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), body.y + 2),
+        area,
+    );
+    assert!(!app.scroll_text_drag(area, tick + Duration::from_secs(1)));
+    app.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), body.bottom()),
+        area,
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+    assert!(app.text_drag.is_none());
+    app.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), body.bottom()),
+        area,
+    );
+    if let Some(Modal::Text { content, .. }) = &mut app.modal {
+        *content = source.into();
+    }
+    assert!(!app.scroll_text_drag(area, tick + Duration::from_secs(2)));
+    assert!(app.text_drag.is_none());
+}
+
+#[test]
+fn content_wheel_preserves_drag_anchor_and_extends_copied_text() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 40, 10);
+    let kind = ContentKind::Yaml;
+    let source = (0..30)
+        .map(|index| format!("line {index}\n"))
+        .collect::<String>();
+    app.modal = Some(Modal::Text {
+        title: "Content".into(),
+        content: source.clone().into(),
+        kind,
+        state: TextModalState::new(kind),
+        selection: None,
+    });
+    let body = content_modal_body(area, kind);
+    let mouse = |kind, row| MouseEvent {
+        kind,
+        column: body.x,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), body.y), area);
+    app.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), body.y + 2),
+        area,
+    );
+    app.handle_mouse_events(mouse(MouseEventKind::ScrollDown, body.y + 2), 3, area);
+    let Some(Modal::Text {
+        state,
+        selection: Some(active),
+        ..
+    }) = &app.modal
+    else {
+        panic!("expected selection");
+    };
+    assert_eq!(state.vertical_scroll, 9);
+    assert_eq!(active.anchor.start, 0);
+    let expected = format!(
+        "{}l",
+        (0..11)
+            .map(|index| format!("line {index}\n"))
+            .collect::<String>()
+    );
+    assert_eq!(
+        copied_mouse_text(app.handle_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), body.y + 2),
+            area
+        )),
+        Some(expected)
+    );
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, body.y + 2), area);
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Text {
+            selection: None,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn content_mouse_click_does_not_copy_text() {
     let mut app = app();
     app.modal = Some(Modal::Text {

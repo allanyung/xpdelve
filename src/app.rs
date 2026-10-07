@@ -177,6 +177,7 @@ const DESCRIBE_ERROR_LIMIT: usize = 1024 * 1024;
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
 const TOAST_DURATION: Duration = Duration::from_millis(1500);
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+const SELECTION_SCROLL_INTERVAL: Duration = Duration::from_millis(75);
 const PALETTE_TITLE: &str = " commands & resources (↑/↓:select, Enter:apply) ";
 const HEALTH_FILTERS: [HealthFilter; 3] = [
     HealthFilter::All,
@@ -457,6 +458,13 @@ struct TreeClick {
     at: Instant,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TextDrag {
+    document: u64,
+    mouse: MouseEvent,
+    next_scroll: Instant,
+}
+
 impl TextSelection {
     fn range(self) -> std::ops::Range<usize> {
         self.anchor.start.min(self.focus.start)..self.anchor.end.max(self.focus.end)
@@ -533,6 +541,7 @@ struct App {
     context: Option<String>,
     toast: Option<Toast>,
     tree_selection: Option<TreeSelection>,
+    text_drag: Option<TextDrag>,
     deferred_snapshot: Option<Snapshot>,
     last_tree_click: Option<TreeClick>,
 }

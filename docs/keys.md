@@ -186,7 +186,9 @@ default; press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped
 YAML horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
 lines. In Describe, live YAML, Events, resource details, and mutation errors,
 drag across text to copy it on mouse release; visual soft wraps do not add
-newlines to the copied text. The main resource table also supports drag-to-copy,
+newlines to the copied text. Hold a drag at the top or bottom edge of a text view
+to scroll and extend the selection; wheel scrolling also preserves an active drag.
+The main resource table also supports drag-to-copy,
 while a click without dragging selects the clicked resource row and a
 double-click opens its live YAML.
 Tree copying uses the displayed text, including both pinned columns and the visible

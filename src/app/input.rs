@@ -78,6 +78,9 @@ impl App {
         count: usize,
         terminal_area: Rect,
     ) -> Option<MouseAction> {
+        if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::Up(_)) {
+            self.text_drag = None;
+        }
         if self.modal.is_none() && self.mode == InputMode::Help {
             let area = centered(terminal_area, 72, 20);
             if area.contains((mouse.column, mouse.row).into())
@@ -115,7 +118,33 @@ impl App {
             if content_modal_area(terminal_area, *kind).contains((mouse.column, mouse.row).into()) {
                 let (max_scroll, _) = content.scroll_bounds(body.width, body.height, state.wrapped);
                 state.vertical_scroll = scroll_vertical(state.vertical_scroll, delta, max_scroll);
-                *modal_selection = None;
+                if self
+                    .text_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.document == content.id())
+                {
+                    if let Some(active) = modal_selection
+                        && let Some(point) = selection_point_at(
+                            content,
+                            body,
+                            mouse.column,
+                            mouse.row,
+                            state.vertical_scroll,
+                            state.horizontal_scroll,
+                            state.wrapped,
+                            true,
+                        )
+                    {
+                        active.focus = point;
+                    }
+                    if let Some(drag) = &mut self.text_drag {
+                        drag.mouse.column = mouse.column;
+                        drag.mouse.row = mouse.row;
+                        drag.next_scroll = Instant::now() + SELECTION_SCROLL_INTERVAL;
+                    }
+                } else {
+                    *modal_selection = None;
+                }
             }
             return None;
         }
@@ -152,6 +181,17 @@ impl App {
                 {
                     active.focus = point;
                     active.dragged = true;
+                    if let Some(drag) = &mut self.text_drag
+                        && drag.document == content.id()
+                    {
+                        drag.mouse = mouse;
+                    } else {
+                        self.text_drag = Some(TextDrag {
+                            document: content.id(),
+                            mouse,
+                            next_scroll: Instant::now() + SELECTION_SCROLL_INTERVAL,
+                        });
+                    }
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
@@ -180,6 +220,60 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    // Terminals need not emit more drag events while the pointer is stationary.
+    // Drive edge scrolling from the frame clock instead of mouse movement.
+    pub(super) fn scroll_text_drag(&mut self, terminal_area: Rect, now: Instant) -> bool {
+        let Some(drag) = &mut self.text_drag else {
+            return false;
+        };
+        let Some(Modal::Text {
+            content,
+            kind,
+            state,
+            selection: Some(active),
+            ..
+        }) = &mut self.modal
+        else {
+            self.text_drag = None;
+            return false;
+        };
+        if drag.document != content.id() {
+            self.text_drag = None;
+            return false;
+        }
+        let body = content_modal_body(terminal_area, *kind);
+        if body.is_empty() || now < drag.next_scroll {
+            return false;
+        }
+        let delta = if drag.mouse.row <= body.y {
+            -1
+        } else if drag.mouse.row >= body.bottom().saturating_sub(1) {
+            1
+        } else {
+            return false;
+        };
+        drag.next_scroll = now + SELECTION_SCROLL_INTERVAL;
+        let (max_scroll, _) = content.scroll_bounds(body.width, body.height, state.wrapped);
+        let next = scroll_vertical(state.vertical_scroll, delta, max_scroll);
+        if next == state.vertical_scroll {
+            return false;
+        }
+        state.vertical_scroll = next;
+        if let Some(point) = selection_point_at(
+            content,
+            body,
+            drag.mouse.column,
+            drag.mouse.row,
+            state.vertical_scroll,
+            state.horizontal_scroll,
+            state.wrapped,
+            true,
+        ) {
+            active.focus = point;
+        }
+        true
     }
 
     pub(super) fn handle_context_menu_mouse(
@@ -429,6 +523,7 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return UiAction::None;
         }
+        self.text_drag = None;
         if self.modal.is_none() {
             self.tree_selection = None;
             self.last_tree_click = None;
