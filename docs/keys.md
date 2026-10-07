@@ -18,6 +18,7 @@
 | `h`, Shift+Left | Scroll columns left by four terminal cells |
 | `l`, Shift+Right | Scroll columns right by four terminal cells |
 | `L` (Shift+L) | Show or hide the logical name column |
+| `X` (Shift+X) | Show or hide the external name column |
 
 Expandable rows reserve a fixed disclosure slot immediately before the resource
 name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-` and
@@ -50,12 +51,15 @@ when it is unhealthy. The `s` key continues to show the resource's raw status YA
 
 `OBJECT` stays pinned on the left and `STATUS` stays pinned against the inner
 right edge. Only the columns between them and their headers scroll together,
-including configured extra columns. `LOGICAL NAME` is the first scrolling column
-and shows the `crossplane.io/composition-resource-name` annotation, or `-` when
-absent. The column is visible by default; `L` (Shift+L) toggles it for the current
-session. Set `[ui] show_logical_name = false` to start with it hidden. Refreshes
-and configuration reloads retain its visibility unless the configured setting
-changes. Lowercase
+including configured extra columns. When enabled, `LOGICAL NAME` is the first
+scrolling column and `EXTERNAL NAME` follows it. They show the
+`crossplane.io/composition-resource-name` and `crossplane.io/external-name`
+annotations respectively, on any resource kind, or `-` when absent or not a
+string. Both columns are hidden by default; `L` (Shift+L) and `X` (Shift+X)
+toggle them independently for the current session. Set `[ui]`
+`show_logical_name = true` or `show_external_name = true` to start with the
+corresponding column visible. Refreshes and configuration reloads retain each
+column's visibility unless its configured setting changes. Lowercase
 `l` still scrolls right. STATUS text is left-aligned within its
 column, with one reserved space before the right border, sized from visible
 rows, and capped at 24 terminal cells or one third of

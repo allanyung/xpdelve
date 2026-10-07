@@ -53,6 +53,7 @@ pub struct UiConfig {
     pub ascii: bool,
     pub short: bool,
     pub show_logical_name: bool,
+    pub show_external_name: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -112,7 +113,8 @@ impl Default for UiConfig {
             color: ColorMode::Auto,
             ascii: false,
             short: false,
-            show_logical_name: true,
+            show_logical_name: false,
+            show_external_name: false,
         }
     }
 }
@@ -329,26 +331,32 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().unwrap();
-        assert!(Config::default().ui.show_logical_name);
+        assert!(!Config::default().ui.show_logical_name);
+        assert!(!Config::default().ui.show_external_name);
     }
 
     #[test]
-    fn logical_name_visibility_defaults_to_true_and_accepts_only_booleans() {
+    fn name_column_visibility_defaults_to_false_and_accepts_only_booleans() {
         for source in [
             "",
             "[ui]",
             "[ui]\nshort = true",
-            "[ui]\nshow_logical_name = true",
+            "[ui]\nshow_logical_name = false\nshow_external_name = false",
         ] {
             let config: Config = toml::from_str(source).unwrap();
-            assert!(config.ui.show_logical_name, "{source}");
+            assert!(!config.ui.show_logical_name, "{source}");
+            assert!(!config.ui.show_external_name, "{source}");
         }
-        let config: Config = toml::from_str("[ui]\nshow_logical_name = false").unwrap();
-        assert!(!config.ui.show_logical_name);
-        for value in ["'false'", "0", "[]"] {
-            assert!(
-                toml::from_str::<Config>(&format!("[ui]\nshow_logical_name = {value}")).is_err()
+        for setting in ["show_logical_name", "show_external_name"] {
+            let config: Config = toml::from_str(&format!("[ui]\n{setting} = true")).unwrap();
+            assert_eq!(config.ui.show_logical_name, setting == "show_logical_name");
+            assert_eq!(
+                config.ui.show_external_name,
+                setting == "show_external_name"
             );
+            for value in ["'false'", "0", "[]"] {
+                assert!(toml::from_str::<Config>(&format!("[ui]\n{setting} = {value}")).is_err());
+            }
         }
     }
 

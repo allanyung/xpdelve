@@ -371,6 +371,7 @@ pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Optio
             app.config.ui.ascii,
         )
         .with_logical_name(app.show_logical_name)
+        .with_external_name(app.show_external_name)
         .with_extra_columns(columns::resolve(
             &app.config.extra_columns,
             snapshot,
@@ -518,6 +519,7 @@ pub(super) struct TablePlan {
     available: usize,
     object: usize,
     logical_name: usize,
+    external_name: usize,
     group: usize,
     status: usize,
     package: bool,
@@ -549,6 +551,12 @@ impl TablePlan {
             .max()
             .unwrap_or_default()
             .max("LOGICAL NAME".len());
+        let external_name = visible
+            .iter()
+            .map(|index| external_name_cell(&snapshot.nodes[*index]).width())
+            .max()
+            .unwrap_or_default()
+            .max("EXTERNAL NAME".len());
         let group = visible
             .iter()
             .map(|index| group_cell(&snapshot.nodes[*index]).width())
@@ -592,6 +600,7 @@ impl TablePlan {
             available,
             object,
             logical_name,
+            external_name,
             group,
             status,
             package,
@@ -615,6 +624,13 @@ impl TablePlan {
         self
     }
 
+    fn with_external_name(mut self, visible: bool) -> Self {
+        if !visible {
+            self.external_name = 0;
+        }
+        self
+    }
+
     pub(super) fn fixed_width(&self) -> usize {
         let width = if self.package {
             let displayed = 3
@@ -631,6 +647,11 @@ impl TablePlan {
         width
             + if self.logical_name > 0 {
                 self.logical_name + 2
+            } else {
+                0
+            }
+            + if self.external_name > 0 {
+                self.external_name + 2
             } else {
                 0
             }
@@ -696,6 +717,9 @@ impl TablePlan {
                 ("READY", 5),
             ]
         };
+        if self.external_name > 0 {
+            columns.insert(1, ("EXTERNAL NAME", self.external_name));
+        }
         if self.logical_name > 0 {
             columns.insert(1, ("LOGICAL NAME", self.logical_name));
         }
@@ -719,6 +743,7 @@ impl TablePlan {
             object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix, collapsed);
         let object = compact_object(&object, self.object);
         let logical_name = logical_name_cell(node);
+        let external_name = external_name_cell(node);
         let group = group_cell(node);
         let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
         let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
@@ -762,6 +787,9 @@ impl TablePlan {
                 (condition_text(node.ready), 5),
             ]
         };
+        if self.external_name > 0 {
+            columns.insert(1, (external_name.as_str(), self.external_name));
+        }
         if self.logical_name > 0 {
             columns.insert(1, (logical_name.as_str(), self.logical_name));
         }
@@ -822,9 +850,20 @@ pub(super) fn object_cell_with_tree_state(
 }
 
 fn logical_name_cell(node: &ProjectedNode) -> String {
+    annotation_cell(
+        node,
+        "/metadata/annotations/crossplane.io~1composition-resource-name",
+    )
+}
+
+fn external_name_cell(node: &ProjectedNode) -> String {
+    annotation_cell(node, "/metadata/annotations/crossplane.io~1external-name")
+}
+
+fn annotation_cell(node: &ProjectedNode, pointer: &str) -> String {
     let value = node
         .object
-        .pointer("/metadata/annotations/crossplane.io~1composition-resource-name")
+        .pointer(pointer)
         .and_then(serde_json::Value::as_str)
         .unwrap_or("-");
     text::sanitize(value).replace(['\n', '\t'], " ")
@@ -1017,7 +1056,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                     ""
                 };
                 format!(
-                    "{details} Left/Right:collapse/expand  L:logical-name  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  E:events"
+                    "{details} Left/Right:collapse/expand  L:logical-name  X:external-name  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  E:events"
                 )
             }
         }

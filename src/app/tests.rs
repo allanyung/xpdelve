@@ -1449,6 +1449,7 @@ fn logical_name_is_the_first_scrollable_column_in_all_table_modes() {
         ("pkg.crossplane.io/v1", "Provider"),
     ] {
         let mut app = app();
+        app.show_logical_name = true;
         let logical_name = "composed-界界-resource";
         let trace = serde_json::json!({
             "object": {
@@ -1555,8 +1556,8 @@ fn logical_name_visibility_uses_config_and_reload_applies_changed_values() {
     assert!(!app.show_logical_name);
     std::fs::write(&path, "[ui]\nshort = true\n").unwrap();
     app.reload_config();
-    assert!(app.show_logical_name);
-    assert!(rendered_tree(&app, tree).unwrap().lines[0].contains("LOGICAL NAME"));
+    assert!(!app.show_logical_name);
+    assert!(!rendered_tree(&app, tree).unwrap().lines[0].contains("LOGICAL NAME"));
 }
 
 #[test]
@@ -1568,6 +1569,7 @@ fn logical_name_toggle_removes_the_column_and_preserves_pinned_regions() {
         for short in [false, true] {
             for ascii in [false, true] {
                 let mut app = app();
+                app.show_logical_name = true;
                 let trace = serde_json::json!({"object": {
                     "apiVersion": api_version, "kind": kind,
                     "metadata": {"name": "root", "annotations": {
@@ -1625,6 +1627,7 @@ fn logical_name_toggle_removes_the_column_and_preserves_pinned_regions() {
 #[test]
 fn logical_name_toggle_clamps_horizontal_scroll_without_changing_selection() {
     let mut app = app();
+    app.show_logical_name = true;
     let area = Rect::new(0, 0, 50, 16);
     let tree = resource_tree_area(area).unwrap();
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), area);
@@ -1655,13 +1658,13 @@ fn logical_name_toggle_does_not_intercept_text_inputs_or_help() {
     for key in ['/', 'f', ':'] {
         app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
-        assert!(app.show_logical_name);
+        assert!(!app.show_logical_name);
         assert_eq!(app.input, "L");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     }
     app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
-    assert!(app.show_logical_name);
+    assert!(!app.show_logical_name);
     assert_eq!(app.mode, InputMode::Help);
 }
 
@@ -1676,6 +1679,7 @@ fn logical_name_annotation_is_sanitized_and_missing_or_non_string_values_use_das
         (serde_json::json!(42), "-"),
     ] {
         let mut app = app();
+        app.show_logical_name = true;
         let trace = serde_json::json!({"object": {
             "apiVersion": "v1", "kind": "Root",
             "metadata": {"name": "root", "annotations": {
@@ -1715,6 +1719,182 @@ fn narrow_table_keeps_timestamp_columns_scrollable_unless_short_is_enabled() {
 }
 
 #[test]
+fn external_name_column_order_and_toggle_preserve_pinned_regions_in_all_modes() {
+    for (api_version, kind) in [
+        ("example.io/v1", "Root"),
+        ("pkg.crossplane.io/v1", "Provider"),
+    ] {
+        for short in [false, true] {
+            for ascii in [false, true] {
+                let mut app = app();
+                let external = "external-界界-resource";
+                let trace = serde_json::json!({"object": {
+                    "apiVersion": api_version, "kind": kind,
+                    "metadata": {"name": "root", "annotations": {
+                        "crossplane.io/composition-resource-name": "logical-resource",
+                        "crossplane.io/external-name": external
+                    }}
+                }, "children": [{"object": {
+                    "apiVersion": "v1", "kind": "Secret", "metadata": {"name": "child"}
+                }}]});
+                let bytes = serde_json::to_vec(&trace).unwrap();
+                app.apply_snapshot(Snapshot::parse(&bytes).unwrap());
+                app.config.ui.short = short;
+                app.config.ui.ascii = ascii;
+                let area = Rect::new(0, 0, 240, 16);
+                let tree = resource_tree_area(area).unwrap();
+                let hidden = rendered_tree(&app, tree).unwrap();
+                assert!(!hidden.lines[0].contains("LOGICAL NAME"));
+                assert!(!hidden.lines[0].contains("EXTERNAL NAME"));
+                app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+                assert!(app.show_external_name);
+                assert!(!app.show_logical_name);
+                let shown = rendered_tree(&app, tree).unwrap();
+                let start = shown.horizontal.pinned_width;
+                assert_eq!(
+                    horizontal_slice(&shown.lines[0], start, 13),
+                    "EXTERNAL NAME"
+                );
+                assert_eq!(
+                    horizontal_slice(&shown.lines[1], start, external.width()),
+                    external
+                );
+                assert_eq!(
+                    horizontal_slice(&shown.lines[2], start, external.width()).trim(),
+                    "-"
+                );
+                assert_eq!(
+                    shown.horizontal.content_width - hidden.horizontal.content_width,
+                    external.width() + 2
+                );
+                let right = start + shown.horizontal.viewport_width;
+                for (hidden, shown) in hidden.lines.iter().zip(&shown.lines) {
+                    assert_eq!(
+                        horizontal_slice(hidden, 0, start),
+                        horizontal_slice(shown, 0, start)
+                    );
+                    assert_eq!(
+                        horizontal_slice(hidden, right, 9),
+                        horizontal_slice(shown, right, 9)
+                    );
+                }
+                app.apply_snapshot(Snapshot::parse(&bytes).unwrap());
+                assert_eq!(rendered_tree(&app, tree).unwrap().lines, shown.lines);
+                app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
+                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let header = plan.header();
+                assert!(
+                    header.find("LOGICAL NAME").unwrap() < header.find("EXTERNAL NAME").unwrap()
+                );
+                assert_eq!(
+                    header.width() + 1,
+                    plan.horizontal_layout(0).pinned_width
+                        + plan.horizontal_layout(0).content_width
+                        + plan.horizontal_layout(0).right_pinned_width
+                );
+                app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE), area);
+                assert!(!app.show_external_name);
+                assert!(app.show_logical_name);
+            }
+        }
+    }
+}
+
+#[test]
+fn external_name_visibility_uses_config_and_reload_applies_only_changed_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "[ui]\nshow_external_name = true\n").unwrap();
+    let cli = Cli::parse_from(["xpdelve", "--config", path.to_str().unwrap(), "Root/root"]);
+    let config = Config::load(&cli).unwrap();
+    let theme = Theme::resolve(&config.skin, config.ui.color).unwrap();
+    let mut app = App::new("Root/root".into(), config, &cli, theme);
+    let area = Rect::new(0, 0, 100, 16);
+    assert!(app.show_external_name);
+    assert!(!app.show_logical_name);
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+    assert!(!app.show_external_name);
+    app.reload_config();
+    assert!(!app.show_external_name);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[ui]\nshow_external_name = true\n"
+    );
+    std::fs::write(&path, "[ui]\nshow_external_name = false\n").unwrap();
+    app.reload_config();
+    assert!(!app.show_external_name);
+    std::fs::write(&path, "[ui]\nshow_external_name = true\n").unwrap();
+    app.reload_config();
+    assert!(app.show_external_name);
+    std::fs::write(&path, "[ui]\nshort = true\n").unwrap();
+    app.reload_config();
+    assert!(!app.show_external_name);
+}
+
+#[test]
+fn external_name_toggle_clamps_scroll_and_does_not_intercept_text_inputs_or_help() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+    app.resource_horizontal_scroll = usize::MAX;
+    app.clamp_tree_horizontal_scroll(area);
+    let before = app.resource_horizontal_scroll;
+    let selected = app.selected_node().unwrap().identity.clone();
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+    assert!(app.resource_horizontal_scroll < before);
+    let rendered = rendered_tree(&app, resource_tree_area(area).unwrap()).unwrap();
+    assert_eq!(
+        app.resource_horizontal_scroll,
+        rendered.horizontal.max_offset()
+    );
+    assert_eq!(app.selected_node().unwrap().identity, selected);
+    for key in ['/', 'f', ':'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+        assert!(!app.show_external_name);
+        assert_eq!(app.input, "X");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), area);
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+    assert!(!app.show_external_name);
+    assert_eq!(app.mode, InputMode::Help);
+}
+
+#[test]
+fn external_name_annotation_is_sanitized_and_non_string_values_use_dash() {
+    for (annotation, expected) in [
+        (
+            serde_json::json!("first\nsecond\t\u{1b}[31m"),
+            "first second \\x1b[31m",
+        ),
+        (serde_json::Value::Null, "-"),
+        (serde_json::json!(42), "-"),
+    ] {
+        let mut app = app();
+        app.show_external_name = true;
+        let trace = serde_json::json!({"object": {
+            "apiVersion": "v1", "kind": "Secret",
+            "metadata": {"name": "root", "annotations": {
+                "crossplane.io/external-name": annotation
+            }}
+        }});
+        app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+        let rendered =
+            rendered_tree(&app, resource_tree_area(Rect::new(0, 0, 240, 16)).unwrap()).unwrap();
+        assert_eq!(
+            horizontal_slice(
+                &rendered.lines[1],
+                rendered.horizontal.pinned_width,
+                expected.width()
+            ),
+            expected
+        );
+        assert!(!rendered.lines[1].contains(['\n', '\t', '\u{1b}']));
+    }
+}
+
+#[test]
 fn rendered_table_keeps_a_fixed_header() {
     let app = app();
     let backend = TestBackend::new(100, 16);
@@ -1745,7 +1925,7 @@ fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
         horizontal_slice(&before.lines[1], 0, pinned),
         horizontal_slice(&after.lines[1], 0, pinned)
     );
-    assert_eq!(horizontal_slice(&after.lines[0], pinned, 1), "C");
+    assert_eq!(horizontal_slice(&after.lines[0], pinned, 1), "P");
     assert_eq!(app.selection.visible_index, 0);
     app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), area);
     assert_eq!(rendered_tree(&app, tree).unwrap().lines, before.lines);
@@ -2306,7 +2486,7 @@ fn tree_divider_separates_pinned_objects_without_changing_column_widths() {
             );
             assert_eq!(line.width(), usize::from(tree.width - 2));
         }
-        assert_eq!(horizontal_slice(&before.lines[0], divider + 2, 5), "LOGIC");
+        assert_eq!(horizontal_slice(&before.lines[0], divider + 2, 5), "GROUP");
         app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
         let after = rendered_tree(&app, tree).unwrap();
         for (before, after) in before.lines.iter().zip(&after.lines) {
@@ -2778,7 +2958,7 @@ fn finalizer_confirmation_matches_destructive_modal_style() {
 #[test]
 fn main_key_legend_uses_sofka_subtle_color() {
     let app = app();
-    let backend = TestBackend::new(100, 16);
+    let backend = TestBackend::new(240, 16);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
     assert_eq!(
@@ -2789,6 +2969,7 @@ fn main_key_legend_uses_sofka_subtle_color() {
     assert!(!rendered.contains("Enter:details"));
     assert!(rendered.contains("Left/Right:collapse/expand"));
     assert!(rendered.contains("L:logical-name"));
+    assert!(rendered.contains("X:external-name"));
     assert!(!rendered.contains("Enter/Space"));
     assert!(rendered.contains("ctrl-d:delete"));
     assert!(!rendered.contains("h/l:scroll"));
@@ -2818,9 +2999,11 @@ fn main_footer_groups_logical_name_toggle_with_tree_controls() {
             .collect::<String>();
         let navigation = footer.find("Left/Right:collapse/expand").unwrap();
         let logical_name = footer.find("L:logical-name").unwrap();
+        let external_name = footer.find("X:external-name").unwrap();
         let command = footer.find("::command").unwrap();
         let actions = footer.find("ctrl-d:delete").unwrap();
-        assert!(navigation < logical_name && logical_name < command && command < actions);
+        assert!(navigation < logical_name && logical_name < external_name);
+        assert!(external_name < command && command < actions);
     }
 }
 
