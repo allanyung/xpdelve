@@ -61,6 +61,7 @@ impl App {
             context: cli.context.clone(),
             toast: None,
             tree_selection: None,
+            text_drag: None,
             deferred_snapshot: None,
             last_tree_click: None,
         }

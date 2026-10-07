@@ -53,6 +53,10 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                     apply_wheel_batch(&mut app, &mut terminal, batch)?;
                     dirty = true;
                 }
+                if app.text_drag.is_some() {
+                    let area = terminal.terminal.size()?;
+                    dirty |= app.scroll_text_drag(area.into(), started);
+                }
                 if dirty {
                     terminal.terminal.draw(|frame| {
                         app.clamp_tree_horizontal_scroll(frame.area());
@@ -125,6 +129,9 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                             }
                             None => {}
                         }
+                    }
+                    TerminalEvent::Resize(_, _) | TerminalEvent::FocusLost => {
+                        app.text_drag = None;
                     }
                     _ => {}
                 }
