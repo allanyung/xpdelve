@@ -33,7 +33,8 @@ retry_backoff_max_seconds = 60
 color = "auto"
 ascii = false
 short = false
-show_logical_name = true
+show_logical_name = false
+show_external_name = false
 
 [skin]
 # Omit name to detect a light/dark terminal and select Latte/Mocha.
@@ -64,7 +65,8 @@ name = "catppuccin-mocha"
 | `ui.color` | Color policy: `auto`, `always`, or `never` |
 | `ui.ascii` | Use ASCII rather than Unicode tree lines when `true` |
 | `ui.short` | Hide condition transition-time columns when `true` |
-| `ui.show_logical_name` | Show the logical name column when `true` (default); hide it when `false` |
+| `ui.show_logical_name` | Show the logical name column when `true`; hidden by default (`false`) |
+| `ui.show_external_name` | Show the external name column when `true`; hidden by default (`false`) |
 | `skin.name` | Built-in theme name; omit it for terminal-background detection |
 | `skin.colors` | Optional per-swatch RGB overrides |
 | `extra_columns` | Additional main-tree columns keyed by exact resource kind and API group |
@@ -77,13 +79,16 @@ corresponding option.
 Automatic refresh begins enabled unless `--no-watch` is supplied. Pausing or
 resuming it with `P` is session-only and is not stored in configuration.
 
-`ui.show_logical_name` sets the initial visibility of the `LOGICAL NAME` column,
-which displays the `crossplane.io/composition-resource-name` annotation. It
-defaults to `true` when omitted, including when the entire `[ui]` section is
-absent. Press `L` (Shift+L) to toggle visibility for the current session without
-changing the config file. Trace refreshes retain the toggle. Changing this
-setting and running `:reload` applies the new value immediately; reloading an
-unchanged value preserves the session toggle.
+`ui.show_logical_name` and `ui.show_external_name` set the initial visibility of
+the `LOGICAL NAME` and `EXTERNAL NAME` columns. These display the
+`crossplane.io/composition-resource-name` and `crossplane.io/external-name`
+annotations on any resource kind, or `-` when absent or not a string. Both
+settings default to `false` when omitted, including when the entire `[ui]`
+section is absent; set either to `true` to show that column at startup.
+Press `L` (Shift+L) or `X` (Shift+X) to toggle the corresponding column for the
+current session without changing the config file. Trace refreshes retain the
+toggles. Changing a setting and running `:reload` applies its new value
+immediately; reloading an unchanged value preserves that column's session toggle.
 
 ## Extra columns
 

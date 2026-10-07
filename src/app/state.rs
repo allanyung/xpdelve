@@ -29,6 +29,7 @@ impl App {
             resource_scroll: 0,
             resource_horizontal_scroll: 0,
             show_logical_name: config.ui.show_logical_name,
+            show_external_name: config.ui.show_external_name,
             collapsed: HashSet::new(),
             excluded_kinds: HashSet::new(),
             mode: InputMode::Normal,
@@ -239,6 +240,9 @@ impl App {
             Ok((config, theme)) => {
                 if config.ui.show_logical_name != self.config.ui.show_logical_name {
                     self.show_logical_name = config.ui.show_logical_name;
+                }
+                if config.ui.show_external_name != self.config.ui.show_external_name {
+                    self.show_external_name = config.ui.show_external_name;
                 }
                 self.config = config;
                 self.theme = theme;

@@ -12,9 +12,6 @@ both projects under Apache-2.0; see [`NOTICE`](NOTICE) for detailed provenance.
 
 ![xpdelve demo](docs/assets/xpdelve.gif)
 
-The reproducible nested-Composition environment and VHS recording used for the
-project demo are documented in [`demo/`](demo/README.md).
-
 ## Status
 
 xpdelve provides live trace browsing, resilient refresh, tree find/filter,
@@ -134,7 +131,8 @@ context, resource, API group, and name through the variables in `args`.
 - `Right`: expand or select the first child
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
-- `L` (Shift+L): show or hide the logical name column (`crossplane.io/composition-resource-name`); visible by default, configurable with `ui.show_logical_name`
+- `L` (Shift+L): show or hide the logical name column (`crossplane.io/composition-resource-name`); hidden by default, enable with `ui.show_logical_name = true`
+- `X` (Shift+X): show or hide the external name column (`crossplane.io/external-name`); hidden by default, enable with `ui.show_external_name = true`
 - `:`: choose a resource kind; `/`: filter; `f`: find; `n`/`N`: next or previous match
 - `d`, `y`, `s`, `E`: describe, live YAML, status, and events
 - `p`/`u`: pause or unpause the selected Crossplane resource
