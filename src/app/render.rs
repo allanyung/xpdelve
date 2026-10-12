@@ -201,6 +201,8 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         let selected = visible_position == app.selection.visible_index;
         let mut style = if selected {
             app.theme.selected_row()
+        } else if node.paused {
+            app.theme.fg(app.theme.palette.peach)
         } else {
             app.theme.health(node.health)
         };
@@ -841,9 +843,8 @@ pub(super) fn object_cell_with_tree_state(
         (true, true, false) => "▸ ",
         (true, false, false) => "▾ ",
     };
-    let paused = if node.paused { " (paused)" } else { "" };
     format!(
-        "{prefix}{disclosure}{}/{}{paused}",
+        "{prefix}{disclosure}{}/{}",
         text::sanitize(&node.identity.kind),
         text::sanitize(&node.identity.name)
     )
@@ -878,7 +879,11 @@ pub(super) fn group_cell(node: &ProjectedNode) -> String {
 }
 
 fn status_cell(node: &ProjectedNode) -> String {
-    text::sanitize(&node.status).replace(['\n', '\t'], " ")
+    if node.paused {
+        "Paused".into()
+    } else {
+        text::sanitize(&node.status).replace(['\n', '\t'], " ")
+    }
 }
 
 pub(super) fn format_columns(columns: &[(&str, usize)]) -> String {

@@ -968,6 +968,74 @@ fn selecting_a_skin_applies_and_persists_it() {
 }
 
 #[test]
+fn paused_resources_show_paused_status_and_theme_orange_without_name_suffix() {
+    for name in crate::theme::BUILTIN_NAMES {
+        for color in [
+            crate::config::ColorMode::Always,
+            crate::config::ColorMode::Never,
+        ] {
+            let mut app = app_with_theme(name, color);
+            app.apply_snapshot(
+                Snapshot::parse(
+                    br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},"children":[{"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"child","annotations":{"crossplane.io/paused":"true"}},"status":{"conditions":[{"type":"Synced","status":"False","reason":"ReconcilePaused"}]}},"error":{"message":"reconciliation paused"}}]}"#,
+                )
+                .unwrap(),
+            );
+            let snapshot = app.snapshot.as_ref().unwrap();
+            let child = &snapshot.nodes[1];
+            assert!(child.paused);
+            assert_eq!(child.health, crate::model::Health::Unhealthy);
+            assert_eq!(child.status, "Error");
+            assert!(object_cell(snapshot, child, false).ends_with("Child/child"));
+
+            let area = Rect::new(0, 0, 100, 12);
+            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+            terminal
+                .draw(|frame| render_tree(frame, area, &app))
+                .unwrap();
+            let rendered = terminal.backend().to_string();
+            assert!(rendered.contains("Paused"));
+            assert!(!rendered.contains("(paused)"));
+            assert!(!rendered.contains("Error"));
+            let buffer = terminal.backend().buffer();
+            // The first resource is selected; the paused child is the next row.
+            let child_row = 3;
+            let expected = if app.theme.colors_enabled {
+                app.theme.palette.peach
+            } else {
+                Color::Reset
+            };
+            assert_eq!(buffer.cell((1, child_row)).unwrap().fg, expected);
+            let status_column = rendered_tree(&app, area).unwrap().lines[0]
+                .find("STATUS")
+                .unwrap();
+            // Find the status cell by display width rather than UTF-8 byte offset.
+            let status_column =
+                rendered_tree(&app, area).unwrap().lines[0][..status_column].width();
+            assert_eq!(
+                buffer
+                    .cell((1 + status_column as u16, child_row))
+                    .unwrap()
+                    .fg,
+                expected
+            );
+
+            app.selection.visible_index = 1;
+            terminal
+                .draw(|frame| render_tree(frame, area, &app))
+                .unwrap();
+            let selected = terminal.backend().buffer().cell((1, child_row)).unwrap();
+            if app.theme.colors_enabled {
+                assert_eq!(selected.fg, app.theme.palette.base);
+                assert_eq!(selected.bg, app.theme.palette.lavender);
+            } else {
+                assert!(selected.modifier.contains(Modifier::REVERSED));
+            }
+        }
+    }
+}
+
+#[test]
 fn palette_command_uses_sofka_command_styling() {
     let mut app = app();
     app.open_palette();
