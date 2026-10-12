@@ -172,11 +172,18 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                             app.kubernetes_status = format!("Kubernetes actions unavailable: {error}");
                         }
                     },
-                    AppEvent::ActionFinished { label, identity, result, refresh } => {
-                        let succeeded = app.finish_action(&label, identity, result);
-                        if refresh && succeeded {
+                    AppEvent::ActionFinished { label, identities, failed, result, refresh } => {
+                        let batch = identities.len() > 1;
+                        let succeeded = if batch {
+                            app.finish_batch(&label, &identities, &failed, result)
+                        } else {
+                            app.finish_action(&label, identities.into_iter().next(), result)
+                        };
+                        if refresh && (succeeded || batch) {
                             request_refresh(&mut app, cli, &sender, &mut active, false);
-                            app.status = format!("{label} succeeded; refreshing trace...");
+                            if succeeded {
+                                app.status = format!("{label} succeeded; refreshing trace...");
+                            }
                         }
                     }
                     AppEvent::Retry { generation }
@@ -241,22 +248,27 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
         app.status.clone_from(&app.kubernetes_status);
         return;
     };
-    if let Some(identity) = mutation_identity(&action) {
+    let identities: Vec<Identity> = mutation_identities(&action).into_iter().cloned().collect();
+    if !identities.is_empty() {
         if app.active_mutations.len() >= 4 {
             app.status = "Four mutations are already running; wait for one to finish".into();
             return;
         }
-        if !app.active_mutations.insert(identity.clone()) {
-            app.status = format!("An action is already running for {identity}");
+        if let Some(busy) = identities
+            .iter()
+            .find(|identity| app.active_mutations.contains(*identity))
+        {
+            app.status = format!("An action is already running for {busy}");
             return;
         }
+        app.active_mutations.extend(identities.iter().cloned());
     }
-    let identity = mutation_identity(&action).cloned();
     let context = cli.context.clone();
     let kubeconfig = cli.kubeconfig.clone();
     let sender = sender.clone();
     app.status = "Kubernetes operation in progress...".into();
     tokio::spawn(async move {
+        let mut failed = Vec::new();
         let (label, result, refresh) = match action {
             UiAction::Describe(target) => (
                 format!("Describe: {}", target.identity),
@@ -280,31 +292,56 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
                 kubernetes.events(&target).await.map(Some),
                 false,
             ),
-            UiAction::Delete(target, propagation) => (
-                format!("Delete ({propagation})"),
-                kubernetes.delete(&target, propagation).await.map(|()| None),
-                true,
-            ),
-            UiAction::SetPaused(target, paused) => (
-                if paused { "Pause" } else { "Unpause" }.into(),
-                kubernetes.set_paused(&target, paused).await.map(|()| None),
-                true,
-            ),
-            UiAction::RemoveFinalizers(target, selected) => (
-                "Remove finalizers".into(),
-                kubernetes
-                    .remove_finalizers(&target, &selected)
-                    .await
-                    .map(|()| None),
-                true,
-            ),
+            UiAction::Delete(targets, propagation) => {
+                let label = batch_label(format!("Delete ({propagation})"), targets.len());
+                let (result, failures) = run_batch(
+                    &targets,
+                    |target| &target.identity,
+                    |target| kubernetes.delete(target, propagation),
+                )
+                .await;
+                failed = failures;
+                (label, result.map(|()| None), true)
+            }
+            UiAction::SetPaused(targets, paused) => {
+                let label = batch_label(
+                    if paused { "Pause" } else { "Unpause" }.into(),
+                    targets.len(),
+                );
+                let (result, failures) = run_batch(
+                    &targets,
+                    |target| &target.identity,
+                    |target| kubernetes.set_paused(target, paused),
+                )
+                .await;
+                failed = failures;
+                (label, result.map(|()| None), true)
+            }
+            UiAction::RemoveFinalizers(removals) => {
+                let label = batch_label("Remove finalizers".into(), removals.len());
+                let (result, failures) = run_batch(
+                    &removals,
+                    |removal| &removal.target.identity,
+                    |removal| {
+                        kubernetes.remove_finalizers(
+                            &removal.target,
+                            &removal.expected,
+                            &removal.remove,
+                        )
+                    },
+                )
+                .await;
+                failed = failures;
+                (label, result.map(|()| None), true)
+            }
             UiAction::None | UiAction::Refresh | UiAction::Edit(_) | UiAction::Copy(_) => return,
         };
         let result = result.map_err(|error| format!("{error:#}"));
         let _ = sender
             .send(AppEvent::ActionFinished {
                 label,
-                identity,
+                identities,
+                failed,
                 result,
                 refresh,
             })
@@ -312,13 +349,65 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
     });
 }
 
-fn mutation_identity(action: &UiAction) -> Option<&Identity> {
+fn mutation_identities(action: &UiAction) -> Vec<&Identity> {
     match action {
-        UiAction::Delete(target, _)
-        | UiAction::SetPaused(target, _)
-        | UiAction::RemoveFinalizers(target, _) => Some(&target.identity),
-        _ => None,
+        UiAction::Delete(targets, _) | UiAction::SetPaused(targets, _) => {
+            targets.iter().map(|target| &target.identity).collect()
+        }
+        UiAction::RemoveFinalizers(removals) => removals
+            .iter()
+            .map(|removal| &removal.target.identity)
+            .collect(),
+        _ => Vec::new(),
     }
+}
+
+fn batch_label(label: String, count: usize) -> String {
+    if count > 1 {
+        format!("{label} {count} resources")
+    } else {
+        label
+    }
+}
+
+/// Runs the operation for each item in order, so a batch occupies one request at a time.
+/// A failure never stops the remaining items; every failure is reported, and the failed
+/// identities are returned so only those stay marked.
+async fn run_batch<'a, T, F, Fut>(
+    items: &'a [T],
+    identity: impl Fn(&T) -> &Identity,
+    mut operation: F,
+) -> (Result<()>, Vec<Identity>)
+where
+    F: FnMut(&'a T) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    if let [item] = items {
+        return match operation(item).await {
+            Ok(()) => (Ok(()), Vec::new()),
+            Err(error) => (Err(error), vec![identity(item).clone()]),
+        };
+    }
+    let mut failures = Vec::new();
+    let mut failed = Vec::new();
+    for item in items {
+        if let Err(error) = operation(item).await {
+            failures.push(format!("Resource: {}\n{error:#}", identity(item)));
+            failed.push(identity(item).clone());
+        }
+    }
+    if failures.is_empty() {
+        return (Ok(()), failed);
+    }
+    (
+        Err(anyhow!(
+            "{} of {} resources failed; the others succeeded.\n\n{}",
+            failures.len(),
+            items.len(),
+            failures.join("\n\n")
+        )),
+        failed,
+    )
 }
 
 fn copy_osc52(value: &str) -> Result<()> {

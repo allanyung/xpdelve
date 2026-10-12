@@ -189,6 +189,7 @@ const HELP_LINES: &[&str] = &[
     "  j/k, Up/Down      move selection",
     "  PgUp/PgDn         move one page",
     "  Mouse wheel       scroll vertically",
+    "  Space             mark / unmark resource for bulk actions",
     "  Enter             show resource problem details",
     "  Right             expand or select first child",
     "  Left              collapse or select parent",
@@ -211,7 +212,7 @@ const HELP_LINES: &[&str] = &[
     "  /                 filter tree",
     "  f                 find text",
     "  n / N             next / previous match",
-    "  Esc               clear find, text filter, kind, and health",
+    "  Esc               clear marks, or find, text filter, kind, and health",
     "",
     "Session",
     "  r                 refresh now",
@@ -223,9 +224,9 @@ const HELP_LINES: &[&str] = &[
     "  d / y / s / E     describe / live YAML / status / events",
     "  e                 kubectl edit",
     "  c                 copy resource identifier",
-    "  p / u             pause / unpause resource",
-    "  Ctrl+D            delete resource",
-    "  Ctrl+X            select finalizers to remove",
+    "  p                 pause / unpause resource (or marked resources)",
+    "  Ctrl+D            delete resource (or marked resources)",
+    "  Ctrl+X            select finalizers to remove (from marked resources)",
 ];
 
 enum AppEvent {
@@ -236,7 +237,8 @@ enum AppEvent {
     KubernetesReady(Result<Arc<Kubernetes>, String>),
     ActionFinished {
         label: String,
-        identity: Option<Identity>,
+        identities: Vec<Identity>,
+        failed: Vec<Identity>,
         result: Result<Option<String>, String>,
         refresh: bool,
     },
@@ -393,6 +395,8 @@ enum TextModalAction {
     FindPrevious,
 }
 
+// Only one modal exists at a time, so the size gap to the text view is harmless.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 enum Modal {
     Text {
@@ -403,14 +407,26 @@ enum Modal {
         selection: Option<TextSelection>,
     },
     Delete {
-        target: Target,
+        targets: Vec<Target>,
         propagation: DeletePropagation,
     },
+    PauseChoice {
+        targets: Vec<Target>,
+        paused: usize,
+        pause: bool,
+    },
     Finalizers {
-        target: Target,
-        finalizers: Vec<String>,
+        targets: Vec<FinalizerTarget>,
+        names: Vec<(String, usize)>,
         selected: HashSet<usize>,
         cursor: usize,
+    },
+    FinalizerReview {
+        targets: Vec<FinalizerTarget>,
+        names: Vec<(String, usize)>,
+        selected: HashSet<usize>,
+        cursor: usize,
+        scroll: u16,
     },
     ContextMenu {
         target: Target,
@@ -430,6 +446,19 @@ enum Modal {
         cursor: usize,
         scroll: usize,
     },
+}
+
+#[derive(Clone, Debug)]
+struct FinalizerTarget {
+    target: Target,
+    finalizers: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct FinalizerRemoval {
+    target: Target,
+    expected: Vec<String>,
+    remove: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -536,6 +565,7 @@ struct App {
     kubernetes_status: String,
     modal: Option<Modal>,
     active_mutations: HashSet<Identity>,
+    marked: HashMap<Identity, Option<String>>,
     refresh_pending: bool,
     retry_delay: Duration,
     resource_missing: bool,
@@ -566,9 +596,9 @@ enum UiAction {
     Events(Target),
     Edit(Target),
     Copy(String),
-    Delete(Target, DeletePropagation),
-    SetPaused(Target, bool),
-    RemoveFinalizers(Target, Vec<String>),
+    Delete(Vec<Target>, DeletePropagation),
+    SetPaused(Vec<Target>, bool),
+    RemoveFinalizers(Vec<FinalizerRemoval>),
 }
 
 #[derive(Debug)]

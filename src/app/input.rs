@@ -1,5 +1,6 @@
 use super::render::*;
 use super::selection::*;
+use super::state::{chosen_finalizers, finalizer_removals};
 use super::*;
 
 fn vertical_wheel_delta(mouse: MouseEvent, count: usize) -> Option<isize> {
@@ -386,6 +387,23 @@ impl App {
                     self.tree_selection = None;
                     return None;
                 }
+                // The checkbox column exists only while something is marked.
+                if !self.marked.is_empty()
+                    && mouse.column >= body.x
+                    && mouse.column < body.x.saturating_add(3)
+                    && let Some(position) = clicked_tree_position(
+                        body,
+                        mouse.column,
+                        mouse.row,
+                        rendered.start,
+                        rendered.row_count,
+                    )
+                {
+                    self.toggle_mark_at(position);
+                    self.tree_selection = None;
+                    self.last_tree_click = None;
+                    return None;
+                }
                 self.tree_selection = selection_point_at(
                     &rendered.content,
                     body,
@@ -504,7 +522,9 @@ impl App {
             Some(Modal::ContextMenu { .. }) => true,
             Some(
                 Modal::Delete { .. }
+                | Modal::PauseChoice { .. }
                 | Modal::Finalizers { .. }
+                | Modal::FinalizerReview { .. }
                 | Modal::SkinPicker { .. }
                 | Modal::HealthPicker { .. }
                 | Modal::ExcludePicker { .. },
@@ -575,7 +595,7 @@ impl App {
                     }
                 }
                 Modal::Delete {
-                    target,
+                    targets,
                     propagation,
                 } => match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
@@ -583,23 +603,31 @@ impl App {
                         *propagation = propagation.next();
                     }
                     KeyCode::Enter => {
-                        let action = UiAction::Delete(target.clone(), *propagation);
+                        let action = UiAction::Delete(targets.clone(), *propagation);
+                        self.modal = None;
+                        return action;
+                    }
+                    _ => {}
+                },
+                Modal::PauseChoice { targets, pause, .. } => match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => *pause = !*pause,
+                    KeyCode::Enter => {
+                        let action = UiAction::SetPaused(targets.clone(), *pause);
                         self.modal = None;
                         return action;
                     }
                     _ => {}
                 },
                 Modal::Finalizers {
-                    target,
-                    finalizers,
+                    targets,
+                    names,
                     selected,
                     cursor,
                 } => match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
                     KeyCode::Down | KeyCode::Char('j') => {
-                        *cursor = cursor
-                            .saturating_add(1)
-                            .min(finalizers.len().saturating_sub(1));
+                        *cursor = cursor.saturating_add(1).min(names.len().saturating_sub(1));
                     }
                     KeyCode::Up | KeyCode::Char('k') => *cursor = cursor.saturating_sub(1),
                     KeyCode::Char(' ') => {
@@ -607,17 +635,56 @@ impl App {
                             selected.insert(*cursor);
                         }
                     }
-                    KeyCode::Enter => {
-                        let selected = selected
-                            .iter()
-                            .filter_map(|index| finalizers.get(*index).cloned())
-                            .collect();
-                        let action = UiAction::RemoveFinalizers(target.clone(), selected);
-                        self.modal = None;
-                        return action;
+                    KeyCode::Enter if !selected.is_empty() => {
+                        self.modal = Some(Modal::FinalizerReview {
+                            targets: std::mem::take(targets),
+                            names: std::mem::take(names),
+                            selected: std::mem::take(selected),
+                            cursor: *cursor,
+                            scroll: 0,
+                        });
                     }
                     _ => {}
                 },
+                Modal::FinalizerReview {
+                    targets,
+                    names,
+                    selected,
+                    cursor,
+                    scroll,
+                } => {
+                    let chosen = chosen_finalizers(names, selected);
+                    let last = finalizer_review_lines(targets, &chosen)
+                        .len()
+                        .saturating_sub(1);
+                    let page = page_size.max(1);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+                        KeyCode::Backspace | KeyCode::Left => {
+                            self.modal = Some(Modal::Finalizers {
+                                targets: std::mem::take(targets),
+                                names: std::mem::take(names),
+                                selected: std::mem::take(selected),
+                                cursor: *cursor,
+                            });
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            *scroll = (usize::from(*scroll) + 1).min(last) as u16;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                        KeyCode::PageDown => {
+                            *scroll = (usize::from(*scroll) + page).min(last) as u16;
+                        }
+                        KeyCode::PageUp => *scroll = scroll.saturating_sub(page as u16),
+                        KeyCode::Enter => {
+                            let action =
+                                UiAction::RemoveFinalizers(finalizer_removals(targets, &chosen));
+                            self.modal = None;
+                            return action;
+                        }
+                        _ => {}
+                    }
+                }
                 Modal::ContextMenu { .. } => {
                     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                         self.modal = None;
@@ -812,44 +879,9 @@ impl App {
             (KeyCode::Char('q'), _) => {
                 self.quit = true;
             }
-            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                if self.config.read_only {
-                    self.status = "Delete is disabled in read-only mode".into();
-                } else if let Some(target) = self.selected_target() {
-                    self.modal = Some(Modal::Delete {
-                        target,
-                        propagation: DeletePropagation::Foreground,
-                    });
-                }
-            }
-            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                if self.config.read_only {
-                    self.status = "Finalizer removal is disabled in read-only mode".into();
-                } else if let Some(target) = self.selected_target() {
-                    let finalizers = self
-                        .selected_node()
-                        .and_then(|node| node.object.pointer("/metadata/finalizers"))
-                        .and_then(serde_json::Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .map(str::to_owned)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    if finalizers.is_empty() {
-                        self.status = "Selected resource has no finalizers".into();
-                    } else {
-                        self.modal = Some(Modal::Finalizers {
-                            target,
-                            selected: (0..finalizers.len()).collect(),
-                            finalizers,
-                            cursor: 0,
-                        });
-                    }
-                }
-            }
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.request_delete(),
+            (KeyCode::Char(' '), KeyModifiers::NONE) => self.toggle_mark(),
+            (KeyCode::Char('x'), KeyModifiers::CONTROL) => self.request_finalizers(),
             (KeyCode::Down | KeyCode::Char('j'), _) => self.move_selection(1),
             (KeyCode::Up | KeyCode::Char('k'), _) => self.move_selection(-1),
             (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
@@ -902,6 +934,7 @@ impl App {
             }
             (KeyCode::Char('n'), _) => self.find_next(false),
             (KeyCode::Char('N'), _) => self.find_next(true),
+            (KeyCode::Esc, _) if !self.marked.is_empty() => self.marked.clear(),
             (KeyCode::Esc, _) => {
                 self.filter.clear();
                 self.find.clear();
@@ -953,20 +986,7 @@ impl App {
                     return UiAction::Copy(target.identity.to_string());
                 }
             }
-            (KeyCode::Char('p'), _) => {
-                if self.config.read_only {
-                    self.status = "Pause is disabled in read-only mode".into();
-                } else if let Some(target) = self.selected_target() {
-                    return UiAction::SetPaused(target, true);
-                }
-            }
-            (KeyCode::Char('u'), _) => {
-                if self.config.read_only {
-                    self.status = "Unpause is disabled in read-only mode".into();
-                } else if let Some(target) = self.selected_target() {
-                    return UiAction::SetPaused(target, false);
-                }
-            }
+            (KeyCode::Char('p'), _) => return self.request_pause_toggle(),
             (KeyCode::Char('r'), _) => return UiAction::Refresh,
             _ => {}
         }

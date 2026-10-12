@@ -17,6 +17,7 @@
 | `]` | Expand every subtree |
 | `h`, Shift+Left | Scroll columns left by four terminal cells |
 | `l`, Shift+Right | Scroll columns right by four terminal cells |
+| `Space` | Mark or unmark the highlighted resource for bulk actions; the cursor does not move |
 | `L` (Shift+L) | Show or hide the logical name column |
 | `X` (Shift+X) | Show or hide the external name column |
 
@@ -26,9 +27,18 @@ name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-`
 shifts resource names or table columns while leaf rows remain visually connected
 to the tree.
 
-Enter never expands or collapses a row, and Space has no action in the resource
-tree. Use Left/Right or `[`/`]` to control expansion. Enter and Space retain their
-existing roles in dialogs, pickers, and text inputs.
+Enter and Space never expand or collapse a row. Use Left/Right or `[`/`]` to
+control expansion. Space toggles a bulk-action mark on the main screen; Enter and
+Space retain their existing roles in dialogs, pickers, and text inputs.
+
+Checkboxes are hidden until something is marked. Marking the first resource adds
+a four-cell `[ ]`/`[x]` column to every row, pinned beside `OBJECT` while the other
+columns scroll; unmarking the last resource removes it again. While the checkboxes are
+visible, clicking a row's `[ ]` toggles that resource without moving the cursor. The
+panel title shows the marked count, including how many marked resources are
+currently hidden by filters or collapsed rows. Marks are tied to the
+resource UID, so a resource that is removed or recreated is unmarked on refresh.
+Esc clears marks first; a second Esc clears the filters as before.
 
 Problematic resources display short status labels: `Deleted` for structured
 NotFound/404 trace errors, `Error` for other trace or reconciliation/installation
@@ -168,14 +178,34 @@ saves it, and Esc or `q` cancels. The active configuration file defaults to
 
 | Key | Action |
 | --- | --- |
-| `p`, `u` | Pause or unpause the selected Crossplane resource |
-| `Ctrl+D` | Open delete confirmation |
-| `Ctrl+X` | Select finalizers to remove and confirm |
+| `p` | Pause or unpause the marked resources, or the highlighted one when none are marked |
+| `Ctrl+D` | Open delete confirmation for the marked resources, or the highlighted one |
+| `Ctrl+X` | Choose finalizers to remove from the marked resources, or the highlighted one, then review the exact changes |
 | `e` | Run `kubectl edit` |
 | `r` | Refresh immediately |
 | `P` | Pause or resume automatic refresh for this session |
 | `?` | Show help |
 | `q`, `Ctrl+C` | Quit or cancel the application |
+
+`p` toggles the `crossplane.io/paused` annotation: pausing sets it to `"true"` and
+unpausing removes it. When every target is unpaused it pauses them, when every
+target is paused it unpauses them, and for a mix it asks whether to pause all or
+unpause all. Resources already in the requested state are skipped.
+
+Bulk delete and pause run one resource at a time, each with its own UID and
+resourceVersion checks. A failure does not stop the others; the error view lists
+every failed resource. Successful targets are unmarked; failed ones stay marked
+for a retry.
+
+`Ctrl+X` opens a picker listing each distinct finalizer across the targets, with
+the number of resources that hold it. Nothing is preselected, and there is no
+remove-all shortcut. Choosing a name removes it from every target that has it and
+leaves all other finalizers alone. Enter moves to a mandatory, scrollable review
+listing, for every resource, which finalizers will be removed, which are kept, and
+which resources are skipped because they hold none of the chosen names. In the
+picker, `j`/`k` move, Space toggles and Enter reviews; in the review, `j`/`k` and
+PageUp/PageDown scroll, Enter removes, Backspace returns to the picker with the
+selection intact, and Esc cancels.
 
 Within delete confirmation, `c` cycles foreground, background, and orphan
 propagation. Foreground is always the initial choice.

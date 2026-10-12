@@ -1,4 +1,5 @@
 use super::selection::*;
+use super::state::chosen_finalizers;
 use super::*;
 use crate::columns::{self, ExtraColumn};
 
@@ -51,15 +52,28 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
     if let Some(modal) = &app.modal {
         let modal_area = match modal {
             Modal::Text { kind, .. } => content_modal_area(area, *kind),
-            Modal::Delete { .. } => centered(area, 100, 12),
-            Modal::Finalizers { finalizers, .. } => centered(
+            Modal::Delete { targets, .. } => centered(
                 area,
                 100,
-                u16::try_from(finalizers.len())
+                if targets.len() > 1 {
+                    u16::try_from(targets.len())
+                        .unwrap_or(u16::MAX)
+                        .saturating_add(10)
+                        .clamp(12, 24)
+                } else {
+                    12
+                },
+            ),
+            Modal::PauseChoice { .. } => centered(area, 60, 10),
+            Modal::Finalizers { names, .. } => centered(
+                area,
+                100,
+                u16::try_from(names.len())
                     .unwrap_or(u16::MAX)
                     .saturating_add(10)
                     .clamp(12, 24),
             ),
+            Modal::FinalizerReview { .. } => centered(area, 100, 24),
             Modal::ContextMenu { column, row, .. } => context_menu_area(area, *column, *row),
             Modal::SkinPicker { .. } => centered(
                 area,
@@ -225,7 +239,21 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         };
         lines.push(Line::styled(message, app.theme.subtle()));
     }
-    let title = format!(" Resources ({}/{}) ", visible.len(), snapshot.nodes.len());
+    let mut title = format!(" Resources ({}/{}) ", visible.len(), snapshot.nodes.len());
+    if !app.marked.is_empty() {
+        let hidden = app.hidden_marked_count();
+        title = format!(
+            " Resources ({}/{}) · {} marked{} ",
+            visible.len(),
+            snapshot.nodes.len(),
+            app.marked.len(),
+            if hidden > 0 {
+                format!(" ({hidden} hidden)")
+            } else {
+                String::new()
+            }
+        );
+    }
     frame.render_widget(
         Paragraph::new(lines).block(bordered_block(title, &app.theme)),
         area,
@@ -300,6 +328,9 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     }
 }
 
+const CHECKBOX_WIDTH: usize = 4;
+const OBJECT_HEADER: &str = "    OBJECT";
+
 pub(super) struct RenderedTree {
     pub(super) lines: Vec<String>,
     pub(super) content: String,
@@ -372,6 +403,7 @@ pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Optio
             app.config.ui.short,
             app.config.ui.ascii,
         )
+        .with_checkboxes(!app.marked.is_empty())
         .with_logical_name(app.show_logical_name)
         .with_external_name(app.show_external_name)
         .with_extra_columns(columns::resolve(
@@ -399,6 +431,7 @@ pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
                 node,
                 app.kind_filter.is_none() || app.health_filter != HealthFilter::All,
                 app.collapsed.contains(&node.identity),
+                app.marked.contains_key(&node.identity),
             ),
             app.config.ui.ascii,
         )
@@ -529,6 +562,7 @@ pub(super) struct TablePlan {
     version: usize,
     state: usize,
     ascii: bool,
+    checkboxes: bool,
     extra_columns: Vec<ExtraColumn>,
 }
 
@@ -610,8 +644,18 @@ impl TablePlan {
             version,
             state,
             ascii,
+            checkboxes: false,
             extra_columns: Vec::new(),
         }
+    }
+
+    /// Reserves the pinned checkbox cells; shown only while resources are marked.
+    fn with_checkboxes(mut self, visible: bool) -> Self {
+        if visible {
+            self.checkboxes = true;
+            self.object += CHECKBOX_WIDTH;
+        }
+        self
     }
 
     fn with_logical_name(mut self, visible: bool) -> Self {
@@ -685,8 +729,13 @@ impl TablePlan {
     }
 
     pub(super) fn header(&self) -> String {
+        let object_header = if self.checkboxes {
+            OBJECT_HEADER
+        } else {
+            "OBJECT"
+        };
         let mut columns = if self.package {
-            let mut columns = vec![("OBJECT", self.object)];
+            let mut columns = vec![(object_header, self.object)];
             if self.version > 0 {
                 columns.push(("VERSION", self.version));
             }
@@ -704,7 +753,7 @@ impl TablePlan {
             columns
         } else if self.timestamps {
             vec![
-                ("OBJECT", self.object),
+                (object_header, self.object),
                 ("GROUP", self.group),
                 ("SYNCED", 6),
                 ("SYNCED LAST", 15),
@@ -713,7 +762,7 @@ impl TablePlan {
             ]
         } else {
             vec![
-                ("OBJECT", self.object),
+                (object_header, self.object),
                 ("GROUP", self.group),
                 ("SYNCED", 6),
                 ("READY", 5),
@@ -740,10 +789,19 @@ impl TablePlan {
         node: &ProjectedNode,
         show_tree_prefix: bool,
         collapsed: bool,
+        marked: bool,
     ) -> String {
         let object =
             object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix, collapsed);
-        let object = compact_object(&object, self.object);
+        let object = if self.checkboxes {
+            format!(
+                "{} {}",
+                if marked { "[x]" } else { "[ ]" },
+                compact_object(&object, self.object.saturating_sub(CHECKBOX_WIDTH))
+            )
+        } else {
+            compact_object(&object, self.object)
+        };
         let logical_name = logical_name_cell(node);
         let external_name = external_name_cell(node);
         let group = group_cell(node);
@@ -1061,7 +1119,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                     ""
                 };
                 format!(
-                    "{details} Left/Right:collapse/expand  L:logical-name  X:external-name  ::command  ?:help  /:filter  ctrl-d:delete  d:describe  y:YAML  e:edit  s:status  E:events"
+                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  ::command  ?:help  /:filter  ctrl-d:delete  p:pause  d:describe  y:YAML  e:edit  s:status  E:events"
                 )
             }
         }
@@ -1264,19 +1322,47 @@ pub(super) fn render_modal(
             frame.render_widget(Paragraph::new(footer).style(theme.subtle()), regions[1]);
         }
         Modal::Delete {
-            target,
+            targets,
             propagation,
         } => {
-            let block = destructive_block(" Delete resource ", theme);
+            let title = if targets.len() > 1 {
+                format!(" Delete {} resources ", targets.len())
+            } else {
+                " Delete resource ".into()
+            };
+            let block = destructive_block(title, theme);
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let regions =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             let content_width = usize::from(regions[0].width);
-            let (resource, metadata) = target_summary(target, content_width);
             let identity_style = theme.title();
             let selected_style = theme.selected_option();
             let subtle_style = theme.subtle();
+            let mut heading = vec![Line::from("")];
+            if let [target] = targets.as_slice() {
+                let (resource, metadata) = target_summary(target, content_width);
+                heading.push(Line::styled(resource, identity_style));
+                heading.push(Line::styled(metadata, subtle_style));
+            } else {
+                // Fixed lines below the list: blank, heading, options, blank, explanation, blank.
+                let capacity = usize::from(regions[0].height).saturating_sub(7).max(1);
+                let shown = if targets.len() > capacity {
+                    capacity - 1
+                } else {
+                    targets.len()
+                };
+                for target in &targets[..shown] {
+                    let (resource, _) = target_summary(target, content_width);
+                    heading.push(Line::styled(resource, identity_style));
+                }
+                if shown < targets.len() {
+                    heading.push(Line::styled(
+                        format!("… and {} more", targets.len() - shown),
+                        subtle_style,
+                    ));
+                }
+            }
             let policy = |candidate, name| {
                 let selected = candidate == *propagation;
                 Span::styled(
@@ -1289,23 +1375,23 @@ pub(super) fn render_modal(
                 )
             };
             frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(""),
-                    Line::styled(resource, identity_style),
-                    Line::styled(metadata, subtle_style),
-                    Line::from(""),
-                    Line::styled("Propagation", Style::default().bold()),
-                    Line::from(vec![
-                        policy(DeletePropagation::Foreground, "Foreground"),
-                        Span::raw("    "),
-                        policy(DeletePropagation::Background, "Background"),
-                        Span::raw("    "),
-                        policy(DeletePropagation::Orphan, "Orphan"),
-                    ]),
-                    Line::from(""),
-                    Line::styled(propagation.explanation(), subtle_style),
-                    Line::from(""),
-                ]),
+                Paragraph::new({
+                    heading.extend([
+                        Line::from(""),
+                        Line::styled("Propagation", Style::default().bold()),
+                        Line::from(vec![
+                            policy(DeletePropagation::Foreground, "Foreground"),
+                            Span::raw("    "),
+                            policy(DeletePropagation::Background, "Background"),
+                            Span::raw("    "),
+                            policy(DeletePropagation::Orphan, "Orphan"),
+                        ]),
+                        Line::from(""),
+                        Line::styled(propagation.explanation(), subtle_style),
+                        Line::from(""),
+                    ]);
+                    heading
+                }),
                 regions[0],
             );
             let delete_style = if theme.colors_enabled {
@@ -1323,29 +1409,95 @@ pub(super) fn render_modal(
                 regions[1],
             );
         }
-        Modal::Finalizers {
-            target,
-            finalizers,
-            selected,
-            cursor,
+        Modal::PauseChoice {
+            targets,
+            paused,
+            pause,
         } => {
-            let block = destructive_block(" Remove finalizers ", theme);
+            let block = bordered_block(" Pause / Unpause ", theme);
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let regions =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-            let (resource, metadata) = target_summary(target, usize::from(regions[0].width));
+            let selected_style = theme.selected_option();
+            let subtle_style = theme.subtle();
+            let option = |active: bool, text: String| {
+                Line::styled(
+                    format!("{} {text}", if active { "›" } else { " " }),
+                    if active { selected_style } else { subtle_style },
+                )
+            };
+            let total = targets.len();
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::styled(
+                        format!(
+                            "{total} resources: {paused} paused, {} not paused",
+                            total - paused
+                        ),
+                        theme.title(),
+                    ),
+                    Line::from(""),
+                    option(*pause, format!("Pause all  (changes {})", total - paused)),
+                    option(!*pause, format!("Unpause all  (changes {paused})")),
+                ]),
+                regions[0],
+            );
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    " Up/Down:Choose   Enter:Apply   Esc:Cancel ",
+                    subtle_style,
+                )),
+                regions[1],
+            );
+        }
+        Modal::Finalizers {
+            targets,
+            names,
+            selected,
+            cursor,
+        } => {
+            let title = if targets.len() > 1 {
+                format!(" Remove finalizers · {} resources ", targets.len())
+            } else {
+                " Remove finalizers ".into()
+            };
+            let block = destructive_block(title, theme);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let regions =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             let identity_style = theme.title();
             let selected_style = theme.selected_option();
             let subtle_style = theme.subtle();
-            let mut lines = vec![
-                Line::from(""),
-                Line::styled(resource, identity_style),
-                Line::styled(metadata, subtle_style),
-                Line::from(""),
-                Line::styled("Finalizers", Style::default().bold()),
-            ];
-            lines.extend(finalizers.iter().enumerate().map(|(index, finalizer)| {
+            let mut lines = vec![Line::from("")];
+            if let [entry] = targets.as_slice() {
+                let (resource, metadata) =
+                    target_summary(&entry.target, usize::from(regions[0].width));
+                lines.push(Line::styled(resource, identity_style));
+                lines.push(Line::styled(metadata, subtle_style));
+            } else {
+                let without = targets
+                    .iter()
+                    .filter(|entry| entry.finalizers.is_empty())
+                    .count();
+                lines.push(Line::styled(
+                    format!("{} resources", targets.len()),
+                    identity_style,
+                ));
+                lines.push(Line::styled(
+                    if without > 0 {
+                        format!("{without} without finalizers will be skipped")
+                    } else {
+                        String::new()
+                    },
+                    subtle_style,
+                ));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::styled("Finalizers", Style::default().bold()));
+            lines.extend(names.iter().enumerate().map(|(index, (name, count))| {
                 let cursor_selected = index == *cursor;
                 let checked = selected.contains(&index);
                 let style = if cursor_selected {
@@ -1355,22 +1507,32 @@ pub(super) fn render_modal(
                 } else {
                     subtle_style
                 };
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled(if cursor_selected { "› " } else { "  " }, style),
                     Span::styled(if checked { "● " } else { "○ " }, style),
-                    Span::styled(text::sanitize(finalizer), style),
-                ])
+                    Span::styled(text::sanitize(name), style),
+                ];
+                if targets.len() > 1 {
+                    spans.push(Span::styled(
+                        format!(
+                            "  ({count} {})",
+                            if *count == 1 { "resource" } else { "resources" }
+                        ),
+                        subtle_style,
+                    ));
+                }
+                Line::from(spans)
             }));
             lines.push(Line::from(""));
             lines.push(Line::styled(
-                "Removing finalizers can bypass cleanup and leave external resources behind.",
+                "Select the finalizers to remove; you will review every change before it is applied.",
                 subtle_style,
             ));
             frame.render_widget(Paragraph::new(lines), regions[0]);
-            let remove_style = if theme.colors_enabled {
-                theme.danger()
+            let review_style = if selected.is_empty() {
+                subtle_style
             } else {
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                selected_style
             };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -1378,10 +1540,70 @@ pub(super) fn render_modal(
                     Span::styled(":Select   ", subtle_style),
                     Span::styled("Space", selected_style),
                     Span::styled(":Toggle   ", subtle_style),
-                    Span::styled("Enter:Remove", remove_style),
+                    Span::styled("Enter:Review", review_style),
                     Span::styled("   Esc:Cancel ", subtle_style),
                 ])),
                 regions[1],
+            );
+        }
+        Modal::FinalizerReview {
+            targets,
+            names,
+            selected,
+            scroll,
+            ..
+        } => {
+            let block = destructive_block(" Review finalizer removal ", theme);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let regions = Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(2),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+            let chosen = chosen_finalizers(names, selected);
+            let rows = finalizer_review_lines(targets, &chosen);
+            let max_scroll = rows.len().saturating_sub(usize::from(regions[0].height));
+            let start = usize::from(*scroll).min(max_scroll);
+            let lines: Vec<Line> = rows
+                .into_iter()
+                .skip(start)
+                .take(usize::from(regions[0].height))
+                .map(|(kind, text)| match kind {
+                    ReviewLine::Resource => Line::styled(text, theme.title()),
+                    ReviewLine::Remove => Line::styled(text, theme.danger()),
+                    ReviewLine::Keep | ReviewLine::Skip => Line::styled(text, theme.subtle()),
+                    ReviewLine::Blank => Line::from(""),
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(lines), regions[0]);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(
+                        "Removing finalizers bypasses cleanup and may orphan external resources.",
+                        theme.subtle(),
+                    ),
+                    Line::styled(
+                        "Any resource whose finalizers changed since this review will fail.",
+                        theme.subtle(),
+                    ),
+                ]),
+                regions[1],
+            );
+            let remove_style = if theme.colors_enabled {
+                theme.danger()
+            } else {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" j/k", theme.selected_option()),
+                    Span::styled(":Scroll   ", theme.subtle()),
+                    Span::styled("Enter:Remove", remove_style),
+                    Span::styled("   Backspace:Edit selection   Esc:Cancel ", theme.subtle()),
+                ])),
+                regions[2],
             );
         }
         Modal::ContextMenu { pressed, .. } => {
@@ -1485,6 +1707,63 @@ pub(super) fn context_menu_item_style(theme: &Theme, item: usize, pressed: Optio
     } else {
         theme.fg(theme.palette.text)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ReviewLine {
+    Resource,
+    Remove,
+    Keep,
+    Skip,
+    Blank,
+}
+
+/// The exact per-resource effect of removing the chosen finalizers.
+pub(super) fn finalizer_review_lines(
+    targets: &[FinalizerTarget],
+    chosen: &std::collections::HashSet<String>,
+) -> Vec<(ReviewLine, String)> {
+    let mut lines = Vec::new();
+    for entry in targets {
+        if !lines.is_empty() {
+            lines.push((ReviewLine::Blank, String::new()));
+        }
+        lines.push((
+            ReviewLine::Resource,
+            text::sanitize(&format!(
+                "{}/{}",
+                entry.target.identity.kind, entry.target.identity.name
+            )),
+        ));
+        let remove: Vec<_> = entry
+            .finalizers
+            .iter()
+            .filter(|name| chosen.contains(*name))
+            .collect();
+        if remove.is_empty() {
+            lines.push((ReviewLine::Skip, "  No matching finalizers; skipped".into()));
+            continue;
+        }
+        lines.extend(remove.iter().map(|name| {
+            (
+                ReviewLine::Remove,
+                format!("  Remove: {}", text::sanitize(name)),
+            )
+        }));
+        lines.extend(
+            entry
+                .finalizers
+                .iter()
+                .filter(|name| !chosen.contains(*name))
+                .map(|name| {
+                    (
+                        ReviewLine::Keep,
+                        format!("  Keep:   {}", text::sanitize(name)),
+                    )
+                }),
+        );
+    }
+    lines
 }
 
 pub(super) fn target_summary(target: &Target, width: usize) -> (String, String) {
