@@ -101,6 +101,9 @@ impl App {
             modal: None,
             active_mutations: HashSet::new(),
             marked: HashMap::new(),
+            upgrade_view: false,
+            upgrade_marked: HashMap::new(),
+            revisions: RevisionDiscovery::default(),
             refresh_pending: false,
             retry_delay: Duration::from_secs(1),
             resource_missing: false,
@@ -358,8 +361,19 @@ impl App {
         };
         let identity = node.identity.clone();
         let uid = node.uid.clone();
-        if self.marked.remove(&identity).is_none() {
-            self.marked.insert(identity, uid);
+        let eligible = !self.upgrade_view || self.upgrade_info_for(node).plan.is_some();
+        let marks = if self.upgrade_view {
+            &mut self.upgrade_marked
+        } else {
+            &mut self.marked
+        };
+        if marks.remove(&identity).is_some() {
+            return;
+        }
+        if eligible {
+            marks.insert(identity, uid);
+        } else {
+            self.status = "No revision upgrade available for this resource".into();
         }
     }
 
@@ -372,7 +386,7 @@ impl App {
             .into_iter()
             .map(|index| &snapshot.nodes[index].identity)
             .collect();
-        self.marked
+        self.active_marks()
             .keys()
             .filter(|identity| !visible.contains(identity))
             .count()
@@ -569,13 +583,16 @@ impl App {
             }
             Ok(None) => {
                 if let Some(identity) = &identity {
-                    self.marked.remove(identity);
+                    self.clear_mark(label, identity);
                 }
                 self.status = format!("{label} succeeded");
                 true
             }
             Err(error) => {
                 if let Some(identity) = identity {
+                    if label.starts_with("Upgrade revision") {
+                        self.revisions.clear_pending(&identity);
+                    }
                     self.status = format!("{label} failed");
                     self.modal = Some(Modal::Text {
                         title: format!("{label} failed"),
@@ -593,6 +610,15 @@ impl App {
         }
     }
 
+    /// Upgrade actions use their own marks, so they never clear another action's targets.
+    fn clear_mark(&mut self, label: &str, identity: &Identity) {
+        if label.starts_with("Upgrade revision") {
+            self.upgrade_marked.remove(identity);
+        } else {
+            self.marked.remove(identity);
+        }
+    }
+
     pub(super) fn finish_batch(
         &mut self,
         label: &str,
@@ -603,7 +629,9 @@ impl App {
         for identity in identities {
             self.active_mutations.remove(identity);
             if !failed.contains(identity) {
-                self.marked.remove(identity);
+                self.clear_mark(label, identity);
+            } else if label.starts_with("Upgrade revision") {
+                self.revisions.clear_pending(identity);
             }
         }
         match result {
@@ -639,14 +667,17 @@ impl App {
         let selection_chain = self.selection_chain();
         let snapshot = Arc::new(snapshot);
         self.snapshot = Some(Arc::clone(&snapshot));
+        self.prune_pending_upgrades();
         self.collapsed
             .retain(|identity| snapshot.by_identity.contains_key(identity));
-        self.marked.retain(|identity, uid| {
-            snapshot
-                .by_identity
-                .get(identity)
-                .is_some_and(|index| snapshot.nodes[*index].uid == *uid)
-        });
+        for marks in [&mut self.marked, &mut self.upgrade_marked] {
+            marks.retain(|identity, uid| {
+                snapshot
+                    .by_identity
+                    .get(identity)
+                    .is_some_and(|index| snapshot.nodes[*index].uid == *uid)
+            });
+        }
         let visible = self.visible();
         let visible_index = selection_chain
             .iter()
@@ -694,6 +725,7 @@ impl App {
         self.resource_horizontal_scroll = 0;
         self.collapsed.clear();
         self.marked.clear();
+        self.upgrade_marked.clear();
         if !matches!(
             self.modal,
             Some(Modal::Text {

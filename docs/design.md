@@ -157,6 +157,14 @@ cycle Foreground, Background, and Orphan. Finalizer removal starts with nothing
 selected, then requires a per-resource review before it is applied. Successful mutations request an immediate trace
 refresh without blocking navigation.
 
+Revision discovery lists CompositionRevisions asynchronously through kube-rs, one
+request at a time with generation-checked results. The last successful inventory
+is cached for the session and refreshed on every entry to the upgrade view, so
+re-entering is instant. Availability is projected from the cache and the current
+trace purely at render time, so rendering stays side-effect free. The upgrade
+view reuses the resource tree with its own marks; only the highest revision of the
+resource's current Composition is ever offered.
+
 ## Security
 
 Kubernetes Secret `data` and `stringData` plus `managedFields` are redacted from

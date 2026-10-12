@@ -58,6 +58,53 @@ pub struct Target {
     pub expected_uid: Option<String>,
 }
 
+/// What the upgrade view needs to know about one CompositionRevision.
+#[derive(Clone, Debug)]
+pub struct CompositionRevisionInfo {
+    pub name: String,
+    pub composition: String,
+    pub number: i64,
+    pub composite_kind: String,
+    pub composite_group: String,
+}
+
+const COMPOSITION_LABEL: &str = "crossplane.io/composition-name";
+
+fn revision_info(object: &DynamicObject) -> Option<CompositionRevisionInfo> {
+    let composite_api_version = object
+        .data
+        .pointer("/spec/compositeTypeRef/apiVersion")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Some(CompositionRevisionInfo {
+        name: object.metadata.name.clone()?,
+        composition: object
+            .metadata
+            .labels
+            .as_ref()?
+            .get(COMPOSITION_LABEL)?
+            .clone(),
+        number: object.data.pointer("/spec/revision")?.as_i64()?,
+        composite_kind: object
+            .data
+            .pointer("/spec/compositeTypeRef/kind")
+            .and_then(Value::as_str)?
+            .to_owned(),
+        composite_group: composite_api_version
+            .split_once('/')
+            .map_or("", |(group, _)| group)
+            .to_owned(),
+    })
+}
+
+/// `spec.<field>` or, for Crossplane v2 XRs, `spec.crossplane.<field>`.
+fn crossplane_spec_pointer(object: &DynamicObject, field: &str) -> Option<String> {
+    ["/spec", "/spec/crossplane"]
+        .iter()
+        .map(|base| format!("{base}/{field}"))
+        .find(|pointer| object.data.pointer(pointer).is_some())
+}
+
 struct PatchContext {
     api: Api<DynamicObject>,
     uid: String,
@@ -284,6 +331,93 @@ impl Kubernetes {
                 json!({"op": "test", "path": "/metadata/uid", "value": context.uid}),
                 json!({"op": "test", "path": "/metadata/resourceVersion", "value": context.resource_version}),
                 json!({"op": "add", "path": "/metadata/finalizers", "value": finalizers}),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn revision_api(&self) -> Result<Api<DynamicObject>> {
+        let candidates = [
+            GroupVersionKind::gvk("apiextensions.crossplane.io", "v1", "CompositionRevision"),
+            GroupVersionKind::gvk(
+                "apiextensions.crossplane.io",
+                "v1beta1",
+                "CompositionRevision",
+            ),
+        ];
+        let discovery = self.discovery.read().await;
+        let (resource, _) = candidates
+            .iter()
+            .find_map(|gvk| discovery.resolve_gvk(gvk))
+            .context("the cluster does not serve CompositionRevisions")?;
+        Ok(Api::all_with(self.client.clone(), &resource))
+    }
+
+    pub async fn composition_revisions(&self) -> Result<Vec<CompositionRevisionInfo>> {
+        let api = self.revision_api().await?;
+        let mut revisions = Vec::new();
+        let mut params = ListParams::default().limit(500);
+        loop {
+            let list = api.list(&params).await?;
+            revisions.extend(list.items.iter().filter_map(revision_info));
+            match list.metadata.continue_.filter(|token| !token.is_empty()) {
+                Some(token) => params = params.continue_token(&token),
+                None => return Ok(revisions),
+            }
+        }
+    }
+
+    /// Points the XR at `to`, but only if it is still exactly in the reviewed state: a
+    /// Manual XR of the same Composition whose revision reference is still `from`.
+    pub async fn upgrade_revision(
+        &self,
+        target: &Target,
+        composition: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        let (_api, current) = self.api_and_current(target).await?;
+        let reference = crossplane_spec_pointer(&current, "compositionRevisionRef")
+            .context("the resource has no compositionRevisionRef")?;
+        let live = |field: &str| {
+            crossplane_spec_pointer(&current, field)
+                .and_then(|pointer| current.data.pointer(&pointer))
+        };
+        if live("compositionUpdatePolicy").and_then(Value::as_str) != Some("Manual") {
+            bail!("the resource no longer uses the Manual update policy; it was left unchanged");
+        }
+        if live("compositionRef")
+            .and_then(|value| value.get("name"))
+            .and_then(Value::as_str)
+            != Some(composition)
+        {
+            bail!("the resource now uses a different Composition; review it again");
+        }
+        let name_path = format!("{reference}/name");
+        if current.data.pointer(&name_path).and_then(Value::as_str) != Some(from) {
+            bail!("the revision reference changed since it was reviewed; review it again");
+        }
+        let revision = self
+            .revision_api()
+            .await?
+            .get(to)
+            .await
+            .with_context(|| format!("destination revision {to} no longer exists"))?;
+        let info = revision_info(&revision)
+            .with_context(|| format!("destination revision {to} is incomplete"))?;
+        if info.composition != composition || info.composite_kind != target.identity.kind {
+            bail!("destination revision {to} does not belong to this Composition and type");
+        }
+        let context = self.verified_patch_context(target).await?;
+        patch(
+            &context.api,
+            &target.identity.name,
+            vec![
+                json!({"op": "test", "path": "/metadata/uid", "value": context.uid}),
+                json!({"op": "test", "path": "/metadata/resourceVersion", "value": context.resource_version}),
+                json!({"op": "test", "path": name_path, "value": from}),
+                json!({"op": "replace", "path": name_path, "value": to}),
             ],
         )
         .await?;

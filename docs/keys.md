@@ -174,6 +174,47 @@ In the theme picker, Up/Down or `j`/`k` changes the selection, Enter applies and
 saves it, and Esc or `q` cancels. The active configuration file defaults to
 `~/.config/xpdelve/config.toml`.
 
+## Revision Upgrade View
+
+Press `u` to open a view of the same resource tree that shows which resources can
+move to a newer Composition revision. The `SYNCED`/`READY` columns are replaced by
+`CURRENT` and `LATEST` revision numbers and an `UPGRADE` indicator. Revisions are
+discovered in the background with the Kubernetes API. The last result is cached for
+the session: re-entering the view shows it immediately (the title says `refreshing`)
+while a fresh discovery runs, and if that refresh fails the cached results stay
+visible, marked `cached, refresh failed`. `r` refreshes both the trace
+and the revisions, and `u` or `Esc` (with nothing marked) returns to the normal view. The panel border turns peach
+(the theme's `peach` colour) while this view is open, so it is easy to tell apart from
+the normal view. The main footer lists `u:upgrade` with the resource actions.
+
+| `UPGRADE` | Meaning | Colour |
+| --- | --- | --- |
+| `Up to date` | Already on the highest revision | green |
+| `Available ↑` | A higher revision exists (`^` in ASCII mode) | peach |
+| `Automatic` | Update policy is Automatic (or unset); left alone | subtle |
+| `No revision` / `Unknown` | No revision reference, or one that is not known | subtle |
+| `Upgrading…` | An upgrade was just applied; shown until a trace reflects the new revision (`...` in ASCII mode) | sky |
+| `Unavailable` | Revision discovery failed | red |
+| `-` | No Composition reference (not a composite resource) | subtle |
+
+The only upgrade offered is to the highest `spec.revision` of the Composition the
+resource already uses, among revisions of the same composite type. Only resources
+on the `Manual` update policy are eligible; xpdelve never changes update policies.
+Both `spec.compositionRevisionRef` and the Crossplane v2 layout under
+`spec.crossplane` are supported.
+
+`Space` (or clicking the checkbox) marks the highlighted resource when it has an
+upgrade available; `a` marks every visible resource with an upgrade, so collapsed
+or filtered-out rows are not newly marked. Marks here are separate from the marks
+used for delete and pause, and the title shows the available and marked counts.
+`Enter` opens a review of the marked resources, or of the highlighted one when
+nothing is marked, and `Enter` again applies it. Each resource takes two lines: its
+name (shortened in the middle when long) and then `current -> latest` with the
+Composition, so the revision change is always visible. Each resource's
+`compositionRevisionRef` is replaced, nothing else; a paused resource stays paused.
+Delete, pause, edit, and finalizer removal are unavailable in this view, and
+read-only mode disables applying.
+
 ## Actions And Session
 
 | Key | Action |

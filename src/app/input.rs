@@ -388,7 +388,7 @@ impl App {
                     return None;
                 }
                 // The checkbox column exists only while something is marked.
-                if !self.marked.is_empty()
+                if !self.active_marks().is_empty()
                     && mouse.column >= body.x
                     && mouse.column < body.x.saturating_add(3)
                     && let Some(position) = clicked_tree_position(
@@ -523,6 +523,7 @@ impl App {
             Some(
                 Modal::Delete { .. }
                 | Modal::PauseChoice { .. }
+                | Modal::UpgradeReview { .. }
                 | Modal::Finalizers { .. }
                 | Modal::FinalizerReview { .. }
                 | Modal::SkinPicker { .. }
@@ -604,6 +605,15 @@ impl App {
                     }
                     KeyCode::Enter => {
                         let action = UiAction::Delete(targets.clone(), *propagation);
+                        self.modal = None;
+                        return action;
+                    }
+                    _ => {}
+                },
+                Modal::UpgradeReview { plans } => match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+                    KeyCode::Enter => {
+                        let action = UiAction::UpgradeRevisions(plans.clone());
                         self.modal = None;
                         return action;
                     }
@@ -875,10 +885,17 @@ impl App {
             return UiAction::None;
         }
 
+        if self.upgrade_view
+            && let Some(action) = self.handle_upgrade_key(key)
+        {
+            self.ensure_selection_visible(page_size);
+            return action;
+        }
         match (key.code, key.modifiers) {
             (KeyCode::Char('q'), _) => {
                 self.quit = true;
             }
+            (KeyCode::Char('u'), KeyModifiers::NONE) => return self.enter_upgrade_view(),
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.request_delete(),
             (KeyCode::Char(' '), KeyModifiers::NONE) => self.toggle_mark(),
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => self.request_finalizers(),

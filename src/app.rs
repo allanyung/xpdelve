@@ -38,11 +38,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cli::Cli;
 use crate::config::{self, Config};
-use crate::kubernetes::{DeletePropagation, Kubernetes, Target};
+use crate::kubernetes::{CompositionRevisionInfo, DeletePropagation, Kubernetes, Target};
 use crate::model::{HealthFilter, Identity, ProjectedNode, ResourceKind, Snapshot};
 use crate::text;
 use crate::theme::Theme;
 use crate::trace::{self, TraceRequest};
+use upgrade::{RevisionDiscovery, UpgradePlan};
 
 #[derive(Clone, Debug)]
 struct Selection {
@@ -224,6 +225,7 @@ const HELP_LINES: &[&str] = &[
     "  d / y / s / E     describe / live YAML / status / events",
     "  e                 kubectl edit",
     "  c                 copy resource identifier",
+    "  u                 revision upgrade view (Space/a mark, Enter review)",
     "  p                 pause / unpause resource (or marked resources)",
     "  Ctrl+D            delete resource (or marked resources)",
     "  Ctrl+X            select finalizers to remove (from marked resources)",
@@ -235,6 +237,10 @@ enum AppEvent {
         result: TraceResult,
     },
     KubernetesReady(Result<Arc<Kubernetes>, String>),
+    RevisionsLoaded {
+        generation: u64,
+        result: Result<Vec<CompositionRevisionInfo>, String>,
+    },
     ActionFinished {
         label: String,
         identities: Vec<Identity>,
@@ -410,6 +416,9 @@ enum Modal {
         targets: Vec<Target>,
         propagation: DeletePropagation,
     },
+    UpgradeReview {
+        plans: Vec<UpgradePlan>,
+    },
     PauseChoice {
         targets: Vec<Target>,
         paused: usize,
@@ -566,6 +575,9 @@ struct App {
     modal: Option<Modal>,
     active_mutations: HashSet<Identity>,
     marked: HashMap<Identity, Option<String>>,
+    upgrade_view: bool,
+    upgrade_marked: HashMap<Identity, Option<String>>,
+    revisions: RevisionDiscovery,
     refresh_pending: bool,
     retry_delay: Duration,
     resource_missing: bool,
@@ -586,6 +598,7 @@ mod runtime;
 mod selection;
 mod state;
 mod terminal;
+mod upgrade;
 
 #[derive(Clone, Debug)]
 enum UiAction {
@@ -599,6 +612,8 @@ enum UiAction {
     Delete(Vec<Target>, DeletePropagation),
     SetPaused(Vec<Target>, bool),
     RemoveFinalizers(Vec<FinalizerRemoval>),
+    DiscoverRevisions,
+    UpgradeRevisions(Vec<UpgradePlan>),
 }
 
 #[derive(Debug)]

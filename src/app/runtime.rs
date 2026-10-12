@@ -84,7 +84,12 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                         let area = terminal.terminal.size()?;
                         match app.handle_key(key, area.into()) {
                             UiAction::None => {}
-                            UiAction::Refresh => request_refresh(&mut app, cli, &sender, &mut active, true),
+                            UiAction::Refresh => {
+                                request_refresh(&mut app, cli, &sender, &mut active, true);
+                                if app.upgrade_view {
+                                    start_revision_discovery(&mut app, &sender);
+                                }
+                            }
                             UiAction::Copy(value) => {
                                 app.status = copy_osc52(&value).map_or_else(
                                     |error| format!("Copy failed: {error}"),
@@ -163,10 +168,16 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                         }
                     }
                     AppEvent::TraceFinished { .. } => {}
+                    AppEvent::RevisionsLoaded { generation, result } => {
+                        app.apply_revisions(generation, result);
+                    }
                     AppEvent::KubernetesReady(result) => match result {
                         Ok(kubernetes) => {
                             app.kubernetes = Some(kubernetes);
                             app.kubernetes_status = "Kubernetes client ready".into();
+                            if app.upgrade_view {
+                                start_revision_discovery(&mut app, &sender);
+                            }
                         }
                         Err(error) => {
                             app.kubernetes_status = format!("Kubernetes actions unavailable: {error}");
@@ -179,6 +190,9 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                         } else {
                             app.finish_action(&label, identities.into_iter().next(), result)
                         };
+                        if succeeded && app.upgrade_view && label.starts_with("Upgrade revision") {
+                            start_revision_discovery(&mut app, &sender);
+                        }
                         if refresh && (succeeded || batch) {
                             request_refresh(&mut app, cli, &sender, &mut active, false);
                             if succeeded {
@@ -243,7 +257,34 @@ fn connect_kubernetes(cli: &Cli, sender: &mpsc::Sender<AppEvent>) {
     });
 }
 
+fn start_revision_discovery(app: &mut App, sender: &mpsc::Sender<AppEvent>) {
+    // One discovery at a time; its result refreshes the cache.
+    if app.revisions.is_refreshing() {
+        return;
+    }
+    let generation = app.revisions.begin_refresh();
+    let Some(kubernetes) = app.kubernetes.clone() else {
+        let status = app.kubernetes_status.clone();
+        app.apply_revisions(generation, Err(status));
+        return;
+    };
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let result = kubernetes
+            .composition_revisions()
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let _ = sender
+            .send(AppEvent::RevisionsLoaded { generation, result })
+            .await;
+    });
+}
+
 fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>, cli: &Cli) {
+    if matches!(action, UiAction::DiscoverRevisions) {
+        start_revision_discovery(app, sender);
+        return;
+    }
     let Some(kubernetes) = app.kubernetes.clone() else {
         app.status.clone_from(&app.kubernetes_status);
         return;
@@ -262,6 +303,9 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
             return;
         }
         app.active_mutations.extend(identities.iter().cloned());
+    }
+    if let UiAction::UpgradeRevisions(plans) = &action {
+        app.begin_upgrades(plans);
     }
     let context = cli.context.clone();
     let kubeconfig = cli.kubeconfig.clone();
@@ -334,7 +378,29 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
                 failed = failures;
                 (label, result.map(|()| None), true)
             }
-            UiAction::None | UiAction::Refresh | UiAction::Edit(_) | UiAction::Copy(_) => return,
+            UiAction::UpgradeRevisions(plans) => {
+                let label = batch_label("Upgrade revision".into(), plans.len());
+                let (result, failures) = run_batch(
+                    &plans,
+                    |plan| &plan.target.identity,
+                    |plan| {
+                        kubernetes.upgrade_revision(
+                            &plan.target,
+                            &plan.composition,
+                            &plan.from_name,
+                            &plan.to_name,
+                        )
+                    },
+                )
+                .await;
+                failed = failures;
+                (label, result.map(|()| None), true)
+            }
+            UiAction::None
+            | UiAction::Refresh
+            | UiAction::DiscoverRevisions
+            | UiAction::Edit(_)
+            | UiAction::Copy(_) => return,
         };
         let result = result.map_err(|error| format!("{error:#}"));
         let _ = sender
@@ -353,6 +419,9 @@ fn mutation_identities(action: &UiAction) -> Vec<&Identity> {
     match action {
         UiAction::Delete(targets, _) | UiAction::SetPaused(targets, _) => {
             targets.iter().map(|target| &target.identity).collect()
+        }
+        UiAction::UpgradeRevisions(plans) => {
+            plans.iter().map(|plan| &plan.target.identity).collect()
         }
         UiAction::RemoveFinalizers(removals) => removals
             .iter()

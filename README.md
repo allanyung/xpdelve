@@ -136,6 +136,7 @@ context, resource, API group, and name through the variables in `args`.
 - `X` (Shift+X): show or hide the external name column (`crossplane.io/external-name`); hidden by default, enable with `ui.show_external_name = true`
 - `:`: choose a resource kind; `/`: filter; `f`: find; `n`/`N`: next or previous match
 - `d`, `y`, `s`, `E`: describe, live YAML, status, and events
+- `u`: open the revision upgrade view (see `docs/keys.md`): `Space`/`a` mark, `Enter` review, `u`/`Esc` back
 - `p`: pause or unpause the highlighted (or marked) Crossplane resources; mixed selections ask which direction
 - `ctrl+d`: delete the highlighted (or marked) resources with a propagation-policy confirmation
 - `ctrl+x`: remove chosen finalizers from the highlighted (or marked) resources after a per-resource review; nothing is preselected
