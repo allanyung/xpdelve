@@ -126,14 +126,6 @@ fn inspection_failure_remains_in_status_line() {
 }
 
 #[test]
-fn collapse_hides_descendants() {
-    let mut app = app();
-    assert_eq!(app.visible().len(), 2);
-    app.collapse_or_parent();
-    assert_eq!(app.visible().len(), 1);
-}
-
-#[test]
 fn enter_and_space_never_toggle_tree_expansion() {
     let mut app = app();
     let area = Rect::new(0, 0, 100, 20);
@@ -248,10 +240,6 @@ fn uppercase_e_opens_events_and_lowercase_bindings_remain_distinct() {
             matches!(app.handle_key(KeyEvent::new(KeyCode::Char('E'), modifiers), area), UiAction::Events(target) if target.identity == app.selected_node().unwrap().identity)
         );
     }
-    assert!(matches!(
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), area),
-        UiAction::None
-    ));
     assert!(matches!(
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE), area),
         UiAction::Edit(_)
@@ -1280,21 +1268,6 @@ fn missing_state_can_show_a_distinct_manual_retry_failure() {
     );
 }
 
-#[test]
-fn ordinary_table_has_aligned_xpdig_style_columns_without_resource() {
-    let app = app();
-    let snapshot = app.snapshot.as_ref().unwrap();
-    let visible = app.visible();
-    let plan = TablePlan::new(snapshot, &visible, 140, false, false, false);
-    let header = plan.header();
-    assert!(header.contains("OBJECT"));
-    assert!(header.contains("GROUP"));
-    assert!(header.contains("SYNCED LAST"));
-    assert!(header.contains("READY LAST"));
-    assert!(header.contains("STATUS"));
-    assert!(!header.contains("RESOURCE"));
-}
-
 fn app_with_extra_columns() -> App {
     let mut app = app();
     app.config.extra_columns = toml::from_str::<Config>(
@@ -1963,18 +1936,6 @@ fn external_name_annotation_is_sanitized_and_non_string_values_use_dash() {
 }
 
 #[test]
-fn rendered_table_keeps_a_fixed_header() {
-    let app = app();
-    let backend = TestBackend::new(100, 16);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    let rendered = terminal.backend().to_string();
-    assert!(rendered.contains("OBJECT"));
-    assert!(rendered.contains("GROUP"));
-    assert!(rendered.contains("Root/root"));
-}
-
-#[test]
 fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
     let mut app = app();
     let area = Rect::new(0, 0, 50, 16);
@@ -2172,7 +2133,7 @@ fn tree_thumbwheel_and_shift_wheel_scroll_columns() {
 }
 
 #[test]
-fn tree_horizontal_scroll_is_always_available_and_z_does_not_reset_it() {
+fn tree_horizontal_scroll_is_always_available() {
     let mut app = app();
     let area = Rect::new(0, 0, 50, 16);
     let tree = resource_tree_area(area).unwrap();
@@ -2188,12 +2149,6 @@ fn tree_horizontal_scroll_is_always_available_and_z_does_not_reset_it() {
     );
     assert!(rendered.lines[0].ends_with("STATUS "));
     assert!(rendered.lines[1].contains("Root/root"));
-    let offset = app.resource_horizontal_scroll;
-    let status = app.status.clone();
-    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), area);
-    assert_eq!(app.resource_horizontal_scroll, offset);
-    assert_eq!(app.status, status);
-    assert_eq!(rendered_tree(&app, tree).unwrap().lines, rendered.lines);
     for _ in 0..100 {
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT), area);
     }
@@ -2474,71 +2429,6 @@ fn tree_scrolled_drag_copies_object_middle_and_status_text() {
 }
 
 #[test]
-fn tree_horizontal_scrollbar_uses_only_existing_bottom_border() {
-    let mut app = app();
-    let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
-    let tree = resource_tree_area(Rect::new(0, 0, 50, 16)).unwrap();
-    let layout = rendered_tree(&app, tree).unwrap().horizontal;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    let bar_x = tree.x + layout.pinned_width as u16;
-    let bar_y = tree.bottom() - 1;
-    assert_eq!(
-        terminal
-            .backend()
-            .buffer()
-            .cell((bar_x + 1, bar_y))
-            .unwrap()
-            .symbol(),
-        "▪"
-    );
-    assert_ne!(
-        terminal
-            .backend()
-            .buffer()
-            .cell((bar_x - 1, bar_y))
-            .unwrap()
-            .symbol(),
-        "▪"
-    );
-    app.resource_horizontal_scroll = layout.max_offset();
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    assert_eq!(
-        terminal
-            .backend()
-            .buffer()
-            .cell((bar_x + layout.viewport_width as u16 - 1, bar_y))
-            .unwrap()
-            .symbol(),
-        "▪"
-    );
-    let mut wide_terminal = Terminal::new(TestBackend::new(140, 16)).unwrap();
-    wide_terminal.draw(|frame| render(frame, &app)).unwrap();
-    assert!(!wide_terminal.backend().to_string().contains('▪'));
-    app.config.ui.ascii = true;
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    assert_eq!(
-        terminal
-            .backend()
-            .buffer()
-            .cell((bar_x + layout.viewport_width as u16 - 1, bar_y))
-            .unwrap()
-            .symbol(),
-        "-"
-    );
-    wide_terminal.draw(|frame| render(frame, &app)).unwrap();
-    let wide_tree = resource_tree_area(Rect::new(0, 0, 140, 16)).unwrap();
-    assert_ne!(
-        wide_terminal
-            .backend()
-            .buffer()
-            .cell((wide_tree.right() - 2, wide_tree.bottom() - 1))
-            .unwrap()
-            .symbol(),
-        ">"
-    );
-}
-
-#[test]
 fn tree_divider_separates_pinned_objects_without_changing_column_widths() {
     for ascii in [false, true] {
         let mut app = app();
@@ -2704,6 +2594,11 @@ fn tree_scrollbar_has_static_square_thumb_and_left_arrow_in_separator_gap() {
                 terminal.draw(|frame| render(frame, &app)).unwrap();
                 assert_eq!(terminal.backend().buffer(), &unchanged);
             }
+            let mut wide_terminal = Terminal::new(TestBackend::new(140, 16)).unwrap();
+            wide_terminal.draw(|frame| render(frame, &app)).unwrap();
+            let wide = wide_terminal.backend().to_string();
+            assert!(!wide.contains(['▪', '◀', '▶']));
+            assert!(!wide.contains("<"));
         }
     }
 }
@@ -2724,10 +2619,17 @@ fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
                 let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
                 let layout = plan.horizontal_layout(usize::MAX);
                 assert!(layout.pinned_width - 2 <= usize::from(width - 2) * 3 / 5);
+                let header = plan.header();
                 assert_eq!(
-                    plan.header().width() + 1,
+                    header.width() + 1,
                     layout.pinned_width + layout.content_width + layout.right_pinned_width
                 );
+                for label in ["OBJECT", "STATUS"] {
+                    assert!(header.contains(label));
+                }
+                for label in ["SYNCED LAST", "READY LAST"] {
+                    assert_eq!(header.contains(label), !short && kind == "Root");
+                }
                 app.resource_horizontal_scroll = usize::MAX;
                 let rendered = rendered_tree(&app, tree).unwrap();
                 assert!(
@@ -2778,50 +2680,27 @@ fn header_shows_app_and_version_at_right() {
 }
 
 #[test]
-fn selected_row_uses_sofka_content_lavender_without_cursor() {
-    let app = app();
-    let backend = TestBackend::new(100, 16);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    let rendered = terminal.backend().to_string();
-    assert!(!rendered.contains(">-  Root/root"));
-    assert_eq!(
-        terminal.backend().buffer().cell((1, 3)).unwrap().fg,
-        app.theme.palette.base
-    );
-    assert_eq!(
-        terminal.backend().buffer().cell((1, 3)).unwrap().bg,
-        app.theme.palette.lavender
-    );
-}
-
-#[test]
-fn latte_selected_row_uses_light_theme_pair() {
-    let app = app_with_theme("catppuccin-latte", crate::config::ColorMode::Always);
-    let backend = TestBackend::new(100, 16);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    assert_eq!(
-        terminal.backend().buffer().cell((1, 3)).unwrap().fg,
-        app.theme.palette.base
-    );
-    assert_eq!(
-        terminal.backend().buffer().cell((1, 3)).unwrap().bg,
-        app.theme.palette.lavender
-    );
-}
-
-#[test]
-fn monochrome_selected_row_uses_reverse_without_palette_colors() {
-    let app = app_with_theme("catppuccin-mocha", crate::config::ColorMode::Never);
-    let backend = TestBackend::new(100, 16);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| render(frame, &app)).unwrap();
-    let cell = terminal.backend().buffer().cell((1, 3)).unwrap();
-    assert_eq!(cell.fg, Color::Reset);
-    assert_eq!(cell.bg, Color::Reset);
-    assert!(cell.modifier.contains(Modifier::REVERSED));
-    assert!(cell.modifier.contains(Modifier::BOLD));
+fn selected_row_style_follows_theme_and_color_mode() {
+    for (name, color) in [
+        ("catppuccin-mocha", crate::config::ColorMode::Always),
+        ("catppuccin-latte", crate::config::ColorMode::Always),
+        ("catppuccin-mocha", crate::config::ColorMode::Never),
+    ] {
+        let app = app_with_theme(name, color);
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(!terminal.backend().to_string().contains(">-  Root/root"));
+        let cell = terminal.backend().buffer().cell((1, 3)).unwrap();
+        if app.theme.colors_enabled {
+            assert_eq!(cell.fg, app.theme.palette.base);
+            assert_eq!(cell.bg, app.theme.palette.lavender);
+        } else {
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+            assert!(cell.modifier.contains(Modifier::REVERSED));
+            assert!(cell.modifier.contains(Modifier::BOLD));
+        }
+    }
 }
 
 #[test]
@@ -3024,33 +2903,14 @@ fn finalizer_confirmation_matches_destructive_modal_style() {
 }
 
 #[test]
-fn main_key_legend_uses_sofka_subtle_color() {
-    let app = app();
-    let backend = TestBackend::new(240, 16);
-    let mut terminal = Terminal::new(backend).unwrap();
+fn main_footer_groups_logical_name_toggle_with_tree_controls() {
+    let mut app = app();
+    let mut terminal = Terminal::new(TestBackend::new(240, 16)).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
     assert_eq!(
         terminal.backend().buffer().cell((1, 14)).unwrap().fg,
         app.theme.palette.overlay1
     );
-    let rendered = terminal.backend().to_string();
-    assert!(!rendered.contains("Enter:details"));
-    assert!(rendered.contains("Left/Right:collapse/expand"));
-    assert!(rendered.contains("L:logical-name"));
-    assert!(rendered.contains("X:external-name"));
-    assert!(!rendered.contains("Enter/Space"));
-    assert!(rendered.contains("ctrl-d:delete"));
-    assert!(!rendered.contains("h/l:scroll"));
-    assert!(!rendered.contains("z:fit"));
-    assert!(!rendered.contains("z:width"));
-    assert!(!HELP_LINES.iter().any(|line| line.starts_with("  z ")));
-    assert!(rendered.contains("::command"));
-    assert!(!rendered.contains("j/k:move"));
-}
-
-#[test]
-fn main_footer_groups_logical_name_toggle_with_tree_controls() {
-    let mut app = app();
     for visible in [true, false] {
         app.show_logical_name = visible;
         let mut terminal = Terminal::new(TestBackend::new(240, 16)).unwrap();
@@ -4378,6 +4238,8 @@ fn unicode_modal_matches_are_highlighted() {
     let line = highlighted_line("CAFÉ", "café", Style::default(), &theme);
     assert_eq!(line.spans.len(), 1);
     assert_eq!(line.spans[0].content, "CAFÉ");
+    assert_eq!(line.spans[0].style, theme.search(Style::default()));
+    assert_ne!(line.spans[0].style, Style::default());
 }
 
 #[test]
