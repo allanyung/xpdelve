@@ -2793,7 +2793,7 @@ fn content_syntax_colors_are_distinct_from_panel_titles() {
 #[test]
 fn delete_confirmation_uses_red_border_and_footer_legend() {
     let modal = Modal::Delete {
-        target: Target {
+        targets: vec![Target {
             identity: Identity {
                 group: "very-long.example.crossplane.io".into(),
                 version: "v1".into(),
@@ -2802,7 +2802,7 @@ fn delete_confirmation_uses_red_border_and_footer_legend() {
                 name: "a-resource-name-that-is-long-enough-to-require-truncation".into(),
             },
             expected_uid: Some("must-not-be-rendered".into()),
-        },
+        }],
         propagation: DeletePropagation::Foreground,
     };
     let backend = TestBackend::new(120, 20);
@@ -2843,19 +2843,25 @@ fn delete_confirmation_uses_red_border_and_footer_legend() {
 #[test]
 fn finalizer_confirmation_matches_destructive_modal_style() {
     let modal = Modal::Finalizers {
-        target: Target {
-            identity: Identity {
-                group: "demo.xpdelve.io".into(),
-                version: "v1alpha1".into(),
-                kind: "DemoNetwork".into(),
-                namespace: Some("xpdelve-demo".into()),
-                name: "xpdelve-demo-network".into(),
+        targets: vec![FinalizerTarget {
+            target: Target {
+                identity: Identity {
+                    group: "demo.xpdelve.io".into(),
+                    version: "v1alpha1".into(),
+                    kind: "DemoNetwork".into(),
+                    namespace: Some("xpdelve-demo".into()),
+                    name: "xpdelve-demo-network".into(),
+                },
+                expected_uid: Some("must-not-be-rendered".into()),
             },
-            expected_uid: Some("must-not-be-rendered".into()),
-        },
-        finalizers: vec![
-            "demo.xpdelve.io/hold-for-recording".into(),
-            "kubernetes.io/foregroundDeletion".into(),
+            finalizers: vec![
+                "demo.xpdelve.io/hold-for-recording".into(),
+                "kubernetes.io/foregroundDeletion".into(),
+            ],
+        }],
+        names: vec![
+            ("demo.xpdelve.io/hold-for-recording".into(), 1),
+            ("kubernetes.io/foregroundDeletion".into(), 1),
         ],
         selected: HashSet::from([0]),
         cursor: 1,
@@ -2886,7 +2892,7 @@ fn finalizer_confirmation_matches_destructive_modal_style() {
         "{rendered}"
     );
     assert!(rendered.contains("Space:Toggle"), "{rendered}");
-    assert!(rendered.contains("Enter:Remove"), "{rendered}");
+    assert!(rendered.contains("Enter:Review"), "{rendered}");
     assert!(!rendered.contains("must-not-be-rendered"));
     assert_eq!(
         terminal.backend().buffer().cell((10, 4)).unwrap().fg,
@@ -3014,7 +3020,7 @@ fn help_modal_scrolls_to_actions_on_a_standard_terminal() {
 
     let rendered = terminal.backend().to_string();
     assert!(rendered.contains("Navigation"));
-    assert!(rendered.contains("Discovery"));
+    assert!(rendered.contains("Space"));
     assert!(!rendered.contains("Actions"));
     assert!(rendered.contains("j/k:scroll"));
 
@@ -4265,4 +4271,454 @@ fn describe_forwards_cluster_selection_to_kubectl() {
         ]
         .map(std::ffi::OsString::from)
     );
+}
+
+fn key(app: &mut App, code: KeyCode) -> UiAction {
+    app.handle_key(
+        KeyEvent::new(code, KeyModifiers::NONE),
+        Rect::new(0, 0, 100, 20),
+    )
+}
+
+#[test]
+fn space_marks_without_moving_and_esc_clears_marks_before_filters() {
+    let mut app = app();
+    app.filter = "root".into();
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.marked.len(), 1);
+    assert_eq!(app.selection.visible_index, 0);
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.marked.is_empty());
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.marked.is_empty());
+    assert_eq!(app.filter, "root");
+    key(&mut app, KeyCode::Esc);
+    assert!(app.filter.is_empty());
+}
+
+#[test]
+fn checkboxes_appear_for_all_rows_once_anything_is_marked_and_stay_pinned() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 50, 16);
+    let tree = resource_tree_area(area).unwrap();
+    let before = rendered_tree(&app, tree).unwrap();
+    assert!(before.lines[0].starts_with("OBJECT"));
+    assert!(before.lines.iter().all(|line| !line.contains("[ ]")));
+    key(&mut app, KeyCode::Char(' '));
+    let one = rendered_tree(&app, tree).unwrap();
+    assert!(one.lines[0].starts_with("    OBJECT"));
+    assert!(one.lines[1].starts_with("[x] "));
+    assert!(one.lines[2].starts_with("[ ] "));
+    for (before, after) in before.lines.iter().zip(&one.lines) {
+        assert_eq!(before.width(), after.width());
+    }
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    assert!(rendered_tree(&app, tree).unwrap().lines[2].starts_with("[x] "));
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), area);
+    let scrolled = rendered_tree(&app, tree).unwrap();
+    assert!(scrolled.lines[1].starts_with("[x] "));
+    let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("2 marked"));
+    assert!(rendered.contains("[x]"));
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Left);
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert!(
+        terminal
+            .backend()
+            .to_string()
+            .contains("2 marked (1 hidden)")
+    );
+    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    app.resource_horizontal_scroll = 0;
+    assert!(app.marked.is_empty());
+    assert_eq!(rendered_tree(&app, tree).unwrap().lines, before.lines);
+}
+
+#[test]
+fn marks_are_dropped_when_a_resource_is_recreated_or_removed() {
+    let mut app = app();
+    let with_uid = |child_uid: &str| {
+        Snapshot::parse(
+            format!(
+                r#"{{"object":{{"apiVersion":"v1","kind":"Root","metadata":{{"name":"root","uid":"r"}}}},"children":[{{"object":{{"apiVersion":"v1","kind":"Child","metadata":{{"name":"child","uid":"{child_uid}"}}}}}}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    app.apply_snapshot(with_uid("a"));
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.marked.len(), 2);
+    app.apply_snapshot(with_uid("b"));
+    assert_eq!(app.marked.len(), 1);
+    assert!(app.marked.keys().all(|identity| identity.kind == "Root"));
+    app.apply_resource_not_found();
+    assert!(app.marked.is_empty());
+}
+
+#[test]
+fn ctrl_d_lists_every_marked_resource_and_enter_deletes_them_all() {
+    let mut app = app();
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Up);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        Rect::new(0, 0, 100, 20),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Delete 2 resources"));
+    assert!(rendered.contains("Root/root"));
+    assert!(rendered.contains("Child/child"));
+    let UiAction::Delete(targets, DeletePropagation::Foreground) = key(&mut app, KeyCode::Enter)
+    else {
+        panic!("expected batch delete");
+    };
+    assert_eq!(
+        targets
+            .iter()
+            .map(|target| target.identity.kind.as_str())
+            .collect::<Vec<_>>(),
+        ["Root", "Child"]
+    );
+}
+
+#[test]
+fn ctrl_d_without_marks_targets_only_the_highlighted_resource() {
+    let mut app = app();
+    key(&mut app, KeyCode::Down);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        Rect::new(0, 0, 100, 20),
+    );
+    let Some(Modal::Delete { targets, .. }) = &app.modal else {
+        panic!("expected delete confirmation");
+    };
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].identity.kind, "Child");
+}
+
+#[test]
+fn batch_delete_respects_read_only_mode() {
+    let mut app = app();
+    app.config.read_only = true;
+    key(&mut app, KeyCode::Char(' '));
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        Rect::new(0, 0, 100, 20),
+    );
+    assert!(app.modal.is_none());
+    assert!(matches!(key(&mut app, KeyCode::Char('p')), UiAction::None));
+    assert!(app.status.contains("read-only"));
+}
+
+fn app_with_paused_child(root_paused: bool) -> App {
+    let mut app = app();
+    let root = if root_paused {
+        r#","annotations":{"crossplane.io/paused":"true"}"#
+    } else {
+        ""
+    };
+    app.apply_snapshot(
+        Snapshot::parse(
+            format!(
+                r#"{{"object":{{"apiVersion":"v1","kind":"Root","metadata":{{"name":"root"{root}}}}},"children":[{{"object":{{"apiVersion":"v1","kind":"Child","metadata":{{"name":"child","annotations":{{"crossplane.io/paused":"true"}}}}}}}}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap(),
+    );
+    app
+}
+
+#[test]
+fn p_toggles_the_highlighted_resource_and_u_is_unbound() {
+    let mut app = app();
+    let UiAction::SetPaused(targets, true) = key(&mut app, KeyCode::Char('p')) else {
+        panic!("expected pause");
+    };
+    assert_eq!(targets.len(), 1);
+    assert!(matches!(key(&mut app, KeyCode::Char('u')), UiAction::None));
+
+    let mut app = app_with_paused_child(false);
+    key(&mut app, KeyCode::Down);
+    let UiAction::SetPaused(targets, false) = key(&mut app, KeyCode::Char('p')) else {
+        panic!("expected unpause");
+    };
+    assert_eq!(targets[0].identity.kind, "Child");
+}
+
+#[test]
+fn p_on_uniform_marks_applies_one_direction_and_mixed_marks_ask() {
+    let mut app = app_with_paused_child(true);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    let UiAction::SetPaused(targets, false) = key(&mut app, KeyCode::Char('p')) else {
+        panic!("all paused should unpause");
+    };
+    assert_eq!(targets.len(), 2);
+
+    let mut app = app_with_paused_child(false);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    assert!(matches!(key(&mut app, KeyCode::Char('p')), UiAction::None));
+    assert!(matches!(
+        app.modal,
+        Some(Modal::PauseChoice {
+            paused: 1,
+            pause: true,
+            ..
+        })
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("1 paused, 1 not paused"));
+    assert!(rendered.contains("Pause all"));
+    key(&mut app, KeyCode::Down);
+    let UiAction::SetPaused(targets, false) = key(&mut app, KeyCode::Enter) else {
+        panic!("expected unpause all");
+    };
+    assert_eq!(targets.len(), 2);
+}
+
+#[test]
+fn batch_completion_clears_marks_and_reports_partial_failures() {
+    let mut app = app();
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    let identities: Vec<_> = app.marked.keys().cloned().collect();
+    app.active_mutations.extend(identities.iter().cloned());
+    assert!(app.finish_batch("Pause 2 resources", &identities, &[], Ok(None)));
+    assert!(app.marked.is_empty());
+    assert!(app.active_mutations.is_empty());
+
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Char(' '));
+    let identities: Vec<_> = app.marked.keys().cloned().collect();
+    let failed: Vec<_> = identities
+        .iter()
+        .filter(|identity| identity.kind == "Root")
+        .cloned()
+        .collect();
+    app.active_mutations.extend(identities.iter().cloned());
+    assert!(!app.finish_batch(
+        "Delete (Foreground) 2 resources",
+        &identities,
+        &failed,
+        Err("1 of 2 resources failed".into())
+    ));
+    assert_eq!(app.marked.keys().cloned().collect::<Vec<_>>(), failed);
+    assert!(app.active_mutations.is_empty());
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Text {
+            kind: ContentKind::Error,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn paused_footer_and_help_describe_space_and_p_only() {
+    assert!(HELP_LINES.iter().any(|line| line.contains("Space")));
+    assert!(!HELP_LINES.iter().any(|line| line.contains("p / u")));
+    let app = app();
+    let mut terminal = Terminal::new(TestBackend::new(240, 16)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Space:mark"));
+    assert!(rendered.contains("p:pause"));
+    assert!(!rendered.contains("u:unpause"));
+}
+
+fn app_with_finalizers() -> App {
+    let mut app = app();
+    app.apply_snapshot(
+        Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root","uid":"r","finalizers":["a.io/one","b.io/two"]}},"children":[
+            {"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"first","uid":"c1","finalizers":["a.io/one"]}}},
+            {"object":{"apiVersion":"v1","kind":"Child","metadata":{"name":"second","uid":"c2"}}}]}"#,
+        )
+        .unwrap(),
+    );
+    app
+}
+
+fn ctrl_x(app: &mut App) {
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        Rect::new(0, 0, 100, 40),
+    );
+}
+
+#[test]
+fn finalizer_picker_combines_names_with_counts_and_selects_nothing() {
+    let mut app = app_with_finalizers();
+    for _ in 0..3 {
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Down);
+    }
+    ctrl_x(&mut app);
+    let Some(Modal::Finalizers {
+        targets,
+        names,
+        selected,
+        ..
+    }) = &app.modal
+    else {
+        panic!("expected finalizer picker");
+    };
+    assert_eq!(targets.len(), 3);
+    assert_eq!(
+        names,
+        &vec![("a.io/one".to_owned(), 2), ("b.io/two".to_owned(), 1)]
+    );
+    assert!(selected.is_empty());
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Remove finalizers · 3 resources"));
+    assert!(rendered.contains("1 without finalizers will be skipped"));
+    assert!(rendered.contains("a.io/one  (2 resources)"));
+    assert!(rendered.contains("b.io/two  (1 resource)"));
+}
+
+#[test]
+fn finalizer_review_is_required_and_lists_exact_changes() {
+    let mut app = app_with_finalizers();
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    ctrl_x(&mut app);
+    // Enter without a selection does nothing.
+    assert!(matches!(key(&mut app, KeyCode::Enter), UiAction::None));
+    assert!(matches!(app.modal, Some(Modal::Finalizers { .. })));
+    key(&mut app, KeyCode::Char(' '));
+    assert!(matches!(key(&mut app, KeyCode::Enter), UiAction::None));
+    assert!(matches!(app.modal, Some(Modal::FinalizerReview { .. })));
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Review finalizer removal"));
+    assert!(rendered.contains("Remove: a.io/one"));
+    assert!(rendered.contains("Keep:   b.io/two"));
+    assert!(rendered.contains("No matching finalizers; skipped"));
+    // Back keeps the selection.
+    key(&mut app, KeyCode::Backspace);
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Finalizers { selected, .. }) if selected.len() == 1
+    ));
+    key(&mut app, KeyCode::Enter);
+    let UiAction::RemoveFinalizers(removals) = key(&mut app, KeyCode::Enter) else {
+        panic!("expected removals");
+    };
+    assert_eq!(removals.len(), 2);
+    assert_eq!(removals[0].remove, ["a.io/one"]);
+    assert_eq!(removals[0].expected, ["a.io/one", "b.io/two"]);
+    assert_eq!(removals[1].target.identity.name, "first");
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn finalizer_review_can_be_cancelled_and_targets_highlighted_without_marks() {
+    let mut app = app_with_finalizers();
+    ctrl_x(&mut app);
+    let Some(Modal::Finalizers { targets, .. }) = &app.modal else {
+        panic!("expected picker");
+    };
+    assert_eq!(targets.len(), 1);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::FinalizerReview { .. })));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn finalizer_removal_reports_missing_finalizers_and_respects_read_only() {
+    let mut app = app();
+    ctrl_x(&mut app);
+    assert!(app.modal.is_none());
+    assert_eq!(app.status, "Selected resource has no finalizers");
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    ctrl_x(&mut app);
+    assert_eq!(app.status, "The selected resources have no finalizers");
+    let mut app = app_with_finalizers();
+    app.config.read_only = true;
+    ctrl_x(&mut app);
+    assert!(app.modal.is_none());
+    assert!(app.status.contains("read-only"));
+}
+
+#[test]
+fn clicking_a_checkbox_toggles_that_resource_without_moving_the_cursor() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 80, 12);
+    let body = Block::default()
+        .borders(Borders::ALL)
+        .inner(resource_tree_area(area).unwrap());
+    let click = |app: &mut App, column: u16, row: u16| {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert!(
+                app.handle_mouse(
+                    MouseEvent {
+                        kind,
+                        column,
+                        row,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                    area,
+                )
+                .is_none()
+            );
+        }
+    };
+    // Without marks there is no checkbox column; the click only selects the row.
+    click(&mut app, body.x + 1, body.y + 2);
+    assert!(app.marked.is_empty());
+    assert_eq!(app.selection.visible_index, 1);
+    app.set_selection(0);
+
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.marked.len(), 1);
+    click(&mut app, body.x + 1, body.y + 2);
+    assert_eq!(app.marked.len(), 2);
+    assert_eq!(app.selection.visible_index, 0);
+    assert!(app.tree_selection.is_none());
+    click(&mut app, body.x + 1, body.y + 2);
+    assert_eq!(app.marked.len(), 1);
+    click(&mut app, body.x + 1, body.y + 1);
+    assert!(app.marked.is_empty());
+
+    // Outside the checkbox cells a click still just selects the row.
+    key(&mut app, KeyCode::Char(' '));
+    click(&mut app, body.x + 6, body.y + 2);
+    assert_eq!(app.marked.len(), 1);
+    assert_eq!(app.selection.visible_index, 1);
 }

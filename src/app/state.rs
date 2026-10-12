@@ -20,6 +20,51 @@ fn maybe_add_command(
     }
 }
 
+/// Unique finalizer names across the targets with the number of targets holding each.
+pub(super) fn finalizer_names(targets: &[FinalizerTarget]) -> Vec<(String, usize)> {
+    let mut counts = std::collections::BTreeMap::new();
+    for target in targets {
+        for name in target.finalizers.iter().collect::<HashSet<_>>() {
+            *counts.entry(name.clone()).or_insert(0usize) += 1;
+        }
+    }
+    counts.into_iter().collect()
+}
+
+pub(super) fn chosen_finalizers(
+    names: &[(String, usize)],
+    selected: &HashSet<usize>,
+) -> HashSet<String> {
+    selected
+        .iter()
+        .filter_map(|index| names.get(*index))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Targets that hold at least one chosen finalizer, with the exact list that was reviewed.
+pub(super) fn finalizer_removals(
+    targets: &[FinalizerTarget],
+    chosen: &HashSet<String>,
+) -> Vec<FinalizerRemoval> {
+    targets
+        .iter()
+        .filter_map(|entry| {
+            let remove: Vec<_> = entry
+                .finalizers
+                .iter()
+                .filter(|name| chosen.contains(*name))
+                .cloned()
+                .collect();
+            (!remove.is_empty()).then(|| FinalizerRemoval {
+                target: entry.target.clone(),
+                expected: entry.finalizers.clone(),
+                remove,
+            })
+        })
+        .collect()
+}
+
 impl App {
     pub(super) fn new(resource: String, config: Config, cli: &Cli, theme: Theme) -> Self {
         Self {
@@ -55,6 +100,7 @@ impl App {
             kubernetes_status: "Kubernetes client initializing".into(),
             modal: None,
             active_mutations: HashSet::new(),
+            marked: HashMap::new(),
             refresh_pending: false,
             retry_delay: Duration::from_secs(1),
             resource_missing: false,
@@ -298,6 +344,159 @@ impl App {
         })
     }
 
+    pub(super) fn toggle_mark(&mut self) {
+        self.toggle_mark_at(self.selection.visible_index);
+    }
+
+    pub(super) fn toggle_mark_at(&mut self, position: usize) {
+        let visible = self.visible();
+        let Some(node) = visible
+            .get(position)
+            .and_then(|index| self.snapshot.as_ref()?.nodes.get(*index))
+        else {
+            return;
+        };
+        let identity = node.identity.clone();
+        let uid = node.uid.clone();
+        if self.marked.remove(&identity).is_none() {
+            self.marked.insert(identity, uid);
+        }
+    }
+
+    pub(super) fn hidden_marked_count(&self) -> usize {
+        let Some(snapshot) = &self.snapshot else {
+            return 0;
+        };
+        let visible: HashSet<_> = self
+            .visible()
+            .into_iter()
+            .map(|index| &snapshot.nodes[index].identity)
+            .collect();
+        self.marked
+            .keys()
+            .filter(|identity| !visible.contains(identity))
+            .count()
+    }
+
+    /// Marked resources in tree order, or the highlighted resource when none are marked.
+    /// Each entry carries whether the resource is currently paused.
+    pub(super) fn action_nodes(&self) -> Vec<&ProjectedNode> {
+        if self.marked.is_empty() {
+            return self.selected_node().into_iter().collect();
+        }
+        self.snapshot
+            .iter()
+            .flat_map(|snapshot| snapshot.nodes.iter())
+            .filter(|node| self.marked.contains_key(&node.identity))
+            .collect()
+    }
+
+    pub(super) fn action_targets(&self) -> Vec<(Target, bool)> {
+        self.action_nodes()
+            .into_iter()
+            .map(|node| {
+                (
+                    Target {
+                        identity: node.identity.clone(),
+                        expected_uid: node.uid.clone(),
+                    },
+                    node.paused,
+                )
+            })
+            .collect()
+    }
+
+    pub(super) fn request_finalizers(&mut self) {
+        if self.config.read_only {
+            self.status = "Finalizer removal is disabled in read-only mode".into();
+            return;
+        }
+        let targets: Vec<FinalizerTarget> = self
+            .action_nodes()
+            .into_iter()
+            .map(|node| FinalizerTarget {
+                target: Target {
+                    identity: node.identity.clone(),
+                    expected_uid: node.uid.clone(),
+                },
+                finalizers: node
+                    .object
+                    .pointer("/metadata/finalizers")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let names = finalizer_names(&targets);
+        if names.is_empty() {
+            self.status = if targets.len() == 1 {
+                "Selected resource has no finalizers".into()
+            } else {
+                "The selected resources have no finalizers".into()
+            };
+            return;
+        }
+        // Nothing is preselected: choosing a name removes it from every target that has it.
+        self.modal = Some(Modal::Finalizers {
+            targets,
+            names,
+            selected: HashSet::new(),
+            cursor: 0,
+        });
+    }
+
+    pub(super) fn request_delete(&mut self) {
+        if self.config.read_only {
+            self.status = "Delete is disabled in read-only mode".into();
+            return;
+        }
+        let targets: Vec<_> = self
+            .action_targets()
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect();
+        if !targets.is_empty() {
+            self.modal = Some(Modal::Delete {
+                targets,
+                propagation: DeletePropagation::Foreground,
+            });
+        }
+    }
+
+    pub(super) fn request_pause_toggle(&mut self) -> UiAction {
+        if self.config.read_only {
+            self.status = "Pause is disabled in read-only mode".into();
+            return UiAction::None;
+        }
+        let entries = self.action_targets();
+        let paused = entries.iter().filter(|(_, paused)| *paused).count();
+        let total = entries.len();
+        let targets: Vec<_> = entries.into_iter().map(|(target, _)| target).collect();
+        if total == 0 {
+            UiAction::None
+        } else if paused == 0 {
+            UiAction::SetPaused(targets, true)
+        } else if paused == total {
+            UiAction::SetPaused(targets, false)
+        } else {
+            self.modal = Some(Modal::PauseChoice {
+                targets,
+                paused,
+                pause: true,
+            });
+            UiAction::None
+        }
+    }
+
     pub(super) fn show_status(&mut self, identity: &Identity) {
         let Some(node) = self.snapshot.as_ref().and_then(|snapshot| {
             snapshot
@@ -369,6 +568,9 @@ impl App {
                 true
             }
             Ok(None) => {
+                if let Some(identity) = &identity {
+                    self.marked.remove(identity);
+                }
                 self.status = format!("{label} succeeded");
                 true
             }
@@ -391,6 +593,38 @@ impl App {
         }
     }
 
+    pub(super) fn finish_batch(
+        &mut self,
+        label: &str,
+        identities: &[Identity],
+        failed: &[Identity],
+        result: Result<Option<String>, String>,
+    ) -> bool {
+        for identity in identities {
+            self.active_mutations.remove(identity);
+            if !failed.contains(identity) {
+                self.marked.remove(identity);
+            }
+        }
+        match result {
+            Ok(_) => {
+                self.status = format!("{label} succeeded");
+                true
+            }
+            Err(error) => {
+                self.status = format!("{label} failed");
+                self.modal = Some(Modal::Text {
+                    title: format!("{label} failed"),
+                    content: text::sanitize(&format!("{error}\n")).into(),
+                    kind: ContentKind::Error,
+                    state: TextModalState::new(ContentKind::Error),
+                    selection: None,
+                });
+                false
+            }
+        }
+    }
+
     pub(super) fn apply_snapshot(&mut self, snapshot: Snapshot) {
         if self
             .tree_selection
@@ -407,6 +641,12 @@ impl App {
         self.snapshot = Some(Arc::clone(&snapshot));
         self.collapsed
             .retain(|identity| snapshot.by_identity.contains_key(identity));
+        self.marked.retain(|identity, uid| {
+            snapshot
+                .by_identity
+                .get(identity)
+                .is_some_and(|index| snapshot.nodes[*index].uid == *uid)
+        });
         let visible = self.visible();
         let visible_index = selection_chain
             .iter()
@@ -453,6 +693,7 @@ impl App {
         self.resource_scroll = 0;
         self.resource_horizontal_scroll = 0;
         self.collapsed.clear();
+        self.marked.clear();
         if !matches!(
             self.modal,
             Some(Modal::Text {

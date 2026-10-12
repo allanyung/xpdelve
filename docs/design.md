@@ -83,7 +83,7 @@ projected separately and remains searchable by find, plain-text filters, and
 `status:` filters. Enter opens snapshot-local problem details in a persistent,
 wrapped text modal. Its footer hint appears only when the selected row has
 details available. Enter and Space do not
-toggle tree expansion. Left/Right and `[`/`]` control expansion. Events use `E`,
+toggle tree expansion; Space marks rows for bulk delete and pause. Left/Right and `[`/`]` control expansion. Events use `E`,
 while `e` remains edit.
 
 Horizontal scrolling is always available with `h`/`l`, Shift+Left/Right, a
@@ -153,8 +153,8 @@ and validates the target. `kubectl describe` provides captured content for the
 full-screen Describe view. `kubectl edit` remains the permanent edit workflow.
 
 Delete defaults to foreground propagation. Its confirmation modal uses `c` to
-cycle Foreground, Background, and Orphan. Finalizer removal defaults to all but
-allows individual selection. Successful mutations request an immediate trace
+cycle Foreground, Background, and Orphan. Finalizer removal starts with nothing
+selected, then requires a per-resource review before it is applied. Successful mutations request an immediate trace
 refresh without blocking navigation.
 
 ## Security

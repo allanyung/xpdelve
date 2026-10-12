@@ -255,12 +255,25 @@ impl Kubernetes {
         Ok(())
     }
 
-    pub async fn remove_finalizers(&self, target: &Target, selected: &[String]) -> Result<()> {
+    /// Removes `remove` from the target, but only if its finalizers still equal the
+    /// reviewed list, so nothing the user did not see is ever removed.
+    pub async fn remove_finalizers(
+        &self,
+        target: &Target,
+        expected: &[String],
+        remove: &[String],
+    ) -> Result<()> {
         let (_api, current) = self.api_and_current(target).await?;
-        let mut finalizers = current.metadata.finalizers.clone().unwrap_or_default();
-        let original_len = finalizers.len();
-        finalizers.retain(|finalizer| !selected.contains(finalizer));
-        if finalizers.len() == original_len {
+        let current_finalizers = current.metadata.finalizers.clone().unwrap_or_default();
+        if current_finalizers != expected {
+            bail!("finalizers changed since they were reviewed; review them again");
+        }
+        let finalizers: Vec<_> = current_finalizers
+            .iter()
+            .filter(|finalizer| !remove.contains(finalizer))
+            .cloned()
+            .collect();
+        if finalizers.len() == current_finalizers.len() {
             return Ok(());
         }
         let context = self.verified_patch_context(target).await?;
