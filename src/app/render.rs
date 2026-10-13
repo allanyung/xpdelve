@@ -1,5 +1,6 @@
 use super::selection::*;
 use super::state::chosen_finalizers;
+use super::upgrade::upgrade_info;
 use super::*;
 use crate::columns::{self, ExtraColumn};
 
@@ -65,6 +66,14 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
                 },
             ),
             Modal::PauseChoice { .. } => centered(area, 60, 10),
+            Modal::UpgradeReview { plans } => centered(
+                area,
+                100,
+                u16::try_from(plans.len() * 2)
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(10)
+                    .clamp(12, 24),
+            ),
             Modal::Finalizers { names, .. } => centered(
                 area,
                 100,
@@ -239,14 +248,34 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         };
         lines.push(Line::styled(message, app.theme.subtle()));
     }
-    let mut title = format!(" Resources ({}/{}) ", visible.len(), snapshot.nodes.len());
-    if !app.marked.is_empty() {
-        let hidden = app.hidden_marked_count();
-        title = format!(
-            " Resources ({}/{}) · {} marked{} ",
+    let heading = if app.upgrade_view {
+        "Upgrade revisions"
+    } else {
+        "Resources"
+    };
+    let mut title = if app.upgrade_view {
+        let note = if app.revisions.is_refreshing() && app.revisions.has_cache() {
+            " · refreshing"
+        } else if app.revisions.error().is_some() && app.revisions.has_cache() {
+            " · cached, refresh failed"
+        } else {
+            ""
+        };
+        format!(
+            " {heading} ({}/{}) · {} available{note} ",
             visible.len(),
             snapshot.nodes.len(),
-            app.marked.len(),
+            app.upgrade_available_count()
+        )
+    } else {
+        format!(" {heading} ({}/{}) ", visible.len(), snapshot.nodes.len())
+    };
+    if !app.active_marks().is_empty() {
+        let hidden = app.hidden_marked_count();
+        title = format!(
+            "{}· {} marked{} ",
+            title.trim_end().to_owned() + " ",
+            app.active_marks().len(),
             if hidden > 0 {
                 format!(" ({hidden} hidden)")
             } else {
@@ -254,10 +283,12 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             }
         );
     }
-    frame.render_widget(
-        Paragraph::new(lines).block(bordered_block(title, &app.theme)),
-        area,
-    );
+    let block = if app.upgrade_view {
+        bordered_block(title, &app.theme).border_style(app.theme.upgrade_border())
+    } else {
+        bordered_block(title, &app.theme)
+    };
+    frame.render_widget(Paragraph::new(lines).block(block), area);
     let horizontal = rendered.horizontal;
     let body = Block::default().borders(Borders::ALL).inner(area);
     for divider in [
@@ -275,6 +306,33 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
                 .cell_mut((divider_column, body.y + row as u16))
             {
                 cell.set_style(app.theme.subtle());
+            }
+        }
+    }
+    if let Some((start, width)) = rendered.upgrade_range {
+        let middle = horizontal.pinned_width + horizontal.offset
+            ..horizontal.pinned_width + horizontal.offset + horizontal.viewport_width;
+        for (row, (position, index)) in visible
+            .iter()
+            .enumerate()
+            .skip(rendered.start)
+            .take(rendered.row_count)
+            .enumerate()
+        {
+            if position == app.selection.visible_index {
+                continue;
+            }
+            let style = app
+                .upgrade_info_for(&snapshot.nodes[*index])
+                .state
+                .style(&app.theme);
+            for column in (start..start + width).filter(|column| middle.contains(column)) {
+                if let Some(cell) = frame.buffer_mut().cell_mut((
+                    body.x + (column - horizontal.offset) as u16,
+                    body.y + 1 + row as u16,
+                )) {
+                    cell.set_style(style);
+                }
             }
         }
     }
@@ -329,6 +387,9 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
 }
 
 const CHECKBOX_WIDTH: usize = 4;
+const UPGRADE_WIDTH: usize = 12;
+// CURRENT (7) + LATEST (6) + UPGRADE plus the separators of a six-column row.
+const UPGRADE_FIXED_WIDTH: usize = 7 + 6 + UPGRADE_WIDTH + 10;
 const OBJECT_HEADER: &str = "    OBJECT";
 
 pub(super) struct RenderedTree {
@@ -337,6 +398,7 @@ pub(super) struct RenderedTree {
     pub(super) start: usize,
     pub(super) row_count: usize,
     pub(super) horizontal: TreeHorizontalLayout,
+    pub(super) upgrade_range: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -399,11 +461,12 @@ pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Optio
             snapshot,
             visible,
             area.width.saturating_sub(2) as usize,
-            snapshot.nodes.first().is_some_and(|node| node.is_package),
+            snapshot.nodes.first().is_some_and(|node| node.is_package) && !app.upgrade_view,
             app.config.ui.short,
             app.config.ui.ascii,
         )
-        .with_checkboxes(!app.marked.is_empty())
+        .with_upgrade(app.upgrade_view.then(|| app.revisions.clone()))
+        .with_checkboxes(!app.active_marks().is_empty())
         .with_logical_name(app.show_logical_name)
         .with_external_name(app.show_external_name)
         .with_extra_columns(columns::resolve(
@@ -431,7 +494,7 @@ pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
                 node,
                 app.kind_filter.is_none() || app.health_filter != HealthFilter::All,
                 app.collapsed.contains(&node.identity),
-                app.marked.contains_key(&node.identity),
+                app.active_marks().contains_key(&node.identity),
             ),
             app.config.ui.ascii,
         )
@@ -444,6 +507,7 @@ pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
         start,
         row_count,
         horizontal,
+        upgrade_range: plan.upgrade_range(),
     })
 }
 
@@ -563,6 +627,7 @@ pub(super) struct TablePlan {
     state: usize,
     ascii: bool,
     checkboxes: bool,
+    upgrade: Option<RevisionDiscovery>,
     extra_columns: Vec<ExtraColumn>,
 }
 
@@ -645,8 +710,32 @@ impl TablePlan {
             state,
             ascii,
             checkboxes: false,
+            upgrade: None,
             extra_columns: Vec::new(),
         }
+    }
+
+    /// Replaces the condition columns with the revision upgrade columns.
+    fn with_upgrade(mut self, discovery: Option<RevisionDiscovery>) -> Self {
+        self.upgrade = discovery;
+        self
+    }
+
+    /// Start column and width of the UPGRADE cell within a full (unsliced) row.
+    pub(super) fn upgrade_range(&self) -> Option<(usize, usize)> {
+        self.upgrade.as_ref()?;
+        let optional = |width: usize| if width > 0 { width + 2 } else { 0 };
+        let start = self.object
+            + 2
+            + optional(self.logical_name)
+            + optional(self.external_name)
+            + self.group
+            + 2
+            + 7
+            + 2
+            + 6
+            + 2;
+        Some((start, UPGRADE_WIDTH))
     }
 
     /// Reserves the pinned checkbox cells; shown only while resources are marked.
@@ -685,6 +774,8 @@ impl TablePlan {
                 + usize::from(self.timestamps) * 2;
             let widths = 9 + 7 + if self.timestamps { 30 } else { 0 } + self.version + self.state;
             widths + displayed * 2
+        } else if self.upgrade.is_some() {
+            UPGRADE_FIXED_WIDTH
         } else if self.timestamps {
             53
         } else {
@@ -751,6 +842,14 @@ impl TablePlan {
                 columns.push(("STATE", self.state));
             }
             columns
+        } else if self.upgrade.is_some() {
+            vec![
+                (object_header, self.object),
+                ("GROUP", self.group),
+                ("CURRENT", 7),
+                ("LATEST", 6),
+                ("UPGRADE", UPGRADE_WIDTH),
+            ]
         } else if self.timestamps {
             vec![
                 (object_header, self.object),
@@ -808,6 +907,16 @@ impl TablePlan {
         let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
         let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
         let status = status_cell(node);
+        let upgrade = self
+            .upgrade
+            .as_ref()
+            .map(|discovery| upgrade_info(node, discovery));
+        let number = |value: Option<i64>| value.map_or_else(|| "-".to_owned(), |n| n.to_string());
+        let current = number(upgrade.as_ref().and_then(|info| info.current));
+        let latest = number(upgrade.as_ref().and_then(|info| info.latest));
+        let upgrade_label = upgrade
+            .as_ref()
+            .map_or("", |info| info.state.label(self.ascii));
         let extra_values: Vec<_> = self
             .extra_columns
             .iter()
@@ -830,6 +939,14 @@ impl TablePlan {
                 columns.push((state.as_str(), self.state));
             }
             columns
+        } else if self.upgrade.is_some() {
+            vec![
+                (object.as_str(), self.object),
+                (group.as_str(), self.group),
+                (current.as_str(), 7),
+                (latest.as_str(), 6),
+                (upgrade_label, UPGRADE_WIDTH),
+            ]
         } else if self.timestamps {
             vec![
                 (object.as_str(), self.object),
@@ -1109,6 +1226,9 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                 }
                 format!(" {}", active.join("  |  "))
             }
+            InputMode::Normal | InputMode::Help if app.upgrade_view => {
+                " Space:mark  a:mark-available  Enter:review  Left/Right:collapse/expand  ::command  /:filter  r:refresh  ?:help  u/Esc:back".into()
+            }
             InputMode::Normal | InputMode::Help => {
                 let details = if app
                     .selected_node()
@@ -1119,7 +1239,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                     ""
                 };
                 format!(
-                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  ::command  ?:help  /:filter  ctrl-d:delete  p:pause  d:describe  y:YAML  e:edit  s:status  E:events"
+                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  ::command  ?:help  /:filter  ctrl-d:delete  p:pause  u:upgrade  d:describe  y:YAML  e:edit  s:status  E:events"
                 )
             }
         }
@@ -1407,6 +1527,86 @@ pub(super) fn render_modal(
                     Span::styled("   Esc:Cancel ", subtle_style),
                 ])),
                 regions[1],
+            );
+        }
+        Modal::UpgradeReview { plans } => {
+            let title = if plans.len() > 1 {
+                format!(" Apply {} revision updates ", plans.len())
+            } else {
+                " Apply revision update ".into()
+            };
+            let block = destructive_block(title, theme);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let regions = Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(4),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+            let width = usize::from(regions[0].width);
+            // Each plan takes two lines: the (middle-truncated) name, then the revisions
+            // and Composition, so the revision change is never cut off.
+            let capacity = usize::from(regions[0].height).saturating_sub(1).max(2);
+            let shown = if plans.len() * 2 > capacity {
+                ((capacity - 1) / 2).max(1)
+            } else {
+                plans.len()
+            };
+            let mut lines = vec![Line::from("")];
+            for plan in &plans[..shown] {
+                let identity = &plan.target.identity;
+                let name = format!(
+                    "{}/{}",
+                    text::sanitize(&identity.kind),
+                    text::sanitize(&identity.name)
+                );
+                let revisions = format!("  {} -> {}  ", plan.from_number, plan.to_number);
+                let composition_width = width.saturating_sub(revisions.width());
+                lines.push(Line::styled(truncate_middle(&name, width), theme.title()));
+                lines.push(Line::from(vec![
+                    Span::styled(revisions, theme.fg(theme.palette.peach)),
+                    Span::styled(
+                        truncate_middle(&text::sanitize(&plan.composition), composition_width),
+                        theme.subtle(),
+                    ),
+                ]));
+            }
+            if shown < plans.len() {
+                lines.push(Line::styled(
+                    format!("… and {} more", plans.len() - shown),
+                    theme.subtle(),
+                ));
+            }
+            frame.render_widget(Paragraph::new(lines), regions[0]);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(
+                        "Only compositionRevisionRef changes, to the highest revision of each Composition.",
+                        theme.subtle(),
+                    ),
+                    Line::styled(
+                        "Update policies and pause annotations are untouched.",
+                        theme.subtle(),
+                    ),
+                    Line::styled(
+                        "Composed resources may be created, updated, or deleted.",
+                        theme.subtle(),
+                    ),
+                ]),
+                regions[1],
+            );
+            let apply_style = if theme.colors_enabled {
+                theme.danger()
+            } else {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" Enter:Apply", apply_style),
+                    Span::styled("   Esc:Cancel ", theme.subtle()),
+                ])),
+                regions[2],
             );
         }
         Modal::PauseChoice {
@@ -1950,6 +2150,38 @@ pub(super) fn case_insensitive_regex(query: &str) -> Option<regex::Regex> {
         })
         .flatten()
 }
+/// Keeps the head and tail of a long name, which usually differ at either end.
+pub(super) fn truncate_middle(value: &str, width: usize) -> String {
+    if value.width() <= width {
+        return value.to_owned();
+    }
+    if width <= 1 {
+        return "…".repeat(width);
+    }
+    let head_width = (width - 1).div_ceil(2);
+    let tail_width = width - 1 - head_width;
+    let mut head = String::new();
+    let mut used = 0;
+    for grapheme in value.graphemes(true) {
+        if used + grapheme.width() > head_width {
+            break;
+        }
+        head.push_str(grapheme);
+        used += grapheme.width();
+    }
+    let mut tail = Vec::new();
+    let mut used = 0;
+    for grapheme in value.graphemes(true).rev() {
+        if used + grapheme.width() > tail_width {
+            break;
+        }
+        tail.push(grapheme);
+        used += grapheme.width();
+    }
+    tail.reverse();
+    format!("{head}…{}", tail.concat())
+}
+
 pub(super) fn bordered_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)

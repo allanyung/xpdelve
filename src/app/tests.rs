@@ -4445,13 +4445,12 @@ fn app_with_paused_child(root_paused: bool) -> App {
 }
 
 #[test]
-fn p_toggles_the_highlighted_resource_and_u_is_unbound() {
+fn p_toggles_the_highlighted_resource() {
     let mut app = app();
     let UiAction::SetPaused(targets, true) = key(&mut app, KeyCode::Char('p')) else {
         panic!("expected pause");
     };
     assert_eq!(targets.len(), 1);
-    assert!(matches!(key(&mut app, KeyCode::Char('u')), UiAction::None));
 
     let mut app = app_with_paused_child(false);
     key(&mut app, KeyCode::Down);
@@ -4547,6 +4546,10 @@ fn paused_footer_and_help_describe_space_and_p_only() {
     assert!(rendered.contains("Space:mark"));
     assert!(rendered.contains("p:pause"));
     assert!(!rendered.contains("u:unpause"));
+    let footer = rendered.find("ctrl-d:delete").unwrap();
+    assert!(footer < rendered.find("p:pause").unwrap());
+    assert!(rendered.find("p:pause").unwrap() < rendered.find("u:upgrade").unwrap());
+    assert!(rendered.find("u:upgrade").unwrap() < rendered.find("d:describe").unwrap());
 }
 
 fn app_with_finalizers() -> App {
@@ -4721,4 +4724,600 @@ fn clicking_a_checkbox_toggles_that_resource_without_moving_the_cursor() {
     click(&mut app, body.x + 6, body.y + 2);
     assert_eq!(app.marked.len(), 1);
     assert_eq!(app.selection.visible_index, 1);
+}
+
+fn revision(name: &str, composition: &str, number: i64, kind: &str) -> CompositionRevisionInfo {
+    CompositionRevisionInfo {
+        name: name.into(),
+        composition: composition.into(),
+        number,
+        composite_kind: kind.into(),
+        composite_group: "example.io".into(),
+    }
+}
+
+fn xr(name: &str, kind: &str, spec: &str) -> String {
+    format!(
+        r#"{{"object":{{"apiVersion":"example.io/v1","kind":"{kind}","metadata":{{"name":"{name}","uid":"{name}-uid"}},"spec":{spec}}}"#
+    )
+}
+
+/// Root (manual, revision 1 of 3) with children: manual at latest, automatic, plain.
+fn app_for_upgrades() -> App {
+    let manual = |revision: &str| {
+        format!(
+            r#"{{"compositionRef":{{"name":"db"}},"compositionUpdatePolicy":"Manual","compositionRevisionRef":{{"name":"{revision}"}}}}"#
+        )
+    };
+    let trace = format!(
+        r#"{},"children":[{}}},{}}},{{"object":{{"apiVersion":"v1","kind":"Plain","metadata":{{"name":"plain","uid":"p"}}}}}}]}}"#,
+        xr("old", "XDb", &manual("db-1")),
+        xr("current", "XDb", &manual("db-3")),
+        xr(
+            "auto",
+            "XDb",
+            r#"{"compositionRef":{"name":"db"},"compositionRevisionRef":{"name":"db-1"}}"#
+        ),
+    );
+    let mut app = app();
+    app.apply_snapshot(Snapshot::parse(trace.as_bytes()).unwrap());
+    app.revisions = RevisionDiscovery::loaded(upgrade::RevisionIndex::new(vec![
+        revision("db-1", "db", 1, "XDb"),
+        revision("db-3", "db", 3, "XDb"),
+        revision("db-2", "db", 2, "XDb"),
+        revision("other-9", "db", 9, "Other"),
+    ]));
+    app
+}
+
+#[test]
+fn upgrade_info_goes_to_the_highest_revision_of_the_same_composition() {
+    use upgrade::{UpgradeState, upgrade_info};
+    let app = app_for_upgrades();
+    let nodes = &app.snapshot.as_ref().unwrap().nodes;
+    let state = |index: usize| upgrade_info(&nodes[index], &app.revisions);
+    let old = state(0);
+    assert_eq!(old.state, UpgradeState::Available);
+    assert_eq!((old.current, old.latest), (Some(1), Some(3)));
+    let plan = old.plan.unwrap();
+    assert_eq!(
+        (plan.from_name.as_str(), plan.to_name.as_str()),
+        ("db-1", "db-3")
+    );
+    assert_eq!(state(1).state, UpgradeState::UpToDate);
+    assert!(state(1).plan.is_none());
+    assert_eq!(state(2).state, UpgradeState::Automatic);
+    assert_eq!(state(3).state, UpgradeState::NotApplicable);
+    assert_eq!(
+        upgrade_info(&nodes[0], &RevisionDiscovery::loading()).state,
+        UpgradeState::Checking
+    );
+    assert_eq!(
+        upgrade_info(&nodes[0], &RevisionDiscovery::failed()).state,
+        UpgradeState::Failed
+    );
+}
+
+#[test]
+fn upgrade_info_handles_missing_unknown_and_crossplane_v2_layouts() {
+    use upgrade::{UpgradeState, upgrade_info};
+    let mut app = app_for_upgrades();
+    let trace = format!(
+        r#"{},"children":[{}}},{}}}]}}"#,
+        xr(
+            "none",
+            "XDb",
+            r#"{"crossplane":{"compositionRef":{"name":"db"},"compositionUpdatePolicy":"Manual"}}"#
+        ),
+        xr(
+            "unknown",
+            "XDb",
+            r#"{"compositionRef":{"name":"db"},"compositionUpdatePolicy":"Manual","compositionRevisionRef":{"name":"gone"}}"#
+        ),
+        xr(
+            "v2",
+            "XDb",
+            r#"{"crossplane":{"compositionRef":{"name":"db"},"compositionUpdatePolicy":"Manual","compositionRevisionRef":{"name":"db-2"}}}"#
+        ),
+    );
+    app.apply_snapshot(Snapshot::parse(trace.as_bytes()).unwrap());
+    let nodes = &app.snapshot.as_ref().unwrap().nodes;
+    let state = |index: usize| upgrade_info(&nodes[index], &app.revisions);
+    assert_eq!(state(0).state, UpgradeState::NoRevision);
+    assert_eq!(state(1).state, UpgradeState::UnknownRevision);
+    assert_eq!(state(2).state, UpgradeState::Available);
+    assert_eq!(state(2).plan.unwrap().to_number, 3);
+}
+
+#[test]
+fn u_opens_the_upgrade_view_and_renders_colored_states() {
+    let mut app = app_for_upgrades();
+    let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    assert!(matches!(
+        key(&mut app, KeyCode::Char('u')),
+        UiAction::DiscoverRevisions
+    ));
+    assert!(app.upgrade_view);
+    let generation = app.revisions.begin_refresh();
+    app.apply_revisions(
+        generation,
+        Ok(vec![
+            revision("db-1", "db", 1, "XDb"),
+            revision("db-3", "db", 3, "XDb"),
+        ]),
+    );
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(
+        rendered.contains("Upgrade revisions (4/4) · 1 available"),
+        "{rendered}"
+    );
+    for header in ["CURRENT", "LATEST", "UPGRADE"] {
+        assert!(rendered.contains(header));
+    }
+    assert!(!rendered.contains("SYNCED"));
+    assert!(rendered.contains("Available ↑"));
+    assert!(rendered.contains("Up to date"));
+    assert!(rendered.contains("Automatic"));
+    assert!(rendered.contains("Space:mark"));
+
+    let tree = resource_tree_area(Rect::new(0, 0, 140, 20)).unwrap();
+    let rendered_tree = rendered_tree(&app, tree).unwrap();
+    let (start, _) = rendered_tree.upgrade_range.unwrap();
+    let offset = rendered_tree.horizontal.offset;
+    let cell = |terminal: &Terminal<TestBackend>, row: u16| {
+        terminal
+            .backend()
+            .buffer()
+            .cell((1 + (start - offset) as u16, 3 + row))
+            .unwrap()
+            .clone()
+    };
+    // Row 0 is selected and keeps the selection colours; the others use theme colours.
+    assert_eq!(cell(&terminal, 0).fg, app.theme.palette.base);
+    assert_eq!(cell(&terminal, 1).symbol(), "U");
+    assert_eq!(cell(&terminal, 1).fg, app.theme.palette.green);
+    assert_eq!(cell(&terminal, 2).fg, app.theme.palette.overlay1);
+    app.set_selection(1);
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert_eq!(cell(&terminal, 0).symbol(), "A");
+    assert_eq!(cell(&terminal, 0).fg, app.theme.palette.peach);
+}
+
+#[test]
+fn upgrade_view_marks_only_eligible_visible_resources() {
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    app.revisions = app_for_upgrades().revisions;
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.upgrade_marked.is_empty());
+    assert!(app.status.contains("No revision upgrade"));
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.upgrade_marked.len(), 1);
+    assert!(app.marked.is_empty());
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.upgrade_marked.is_empty());
+
+    // `a` marks visible eligible rows only: collapsing hides the children.
+    key(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.upgrade_marked.len(), 1);
+    app.upgrade_marked.clear();
+    app.apply_snapshot(
+        Snapshot::parse(
+            format!(
+                r#"{},"children":[{}}}]}}"#,
+                xr(
+                    "top",
+                    "XDb",
+                    r#"{"compositionRef":{"name":"db"},"compositionUpdatePolicy":"Manual","compositionRevisionRef":{"name":"db-1"}}"#
+                ),
+                xr(
+                    "inner",
+                    "XDb",
+                    r#"{"compositionRef":{"name":"db"},"compositionUpdatePolicy":"Manual","compositionRevisionRef":{"name":"db-2"}}"#
+                ),
+            )
+            .as_bytes(),
+        )
+        .unwrap(),
+    );
+    key(&mut app, KeyCode::Left);
+    key(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.upgrade_marked.len(), 1);
+    assert!(
+        app.upgrade_marked
+            .keys()
+            .all(|identity| identity.name == "top")
+    );
+}
+
+#[test]
+fn upgrade_review_applies_only_after_enter_and_respects_read_only() {
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    app.revisions = app_for_upgrades().revisions;
+    // Nothing marked: the highlighted upgrade is reviewed.
+    assert!(matches!(key(&mut app, KeyCode::Enter), UiAction::None));
+    let Some(Modal::UpgradeReview { plans }) = &app.modal else {
+        panic!("expected review");
+    };
+    assert_eq!(plans.len(), 1);
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Apply revision update"));
+    assert!(rendered.contains("XDb/old"));
+    assert!(rendered.contains("1 -> 3  db"));
+    assert!(rendered.contains("Only compositionRevisionRef changes"));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    assert!(app.upgrade_view);
+    key(&mut app, KeyCode::Enter);
+    let UiAction::UpgradeRevisions(plans) = key(&mut app, KeyCode::Enter) else {
+        panic!("expected upgrade action");
+    };
+    assert_eq!(plans[0].to_name, "db-3");
+
+    app.config.read_only = true;
+    key(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert!(app.status.contains("read-only"));
+}
+
+#[test]
+fn upgrade_view_blocks_other_mutations_and_exits_with_u_or_esc() {
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    for code in [KeyCode::Char('p'), KeyCode::Char('e')] {
+        assert!(matches!(key(&mut app, code), UiAction::None));
+        assert!(app.status.contains("Not available in the upgrade view"));
+    }
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        Rect::new(0, 0, 100, 20),
+    );
+    assert!(app.modal.is_none());
+    // Navigation and `r` still work.
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.selection.visible_index, 1);
+    assert!(matches!(
+        key(&mut app, KeyCode::Char('r')),
+        UiAction::Refresh
+    ));
+    key(&mut app, KeyCode::Char('u'));
+    assert!(!app.upgrade_view);
+
+    key(&mut app, KeyCode::Char('u'));
+    app.revisions = app_for_upgrades().revisions;
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.upgrade_view && app.upgrade_marked.is_empty());
+    key(&mut app, KeyCode::Esc);
+    assert!(!app.upgrade_view);
+}
+
+#[test]
+fn upgrade_completion_clears_only_upgrade_marks() {
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char(' '));
+    let identity = app.marked.keys().next().cloned().unwrap();
+    app.upgrade_marked.insert(identity.clone(), None);
+    app.active_mutations.insert(identity.clone());
+    assert!(app.finish_action("Upgrade revision", Some(identity.clone()), Ok(None)));
+    assert!(app.upgrade_marked.is_empty());
+    assert_eq!(app.marked.len(), 1);
+    app.finish_action("Pause", Some(identity), Ok(None));
+    assert!(app.marked.is_empty());
+}
+
+#[test]
+fn upgrade_checkbox_click_toggles_only_eligible_rows() {
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    app.revisions = app_for_upgrades().revisions;
+    key(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.upgrade_marked.len(), 1);
+    let area = Rect::new(0, 0, 100, 20);
+    let body = Block::default()
+        .borders(Borders::ALL)
+        .inner(resource_tree_area(area).unwrap());
+    for row in [2, 1] {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_mouse(
+                MouseEvent {
+                    kind,
+                    column: body.x + 1,
+                    row: body.y + row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                area,
+            );
+        }
+        // Row 2 is not eligible, so the mark count only changes for row 1.
+        assert_eq!(app.upgrade_marked.len(), usize::from(row == 2));
+    }
+}
+
+#[test]
+fn upgrade_review_keeps_revisions_visible_for_long_names() {
+    let long_name = format!("e2e-persistent-{}-tail", "dashboard-".repeat(8));
+    let composition = format!("fdc-{}.dai-platform.nn.nl", "account-usage-".repeat(4));
+    let plan = upgrade::UpgradePlan {
+        target: Target {
+            identity: Identity {
+                group: "dai-platform.nn.nl".into(),
+                version: "v1".into(),
+                kind: "XFinOpsDashboardContent".into(),
+                namespace: None,
+                name: long_name,
+            },
+            expected_uid: None,
+        },
+        composition,
+        from_name: "a".into(),
+        from_number: 10,
+        to_name: "b".into(),
+        to_number: 11,
+    };
+    let mut app = app();
+    app.modal = Some(Modal::UpgradeReview {
+        plans: vec![plan.clone(), plan],
+    });
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("10 -> 11"), "{rendered}");
+    assert!(
+        rendered.contains("XFinOpsDashboardContent/e2e-"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("-tail"), "{rendered}");
+    assert!(rendered.contains("dai-platform.nn.nl"), "{rendered}");
+    assert!(rendered.contains('…'));
+}
+
+#[test]
+fn truncate_middle_keeps_both_ends_within_width() {
+    assert_eq!(truncate_middle("short", 10), "short");
+    let truncated = truncate_middle("abcdefghijklmnopqrstuvwxyz", 11);
+    assert_eq!(truncated.width(), 11);
+    assert!(truncated.starts_with("abcde") && truncated.ends_with("vwxyz"));
+    assert!(truncate_middle("界界界界界界", 7).width() <= 7);
+    assert_eq!(truncate_middle("abc", 1), "…");
+}
+
+#[test]
+fn upgrade_view_uses_a_peach_border_and_normal_view_keeps_lavender() {
+    let mut app = app_for_upgrades();
+    let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer().cell((0, 1)).unwrap().fg,
+        app.theme.palette.lavender
+    );
+    key(&mut app, KeyCode::Char('u'));
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer().cell((0, 1)).unwrap().fg,
+        app.theme.palette.peach
+    );
+    key(&mut app, KeyCode::Char('u'));
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert_eq!(
+        terminal.backend().buffer().cell((0, 1)).unwrap().fg,
+        app.theme.palette.lavender
+    );
+}
+
+fn discovered(app: &mut App) {
+    let generation = app.revisions.begin_refresh();
+    app.apply_revisions(
+        generation,
+        Ok(vec![
+            revision("db-1", "db", 1, "XDb"),
+            revision("db-3", "db", 3, "XDb"),
+        ]),
+    );
+}
+
+fn first_state(app: &App) -> upgrade::UpgradeState {
+    upgrade::upgrade_info(&app.snapshot.as_ref().unwrap().nodes[0], &app.revisions).state
+}
+
+#[test]
+fn reentering_the_upgrade_view_shows_cached_results_while_refreshing() {
+    use upgrade::UpgradeState;
+    let mut app = app_for_upgrades();
+    app.revisions = RevisionDiscovery::default();
+    assert!(matches!(
+        key(&mut app, KeyCode::Char('u')),
+        UiAction::DiscoverRevisions
+    ));
+    assert_eq!(first_state(&app), UpgradeState::Checking);
+    discovered(&mut app);
+    assert_eq!(first_state(&app), UpgradeState::Available);
+    key(&mut app, KeyCode::Char('u'));
+    assert!(!app.upgrade_view);
+
+    assert!(matches!(
+        key(&mut app, KeyCode::Char('u')),
+        UiAction::DiscoverRevisions
+    ));
+    // The refresh has not returned yet, but the previous result is still used.
+    app.revisions.begin_refresh();
+    assert!(app.revisions.is_refreshing());
+    assert_eq!(first_state(&app), UpgradeState::Available);
+    let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("1 available · refreshing"), "{rendered}");
+    assert!(rendered.contains("Available ↑"));
+    assert!(!rendered.contains("Checking"));
+}
+
+#[test]
+fn stale_discovery_results_are_ignored() {
+    let mut app = app_for_upgrades();
+    app.revisions = RevisionDiscovery::default();
+    let old = app.revisions.begin_refresh();
+    let new = app.revisions.begin_refresh();
+    app.apply_revisions(old, Ok(vec![revision("db-1", "db", 1, "XDb")]));
+    assert!(app.revisions.is_refreshing());
+    assert!(!app.revisions.has_cache());
+    app.apply_revisions(new, Ok(vec![revision("db-1", "db", 1, "XDb")]));
+    assert!(!app.revisions.is_refreshing());
+    assert!(app.revisions.has_cache());
+}
+
+#[test]
+fn failed_refresh_keeps_cached_results_and_says_so() {
+    use upgrade::UpgradeState;
+    let mut app = app_for_upgrades();
+    app.revisions = RevisionDiscovery::default();
+    key(&mut app, KeyCode::Char('u'));
+    discovered(&mut app);
+    let generation = app.revisions.begin_refresh();
+    app.apply_revisions(generation, Err("connection refused".into()));
+    assert_eq!(first_state(&app), UpgradeState::Available);
+    assert!(!app.revisions.is_refreshing());
+    assert_eq!(app.revisions.error(), Some("connection refused"));
+    assert!(app.status.contains("showing cached results"));
+    let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert!(
+        terminal
+            .backend()
+            .to_string()
+            .contains("cached, refresh failed")
+    );
+
+    // Without a cache a failure shows as unavailable.
+    let mut app = app_for_upgrades();
+    app.revisions = RevisionDiscovery::default();
+    let generation = app.revisions.begin_refresh();
+    app.apply_revisions(generation, Err("boom".into()));
+    assert_eq!(first_state(&app), UpgradeState::Failed);
+}
+
+#[test]
+fn an_open_review_is_not_changed_by_a_background_refresh() {
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Enter);
+    let Some(Modal::UpgradeReview { plans }) = &app.modal else {
+        panic!("expected review");
+    };
+    assert_eq!(plans[0].to_name, "db-3");
+    let generation = app.revisions.begin_refresh();
+    app.apply_revisions(
+        generation,
+        Ok(vec![
+            revision("db-1", "db", 1, "XDb"),
+            revision("db-3", "db", 3, "XDb"),
+            revision("db-4", "db", 4, "XDb"),
+        ]),
+    );
+    let UiAction::UpgradeRevisions(plans) = key(&mut app, KeyCode::Enter) else {
+        panic!("expected upgrade action");
+    };
+    assert_eq!(plans[0].to_name, "db-3");
+}
+
+fn upgrade_plan_for_first(app: &App) -> upgrade::UpgradePlan {
+    app.upgrade_info_for(&app.snapshot.as_ref().unwrap().nodes[0])
+        .plan
+        .unwrap()
+}
+
+#[test]
+fn upgrading_shows_immediately_and_clears_when_a_trace_reflects_it() {
+    use upgrade::UpgradeState;
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    let plan = upgrade_plan_for_first(&app);
+    app.begin_upgrades(std::slice::from_ref(&plan));
+    assert_eq!(first_state(&app), UpgradeState::Upgrading);
+    // Revision columns stay, and an in-flight resource cannot be marked again.
+    let info = app.upgrade_info_for(&app.snapshot.as_ref().unwrap().nodes[0]);
+    assert_eq!((info.current, info.latest), (Some(1), Some(3)));
+    assert!(info.plan.is_none());
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.upgrade_marked.is_empty());
+
+    let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Upgrading…"), "{rendered}");
+    assert!(rendered.contains("0 available"), "{rendered}");
+    app.set_selection(1);
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let tree = resource_tree_area(Rect::new(0, 0, 140, 20)).unwrap();
+    let (start, _) = rendered_tree(&app, tree).unwrap().upgrade_range.unwrap();
+    let offset = rendered_tree(&app, tree).unwrap().horizontal.offset;
+    let cell = terminal
+        .backend()
+        .buffer()
+        .cell((1 + (start - offset) as u16, 3))
+        .unwrap();
+    assert_eq!(cell.symbol(), "U");
+    assert_eq!(cell.fg, app.theme.palette.sky);
+
+    // Success keeps showing Upgrading until a trace shows the new reference.
+    app.active_mutations.insert(plan.target.identity.clone());
+    assert!(app.finish_action(
+        "Upgrade revision",
+        Some(plan.target.identity.clone()),
+        Ok(None)
+    ));
+    assert_eq!(first_state(&app), UpgradeState::Upgrading);
+    let manual = |revision: &str| {
+        format!(
+            r#"{{"compositionRef":{{"name":"db"}},"compositionUpdatePolicy":"Manual","compositionRevisionRef":{{"name":"{revision}"}}}}"#
+        )
+    };
+    let trace = format!(r#"{}}}"#, xr("old", "XDb", &manual("db-1")));
+    app.apply_snapshot(Snapshot::parse(trace.as_bytes()).unwrap());
+    assert_eq!(first_state(&app), UpgradeState::Upgrading);
+    let trace = format!(r#"{}}}"#, xr("old", "XDb", &manual("db-3")));
+    app.apply_snapshot(Snapshot::parse(trace.as_bytes()).unwrap());
+    assert_eq!(first_state(&app), UpgradeState::UpToDate);
+}
+
+#[test]
+fn a_failed_upgrade_returns_to_available() {
+    use upgrade::UpgradeState;
+    let mut app = app_for_upgrades();
+    key(&mut app, KeyCode::Char('u'));
+    let plan = upgrade_plan_for_first(&app);
+    let identity = plan.target.identity.clone();
+    app.begin_upgrades(std::slice::from_ref(&plan));
+    app.active_mutations.insert(identity.clone());
+    assert!(!app.finish_action(
+        "Upgrade revision",
+        Some(identity.clone()),
+        Err("boom".into())
+    ));
+    assert_eq!(first_state(&app), UpgradeState::Available);
+
+    // In a batch only the failed resources go back to Available.
+    let other = app.snapshot.as_ref().unwrap().nodes[1].identity.clone();
+    let mut second = plan.clone();
+    second.target.identity = other.clone();
+    app.begin_upgrades(&[plan, second]);
+    let identities = [identity, other.clone()];
+    app.active_mutations.extend(identities.iter().cloned());
+    app.finish_batch(
+        "Upgrade revision 2 resources",
+        &identities,
+        &identities[..1],
+        Err("1 of 2 failed".into()),
+    );
+    assert_eq!(first_state(&app), UpgradeState::Available);
+    assert!(app.revisions.pending_contains(&other));
 }

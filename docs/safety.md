@@ -29,6 +29,14 @@ list; otherwise that resource fails and must be reviewed again, so a finalizer
 added after the review is never removed unseen. Removing finalizers can bypass
 controller cleanup and leave external resources behind.
 
+Revision upgrades change only `compositionRevisionRef`. At apply time each resource
+is re-fetched and must still use the Manual update policy, the same Composition,
+and the reviewed current revision reference; the destination revision must still
+exist and belong to the same Composition and composite type. The patch tests UID,
+resourceVersion, and the old reference, so a concurrent change fails instead of
+being overwritten. Automatic resources are never modified. Applying the reference
+does not guarantee that reconciliation succeeds, and there is no automatic rollback.
+
 ## Sensitive Data
 
 Secret `data` and `stringData` are redacted from the live YAML modal, and

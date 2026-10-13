@@ -225,6 +225,11 @@ impl Theme {
         self.fg(self.palette.lavender)
     }
 
+    /// Border of the revision upgrade view, to show it is a different mode.
+    pub fn upgrade_border(&self) -> Style {
+        self.fg(self.palette.peach)
+    }
+
     pub fn selected_row(&self) -> Style {
         if self.colors_enabled {
             Style::default()
