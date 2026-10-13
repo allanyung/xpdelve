@@ -361,6 +361,17 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
                 failed = failures;
                 (label, result.map(|()| None), true)
             }
+            UiAction::Reconcile(targets) => {
+                let label = batch_label("Request reconcile".into(), targets.len());
+                let (result, failures) = run_batch(
+                    &targets,
+                    |target| &target.identity,
+                    |target| kubernetes.request_reconcile(target),
+                )
+                .await;
+                failed = failures;
+                (label, result.map(|()| None), true)
+            }
             UiAction::RemoveFinalizers(removals) => {
                 let label = batch_label("Remove finalizers".into(), removals.len());
                 let (result, failures) = run_batch(
@@ -417,9 +428,9 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
 
 fn mutation_identities(action: &UiAction) -> Vec<&Identity> {
     match action {
-        UiAction::Delete(targets, _) | UiAction::SetPaused(targets, _) => {
-            targets.iter().map(|target| &target.identity).collect()
-        }
+        UiAction::Delete(targets, _)
+        | UiAction::SetPaused(targets, _)
+        | UiAction::Reconcile(targets) => targets.iter().map(|target| &target.identity).collect(),
         UiAction::UpgradeRevisions(plans) => {
             plans.iter().map(|plan| &plan.target.identity).collect()
         }

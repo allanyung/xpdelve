@@ -1696,8 +1696,12 @@ fn logical_name_toggle_clamps_horizontal_scroll_without_changing_selection() {
 fn logical_name_toggle_does_not_intercept_text_inputs_or_help() {
     let mut app = app();
     let area = Rect::new(0, 0, 100, 16);
-    for key in ['/', 'f', ':'] {
-        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+    for (key, modifiers) in [
+        ('/', KeyModifiers::NONE),
+        ('f', KeyModifiers::CONTROL),
+        (':', KeyModifiers::NONE),
+    ] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), modifiers), area);
         app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
         assert!(!app.show_logical_name);
         assert_eq!(app.input, "L");
@@ -1889,8 +1893,12 @@ fn external_name_toggle_clamps_scroll_and_does_not_intercept_text_inputs_or_help
         rendered.horizontal.max_offset()
     );
     assert_eq!(app.selected_node().unwrap().identity, selected);
-    for key in ['/', 'f', ':'] {
-        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), area);
+    for (key, modifiers) in [
+        ('/', KeyModifiers::NONE),
+        ('f', KeyModifiers::CONTROL),
+        (':', KeyModifiers::NONE),
+    ] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), modifiers), area);
         app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
         assert!(!app.show_external_name);
         assert_eq!(app.input, "X");
@@ -3864,39 +3872,122 @@ fn tree_right_click_opens_context_menu_for_clicked_resource() {
 
 #[test]
 fn context_menu_options_dispatch_matching_actions() {
-    let area = Rect::new(0, 0, 80, 12);
-    for (item, expected) in [(0, "yaml"), (1, "edit"), (3, "events"), (4, "describe")] {
+    let area = Rect::new(0, 0, 80, 14);
+    for (item, paused, expected) in [
+        (0, false, "yaml"),
+        (2, false, "events"),
+        (3, false, "describe"),
+        (4, false, "edit"),
+        (5, false, "pause"),
+        (5, true, "unpause"),
+        (6, false, "reconcile"),
+    ] {
         let mut app = app();
         app.modal = Some(Modal::ContextMenu {
             target: app.selected_target().unwrap(),
+            paused,
+            items: context_menu_items(paused),
             column: 10,
             row: 3,
             pressed: None,
         });
-        let menu = context_menu_area(area, 10, 3);
-        let inner = Block::default().borders(Borders::ALL).inner(menu);
-        let click = |kind| MouseEvent {
-            kind,
-            column: inner.x,
-            row: inner.y + item as u16,
-            modifiers: KeyModifiers::NONE,
-        };
-        assert!(
-            app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)), area)
-                .is_none()
-        );
-        let action = app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)), area);
-
+        let action = click_context_item(&mut app, area, item);
         let (actual, target) = match action {
             Some(MouseAction::Action(UiAction::Yaml(target))) => ("yaml", target),
             Some(MouseAction::Action(UiAction::Edit(target))) => ("edit", target),
             Some(MouseAction::Action(UiAction::Events(target))) => ("events", target),
             Some(MouseAction::Action(UiAction::Describe(target))) => ("describe", target),
+            Some(MouseAction::Action(UiAction::SetPaused(mut targets, pause))) => {
+                assert_eq!(pause, !paused);
+                assert_eq!(targets.len(), 1);
+                (if pause { "pause" } else { "unpause" }, targets.remove(0))
+            }
+            Some(MouseAction::Action(UiAction::Reconcile(mut targets))) => {
+                assert_eq!(targets.len(), 1);
+                ("reconcile", targets.remove(0))
+            }
             _ => panic!("expected context menu action"),
         };
         assert_eq!(actual, expected);
         assert_eq!(target.identity.kind, "Root");
         assert!(app.modal.is_none());
+    }
+}
+
+fn click_context_item(app: &mut App, area: Rect, item: usize) -> Option<MouseAction> {
+    let menu = context_menu_area(area, 10, 3);
+    let inner = Block::default().borders(Borders::ALL).inner(menu);
+    let click = |kind| MouseEvent {
+        kind,
+        column: inner.x,
+        row: inner.y + item as u16,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(
+        app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)), area)
+            .is_none()
+    );
+    app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)), area)
+}
+
+#[test]
+fn context_menu_lists_inspection_before_actions_with_a_state_aware_pause_label() {
+    for (paused, label) in [(false, "Pause"), (true, "Unpause")] {
+        let mut app = app();
+        app.modal = Some(Modal::ContextMenu {
+            target: app.selected_target().unwrap(),
+            paused,
+            items: context_menu_items(paused),
+            column: 10,
+            row: 3,
+            pressed: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = terminal.backend().to_string();
+        let position = |text: &str| rendered.find(text).unwrap_or_else(|| panic!("{text}"));
+        assert!(position("YAML") < position("Status"));
+        assert!(position("Status") < position("Events"));
+        assert!(position("Events") < position("Describe"));
+        assert!(position("Describe") < position("Edit"));
+        assert!(position("Edit") < position(label));
+        assert!(position(label) < position("Reconcile"));
+    }
+}
+
+#[test]
+fn context_menu_mutations_respect_read_only() {
+    let area = Rect::new(0, 0, 80, 14);
+    for (item, message) in [
+        (4, "Edit is disabled"),
+        (5, "Pause is disabled"),
+        (6, "Reconcile is disabled"),
+    ] {
+        let mut app = app();
+        app.config.read_only = true;
+        app.modal = Some(Modal::ContextMenu {
+            target: app.selected_target().unwrap(),
+            paused: false,
+            items: context_menu_items(false),
+            column: 10,
+            row: 3,
+            pressed: None,
+        });
+        assert!(click_context_item(&mut app, area, item).is_none());
+        assert!(app.status.contains(message), "{}", app.status);
+        // Inspection items stay available.
+        app.modal = Some(Modal::ContextMenu {
+            target: app.selected_target().unwrap(),
+            paused: false,
+            items: context_menu_items(false),
+            column: 10,
+            row: 3,
+            pressed: None,
+        });
+        assert!(matches!(
+            click_context_item(&mut app, area, 0),
+            Some(MouseAction::Action(UiAction::Yaml(_)))
+        ));
     }
 }
 
@@ -3906,6 +3997,8 @@ fn context_menu_status_opens_the_status_modal() {
     let area = Rect::new(0, 0, 80, 12);
     app.modal = Some(Modal::ContextMenu {
         target: app.selected_target().unwrap(),
+        paused: false,
+        items: context_menu_items(false),
         column: 10,
         row: 3,
         pressed: None,
@@ -3915,7 +4008,7 @@ fn context_menu_status_opens_the_status_modal() {
     let click = |kind| MouseEvent {
         kind,
         column: inner.x,
-        row: inner.y + 2,
+        row: inner.y + 1,
         modifiers: KeyModifiers::NONE,
     };
 
@@ -3940,6 +4033,8 @@ fn clicking_outside_context_menu_only_dismisses_it() {
     let area = Rect::new(0, 0, 80, 12);
     app.modal = Some(Modal::ContextMenu {
         target: app.selected_target().unwrap(),
+        paused: false,
+        items: context_menu_items(false),
         column: 20,
         row: 3,
         pressed: None,
@@ -4548,8 +4643,15 @@ fn paused_footer_and_help_describe_space_and_p_only() {
     assert!(!rendered.contains("u:unpause"));
     let footer = rendered.find("ctrl-d:delete").unwrap();
     assert!(footer < rendered.find("p:pause").unwrap());
-    assert!(rendered.find("p:pause").unwrap() < rendered.find("u:upgrade").unwrap());
-    assert!(rendered.find("u:upgrade").unwrap() < rendered.find("d:describe").unwrap());
+    assert!(rendered.find("p:pause").unwrap() < rendered.find("f:reconcile").unwrap());
+    assert!(!rendered.contains("u:upgrade"));
+    assert!(rendered.find("::command").unwrap() < rendered.find(":upgrade").unwrap());
+    assert!(rendered.find("f:reconcile").unwrap() < rendered.find("d:describe").unwrap());
+    assert!(
+        HELP_LINES
+            .iter()
+            .any(|line| line.contains("request immediate reconcile"))
+    );
 }
 
 fn app_with_finalizers() -> App {
@@ -4834,7 +4936,7 @@ fn u_opens_the_upgrade_view_and_renders_colored_states() {
     let mut app = app_for_upgrades();
     let mut terminal = Terminal::new(TestBackend::new(140, 20)).unwrap();
     assert!(matches!(
-        key(&mut app, KeyCode::Char('u')),
+        open_upgrade(&mut app),
         UiAction::DiscoverRevisions
     ));
     assert!(app.upgrade_view);
@@ -4887,7 +4989,7 @@ fn u_opens_the_upgrade_view_and_renders_colored_states() {
 #[test]
 fn upgrade_view_marks_only_eligible_visible_resources() {
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     app.revisions = app_for_upgrades().revisions;
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Char(' '));
@@ -4936,7 +5038,7 @@ fn upgrade_view_marks_only_eligible_visible_resources() {
 #[test]
 fn upgrade_review_applies_only_after_enter_and_respects_read_only() {
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     app.revisions = app_for_upgrades().revisions;
     // Nothing marked: the highlighted upgrade is reviewed.
     assert!(matches!(key(&mut app, KeyCode::Enter), UiAction::None));
@@ -4969,7 +5071,7 @@ fn upgrade_review_applies_only_after_enter_and_respects_read_only() {
 #[test]
 fn upgrade_view_blocks_other_mutations_and_exits_with_u_or_esc() {
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     for code in [KeyCode::Char('p'), KeyCode::Char('e')] {
         assert!(matches!(key(&mut app, code), UiAction::None));
         assert!(app.status.contains("Not available in the upgrade view"));
@@ -4986,10 +5088,10 @@ fn upgrade_view_blocks_other_mutations_and_exits_with_u_or_esc() {
         key(&mut app, KeyCode::Char('r')),
         UiAction::Refresh
     ));
-    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Esc);
     assert!(!app.upgrade_view);
 
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     app.revisions = app_for_upgrades().revisions;
     key(&mut app, KeyCode::Up);
     key(&mut app, KeyCode::Char(' '));
@@ -5016,7 +5118,7 @@ fn upgrade_completion_clears_only_upgrade_marks() {
 #[test]
 fn upgrade_checkbox_click_toggles_only_eligible_rows() {
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     app.revisions = app_for_upgrades().revisions;
     key(&mut app, KeyCode::Char('a'));
     assert_eq!(app.upgrade_marked.len(), 1);
@@ -5101,13 +5203,13 @@ fn upgrade_view_uses_a_peach_border_and_normal_view_keeps_lavender() {
         terminal.backend().buffer().cell((0, 1)).unwrap().fg,
         app.theme.palette.lavender
     );
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     terminal.draw(|frame| render(frame, &app)).unwrap();
     assert_eq!(
         terminal.backend().buffer().cell((0, 1)).unwrap().fg,
         app.theme.palette.peach
     );
-    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Esc);
     terminal.draw(|frame| render(frame, &app)).unwrap();
     assert_eq!(
         terminal.backend().buffer().cell((0, 1)).unwrap().fg,
@@ -5136,17 +5238,17 @@ fn reentering_the_upgrade_view_shows_cached_results_while_refreshing() {
     let mut app = app_for_upgrades();
     app.revisions = RevisionDiscovery::default();
     assert!(matches!(
-        key(&mut app, KeyCode::Char('u')),
+        open_upgrade(&mut app),
         UiAction::DiscoverRevisions
     ));
     assert_eq!(first_state(&app), UpgradeState::Checking);
     discovered(&mut app);
     assert_eq!(first_state(&app), UpgradeState::Available);
-    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Esc);
     assert!(!app.upgrade_view);
 
     assert!(matches!(
-        key(&mut app, KeyCode::Char('u')),
+        open_upgrade(&mut app),
         UiAction::DiscoverRevisions
     ));
     // The refresh has not returned yet, but the previous result is still used.
@@ -5180,7 +5282,7 @@ fn failed_refresh_keeps_cached_results_and_says_so() {
     use upgrade::UpgradeState;
     let mut app = app_for_upgrades();
     app.revisions = RevisionDiscovery::default();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     discovered(&mut app);
     let generation = app.revisions.begin_refresh();
     app.apply_revisions(generation, Err("connection refused".into()));
@@ -5208,7 +5310,7 @@ fn failed_refresh_keeps_cached_results_and_says_so() {
 #[test]
 fn an_open_review_is_not_changed_by_a_background_refresh() {
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     key(&mut app, KeyCode::Enter);
     let Some(Modal::UpgradeReview { plans }) = &app.modal else {
         panic!("expected review");
@@ -5239,7 +5341,7 @@ fn upgrade_plan_for_first(app: &App) -> upgrade::UpgradePlan {
 fn upgrading_shows_immediately_and_clears_when_a_trace_reflects_it() {
     use upgrade::UpgradeState;
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     let plan = upgrade_plan_for_first(&app);
     app.begin_upgrades(std::slice::from_ref(&plan));
     assert_eq!(first_state(&app), UpgradeState::Upgrading);
@@ -5293,7 +5395,7 @@ fn upgrading_shows_immediately_and_clears_when_a_trace_reflects_it() {
 fn a_failed_upgrade_returns_to_available() {
     use upgrade::UpgradeState;
     let mut app = app_for_upgrades();
-    key(&mut app, KeyCode::Char('u'));
+    open_upgrade(&mut app);
     let plan = upgrade_plan_for_first(&app);
     let identity = plan.target.identity.clone();
     app.begin_upgrades(std::slice::from_ref(&plan));
@@ -5320,4 +5422,352 @@ fn a_failed_upgrade_returns_to_available() {
     );
     assert_eq!(first_state(&app), UpgradeState::Available);
     assert!(app.revisions.pending_contains(&other));
+}
+
+#[test]
+fn f_requests_reconcile_and_ctrl_f_starts_find() {
+    let mut app = app();
+    key(&mut app, KeyCode::Down);
+    let UiAction::Reconcile(targets) = key(&mut app, KeyCode::Char('f')) else {
+        panic!("expected reconcile");
+    };
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].identity.kind, "Child");
+    // Shift+F is unbound.
+    let shifted = app.handle_key(
+        KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+        Rect::new(0, 0, 100, 20),
+    );
+    assert!(matches!(shifted, UiAction::None));
+
+    let mut marked = app_for_upgrades();
+    key(&mut marked, KeyCode::Char(' '));
+    key(&mut marked, KeyCode::Down);
+    key(&mut marked, KeyCode::Char(' '));
+    let UiAction::Reconcile(targets) = key(&mut marked, KeyCode::Char('f')) else {
+        panic!("expected reconcile");
+    };
+    assert_eq!(targets.len(), 2);
+
+    let mut finder = self::app();
+    let action = finder.handle_key(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        Rect::new(0, 0, 100, 20),
+    );
+    assert!(matches!(action, UiAction::None));
+    assert_eq!(finder.mode, InputMode::Find);
+}
+
+#[test]
+fn ctrl_f_no_longer_pages_down_but_page_down_does() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 20);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        area,
+    );
+    assert_eq!(app.mode, InputMode::Find);
+    app.mode = InputMode::Normal;
+    app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), area);
+    assert_eq!(app.selection.visible_index, 1);
+}
+
+#[test]
+fn reconcile_is_blocked_in_read_only_and_the_upgrade_view() {
+    let mut app = app();
+    app.config.read_only = true;
+    assert!(matches!(key(&mut app, KeyCode::Char('f')), UiAction::None));
+    assert!(app.status.contains("read-only"));
+
+    let mut app = app_for_upgrades();
+    open_upgrade(&mut app);
+    assert!(matches!(key(&mut app, KeyCode::Char('f')), UiAction::None));
+    assert!(app.status.contains("Not available in the upgrade view"));
+}
+
+#[test]
+fn reconcile_completion_clears_only_the_normal_marks() {
+    let mut app = app();
+    key(&mut app, KeyCode::Char(' '));
+    let identity = app.marked.keys().next().cloned().unwrap();
+    app.active_mutations.insert(identity.clone());
+    assert!(app.finish_action("Request reconcile", Some(identity), Ok(None)));
+    assert!(app.marked.is_empty());
+    assert_eq!(app.status, "Request reconcile succeeded");
+}
+
+fn right_click(app: &mut App, area: Rect, row_offset: u16) {
+    let body = Block::default()
+        .borders(Borders::ALL)
+        .inner(resource_tree_area(area).unwrap());
+    app.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: body.x + 8,
+            row: body.y + row_offset,
+            modifiers: KeyModifiers::NONE,
+        },
+        area,
+    );
+}
+
+fn menu_labels(app: &App) -> Vec<&'static str> {
+    let Some(Modal::ContextMenu { items, .. }) = &app.modal else {
+        panic!("expected context menu");
+    };
+    items.iter().map(|(_, label)| *label).collect()
+}
+
+fn click_menu_label(app: &mut App, area: Rect, label: &str) -> Option<MouseAction> {
+    let Some(Modal::ContextMenu {
+        column, row, items, ..
+    }) = &app.modal
+    else {
+        panic!("expected context menu");
+    };
+    let index = items.iter().position(|(_, text)| *text == label).unwrap();
+    let menu = context_menu_area_with(area, *column, *row, items);
+    let inner = Block::default().borders(Borders::ALL).inner(menu);
+    let event = |kind| MouseEvent {
+        kind,
+        column: inner.x,
+        row: inner.y + index as u16,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(event(MouseEventKind::Down(MouseButton::Left)), area);
+    app.handle_mouse(event(MouseEventKind::Up(MouseButton::Left)), area)
+}
+
+#[test]
+fn upgrade_view_menu_has_only_inspection_and_upgrade_actions() {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut app = app_for_upgrades();
+    open_upgrade(&mut app);
+    // Row 1 is the first resource, which has an upgrade available.
+    right_click(&mut app, area, 1);
+    assert_eq!(
+        menu_labels(&app),
+        [
+            "YAML",
+            "Status",
+            "Events",
+            "Describe",
+            "────────────",
+            "Mark upgrade",
+            "Review upgrade"
+        ]
+    );
+    for removed in ["Edit", "Pause", "Unpause", "Reconcile"] {
+        assert!(!menu_labels(&app).contains(&removed));
+    }
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    assert!(terminal.backend().to_string().contains("Review upgrade"));
+
+    // Without an available upgrade (up to date) only inspection remains.
+    app.modal = None;
+    right_click(&mut app, area, 2);
+    assert_eq!(menu_labels(&app), ["YAML", "Status", "Events", "Describe"]);
+    // The separator never dispatches anything.
+    app.modal = None;
+    right_click(&mut app, area, 1);
+    assert!(click_menu_label(&mut app, area, "────────────").is_none());
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn upgrade_menu_marks_unmarks_and_reviews_only_the_clicked_resource() {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut app = app_for_upgrades();
+    open_upgrade(&mut app);
+    right_click(&mut app, area, 1);
+    assert!(click_menu_label(&mut app, area, "Mark upgrade").is_none());
+    assert_eq!(app.upgrade_marked.len(), 1);
+    assert!(app.modal.is_none());
+
+    right_click(&mut app, area, 1);
+    assert!(menu_labels(&app).contains(&"Unmark upgrade"));
+    assert!(!menu_labels(&app).contains(&"Mark upgrade"));
+    assert!(click_menu_label(&mut app, area, "Unmark upgrade").is_none());
+    assert!(app.upgrade_marked.is_empty());
+
+    // Review applies to the clicked resource even when others are marked.
+    key(&mut app, KeyCode::Char('a'));
+    right_click(&mut app, area, 1);
+    assert!(click_menu_label(&mut app, area, "Review upgrade").is_none());
+    let Some(Modal::UpgradeReview { plans }) = &app.modal else {
+        panic!("expected review");
+    };
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].target.identity.name, "old");
+}
+
+#[test]
+fn upgrade_menu_omits_review_in_read_only_mode_but_keeps_marking() {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut app = app_for_upgrades();
+    app.config.read_only = true;
+    open_upgrade(&mut app);
+    right_click(&mut app, area, 1);
+    let labels = menu_labels(&app);
+    assert!(labels.contains(&"Mark upgrade"));
+    assert!(!labels.contains(&"Review upgrade"));
+    // A menu opened earlier still refuses to review once read-only applies.
+    app.modal = None;
+    app.config.read_only = false;
+    right_click(&mut app, area, 1);
+    app.config.read_only = true;
+    click_menu_label(&mut app, area, "Review upgrade");
+    assert!(app.modal.is_none());
+    assert!(app.status.contains("read-only"));
+}
+
+#[test]
+fn normal_view_menu_is_unchanged_by_the_upgrade_menu() {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut app = app_for_upgrades();
+    right_click(&mut app, area, 1);
+    assert_eq!(
+        menu_labels(&app),
+        [
+            "YAML",
+            "Status",
+            "Events",
+            "Describe",
+            "Edit",
+            "Pause",
+            "Reconcile"
+        ]
+    );
+}
+
+#[test]
+fn context_menu_pads_the_longest_label_on_both_sides() {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut app = app_for_upgrades();
+    open_upgrade(&mut app);
+    right_click(&mut app, area, 1);
+    let Some(Modal::ContextMenu {
+        column, row, items, ..
+    }) = &app.modal
+    else {
+        panic!("expected context menu");
+    };
+    let menu = context_menu_area_with(area, *column, *row, items);
+    let inner = Block::default().borders(Borders::ALL).inner(menu);
+    let widest = items.iter().map(|(_, label)| label.width()).max().unwrap();
+    // One leading and one trailing space around the longest label.
+    assert_eq!(usize::from(inner.width), widest + 2);
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let index = items
+        .iter()
+        .position(|(_, label)| *label == "Review upgrade")
+        .unwrap();
+    let y = inner.y + index as u16;
+    assert_eq!(buffer.cell((inner.right() - 1, y)).unwrap().symbol(), " ");
+    assert_eq!(buffer.cell((inner.right() - 2, y)).unwrap().symbol(), "e");
+}
+
+#[test]
+fn ctrl_j_and_ctrl_k_page_while_plain_j_and_k_move_one_row() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 20);
+    let press = |app: &mut App, code, modifiers| {
+        app.handle_key(KeyEvent::new(code, modifiers), area);
+    };
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(app.selection.visible_index, 1);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(app.selection.visible_index, 0);
+    // A page is larger than this two-row tree, so paging reaches the last/first row.
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert_eq!(app.selection.visible_index, 1);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+    assert_eq!(app.selection.visible_index, 0);
+    // Ctrl+J is not Enter: no details or modal opens.
+    assert!(app.modal.is_none());
+    // Ctrl+B no longer pages.
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    assert_eq!(app.selection.visible_index, 1);
+}
+
+#[test]
+fn ctrl_j_and_ctrl_k_page_a_longer_tree_by_the_page_size() {
+    let mut app = app();
+    let children = (0..40)
+        .map(|index| {
+            format!(
+                r#"{{"object":{{"apiVersion":"v1","kind":"Child","metadata":{{"name":"c{index}"}}}}}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let trace = format!(
+        r#"{{"object":{{"apiVersion":"v1","kind":"Root","metadata":{{"name":"root"}}}},"children":[{children}]}}"#
+    );
+    app.apply_snapshot(Snapshot::parse(trace.as_bytes()).unwrap());
+    let area = Rect::new(0, 0, 100, 20);
+    let page = usize::from(area.height - 6);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        area,
+    );
+    assert_eq!(app.selection.visible_index, page);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        area,
+    );
+    assert_eq!(app.selection.visible_index, 0);
+}
+
+/// Opens the upgrade view the way a user does: `:upgrade` in the command palette.
+fn open_upgrade(app: &mut App) -> UiAction {
+    key(app, KeyCode::Char(':'));
+    for character in "upgrade".chars() {
+        key(app, KeyCode::Char(character));
+    }
+    key(app, KeyCode::Enter)
+}
+
+#[test]
+fn upgrade_command_opens_the_view_and_u_is_unbound() {
+    let mut app = app_for_upgrades();
+    assert!(matches!(key(&mut app, KeyCode::Char('u')), UiAction::None));
+    assert!(!app.upgrade_view);
+
+    // The command shows in the palette and matches by prefix.
+    key(&mut app, KeyCode::Char(':'));
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Char('p'));
+    let entries = app.palette_entries();
+    assert!(entries.iter().any(|entry| entry.label == "upgrade"));
+    key(&mut app, KeyCode::Esc);
+
+    assert!(matches!(
+        open_upgrade(&mut app),
+        UiAction::DiscoverRevisions
+    ));
+    assert!(app.upgrade_view);
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn upgrade_command_inside_the_view_keeps_marks_and_does_not_rediscover() {
+    let mut app = app_for_upgrades();
+    open_upgrade(&mut app);
+    app.revisions = app_for_upgrades().revisions;
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.upgrade_marked.len(), 1);
+    assert!(matches!(open_upgrade(&mut app), UiAction::None));
+    assert!(app.upgrade_view);
+    assert_eq!(app.upgrade_marked.len(), 1);
+    // `u` does nothing in the view either, and Esc still goes back (marks first).
+    assert!(matches!(key(&mut app, KeyCode::Char('u')), UiAction::None));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.upgrade_view && app.upgrade_marked.is_empty());
+    key(&mut app, KeyCode::Esc);
+    assert!(!app.upgrade_view);
 }

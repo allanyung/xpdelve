@@ -185,6 +185,12 @@ impl App {
             PaletteAction::OpenHealthPicker,
         );
         maybe_add_command(&mut entries, query, "skin", PaletteAction::OpenSkinPicker);
+        maybe_add_command(
+            &mut entries,
+            query,
+            "upgrade",
+            PaletteAction::OpenUpgradeView,
+        );
         maybe_add_command(&mut entries, query, "reload", PaletteAction::ReloadConfig);
         maybe_add_command(&mut entries, query, "quit", PaletteAction::Quit);
         entries.sort_by(|(left_score, left), (right_score, right)| {
@@ -241,13 +247,13 @@ impl App {
         });
     }
 
-    pub(super) fn execute_palette_action(&mut self, action: PaletteAction) {
+    pub(super) fn execute_palette_action(&mut self, action: PaletteAction) -> UiAction {
         match action {
             PaletteAction::FilterKind(kind) => self.kind_filter = Some(kind),
             PaletteAction::ClearKindFilter => self.kind_filter = None,
             PaletteAction::OpenExcludePicker => {
                 self.open_exclude_picker();
-                return;
+                return UiAction::None;
             }
             PaletteAction::OpenHealthPicker => {
                 self.mode = InputMode::Normal;
@@ -257,25 +263,36 @@ impl App {
                     .position(|filter| *filter == self.health_filter)
                     .unwrap_or_default();
                 self.modal = Some(Modal::HealthPicker { selected });
-                return;
+                return UiAction::None;
             }
             PaletteAction::OpenSkinPicker => {
                 self.mode = InputMode::Normal;
                 self.input.clear();
                 self.modal = Some(Modal::SkinPicker { selected: 0 });
-                return;
+                return UiAction::None;
             }
             PaletteAction::ReloadConfig => {
                 self.mode = InputMode::Normal;
                 self.input.clear();
                 self.reload_config();
-                return;
+                return UiAction::None;
+            }
+            PaletteAction::OpenUpgradeView => {
+                self.mode = InputMode::Normal;
+                self.input.clear();
+                // Opens the view; running it while already there leaves it untouched.
+                return if self.upgrade_view {
+                    UiAction::None
+                } else {
+                    self.enter_upgrade_view()
+                };
             }
             PaletteAction::Quit => self.quit = true,
         }
         self.mode = InputMode::Normal;
         self.input.clear();
         self.set_selection(0);
+        UiAction::None
     }
 
     pub(super) fn reload_config(&mut self) {
@@ -483,6 +500,23 @@ impl App {
                 targets,
                 propagation: DeletePropagation::Foreground,
             });
+        }
+    }
+
+    pub(super) fn request_reconcile(&mut self) -> UiAction {
+        if self.config.read_only {
+            self.status = "Reconcile is disabled in read-only mode".into();
+            return UiAction::None;
+        }
+        let targets: Vec<_> = self
+            .action_targets()
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect();
+        if targets.is_empty() {
+            UiAction::None
+        } else {
+            UiAction::Reconcile(targets)
         }
     }
 

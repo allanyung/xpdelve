@@ -261,6 +261,21 @@ impl Kubernetes {
         Ok(())
     }
 
+    /// Sets `crossplane.io/reconcile-requested-at` to the current time, which makes
+    /// Crossplane reconcile the resource immediately.
+    pub async fn request_reconcile(&self, target: &Target) -> Result<()> {
+        let (_api, current) = self.api_and_current(target).await?;
+        let context = self.verified_patch_context(target).await?;
+        let operations = reconcile_patch_operations(
+            &context.uid,
+            &context.resource_version,
+            current.metadata.annotations.is_some(),
+            &reconcile_timestamp(),
+        );
+        patch(&context.api, &target.identity.name, operations).await?;
+        Ok(())
+    }
+
     pub async fn set_paused(&self, target: &Target, paused: bool) -> Result<()> {
         const KEY: &str = "crossplane.io/paused";
         let (_api, current) = self.api_and_current(target).await?;
@@ -502,6 +517,32 @@ fn dynamic_api(
     }
 }
 
+/// UTC RFC 3339 with milliseconds, so two requests in the same second still differ.
+fn reconcile_timestamp() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn reconcile_patch_operations(
+    uid: &str,
+    resource_version: &str,
+    has_annotations: bool,
+    timestamp: &str,
+) -> Vec<Value> {
+    let mut operations = vec![
+        json!({"op": "test", "path": "/metadata/uid", "value": uid}),
+        json!({"op": "test", "path": "/metadata/resourceVersion", "value": resource_version}),
+    ];
+    if !has_annotations {
+        operations.push(json!({"op": "add", "path": "/metadata/annotations", "value": {}}));
+    }
+    operations.push(json!({
+        "op": "add",
+        "path": "/metadata/annotations/crossplane.io~1reconcile-requested-at",
+        "value": timestamp,
+    }));
+    operations
+}
+
 async fn patch(api: &Api<DynamicObject>, name: &str, operations: Vec<Value>) -> Result<()> {
     let patch: JsonPatch = serde_json::from_value(Value::Array(operations))?;
     api.patch(name, &PatchParams::default(), &Patch::<()>::Json(patch))
@@ -541,6 +582,30 @@ pub(crate) fn redact_object(mut object: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconcile_patch_sets_the_documented_annotation_atomically() {
+        let operations = reconcile_patch_operations("u", "7", false, "2026-10-13T09:30:00.123Z");
+        assert_eq!(operations[0]["path"], "/metadata/uid");
+        assert_eq!(operations[1]["value"], "7");
+        assert_eq!(operations[2]["path"], "/metadata/annotations");
+        assert_eq!(
+            operations[3]["path"],
+            "/metadata/annotations/crossplane.io~1reconcile-requested-at"
+        );
+        assert_eq!(operations[3]["value"], "2026-10-13T09:30:00.123Z");
+        // Existing annotations are never replaced wholesale.
+        assert_eq!(reconcile_patch_operations("u", "7", true, "t").len(), 3);
+    }
+
+    #[test]
+    fn reconcile_timestamp_is_utc_rfc3339_with_milliseconds() {
+        let timestamp = reconcile_timestamp();
+        assert!(timestamp.ends_with('Z'), "{timestamp}");
+        assert!(chrono::DateTime::parse_from_rfc3339(&timestamp).is_ok());
+        let (_, fraction) = timestamp.split_once('.').unwrap();
+        assert_eq!(fraction.len(), 4);
+    }
 
     #[test]
     fn propagation_cycles_from_safe_default() {

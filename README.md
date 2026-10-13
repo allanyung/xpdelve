@@ -134,10 +134,11 @@ context, resource, API group, and name through the variables in `args`.
 - `[`/`]`: collapse or expand the whole tree
 - `L` (Shift+L): show or hide the logical name column (`crossplane.io/composition-resource-name`); hidden by default, enable with `ui.show_logical_name = true`
 - `X` (Shift+X): show or hide the external name column (`crossplane.io/external-name`); hidden by default, enable with `ui.show_external_name = true`
-- `:`: choose a resource kind; `/`: filter; `f`: find; `n`/`N`: next or previous match
+- `:`: choose a resource kind; `/`: filter; `Ctrl+F`: find; `n`/`N`: next or previous match
 - `d`, `y`, `s`, `E`: describe, live YAML, status, and events
-- `u`: open the revision upgrade view (see `docs/keys.md`): `Space`/`a` mark, `Enter` review, `u`/`Esc` back
+- `:upgrade`: open the revision upgrade view (see `docs/keys.md`): `Space`/`a` mark, `Enter` review, `Esc` back
 - `p`: pause or unpause the highlighted (or marked) Crossplane resources; mixed selections ask which direction
+- `f`: request an immediate reconcile of the highlighted (or marked) resources by setting `crossplane.io/reconcile-requested-at` to the current time
 - `ctrl+d`: delete the highlighted (or marked) resources with a propagation-policy confirmation
 - `ctrl+x`: remove chosen finalizers from the highlighted (or marked) resources after a per-resource review; nothing is preselected
 - `e`: run `kubectl edit`
