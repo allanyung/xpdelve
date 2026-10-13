@@ -6,8 +6,8 @@
 | --- | --- |
 | `j`, Down | Select next resource |
 | `k`, Up | Select previous resource |
-| `PageDown`, `Ctrl+F` | Move down one page |
-| `PageUp`, `Ctrl+B` | Move up one page |
+| `PageDown`, `Ctrl+J` | Move down one page |
+| `PageUp`, `Ctrl+K` | Move up one page |
 | `g`, Home | Select first resource |
 | `G`, End | Select last resource |
 | `Enter` | Show the selected resource's problem details, when available |
@@ -102,7 +102,7 @@ required for these mouse events. Ordinary vertical-wheel behavior is unchanged.
 | --- | --- |
 | `:` | Open the resource-kind command palette |
 | `/` | Filter rows while retaining matching ancestor paths |
-| `f` | Find text without hiding rows |
+| `Ctrl+F` | Find text without hiding rows |
 | `n`, `N` | Select the next or previous find match |
 | `Esc` | Clear find, text filter, kind filter, and health filter |
 | `d` | Open captured `kubectl describe` output |
@@ -147,6 +147,7 @@ is a separate exact-match filter and does not retain non-matching ancestors.
 | --- | --- |
 | `:clear` | Remove the active kind filter; an independent `/` text filter remains active |
 | `:exclude` | Choose resource kinds to hide for the current session |
+| `:upgrade` | Open the revision upgrade view (see below) |
 | `:health` | Show all resources, only healthy resources, or resources requiring attention |
 | `:skin` | Open the built-in theme picker; applying a theme also saves it to the active configuration file |
 | `:reload` | Reload the active configuration file, preserving command-line overrides and session state |
@@ -176,16 +177,18 @@ saves it, and Esc or `q` cancels. The active configuration file defaults to
 
 ## Revision Upgrade View
 
-Press `u` to open a view of the same resource tree that shows which resources can
+Run the `:upgrade` command to open a view of the same resource tree that shows which resources can
 move to a newer Composition revision. The `SYNCED`/`READY` columns are replaced by
 `CURRENT` and `LATEST` revision numbers and an `UPGRADE` indicator. Revisions are
 discovered in the background with the Kubernetes API. The last result is cached for
 the session: re-entering the view shows it immediately (the title says `refreshing`)
 while a fresh discovery runs, and if that refresh fails the cached results stay
 visible, marked `cached, refresh failed`. `r` refreshes both the trace
-and the revisions, and `u` or `Esc` (with nothing marked) returns to the normal view. The panel border turns peach
+and the revisions, and `Esc` (after clearing any marks) returns to the normal view.
+Running `:upgrade` while already in the view changes nothing and keeps your marks.
+The panel border turns peach
 (the theme's `peach` colour) while this view is open, so it is easy to tell apart from
-the normal view. The main footer lists `u:upgrade` with the resource actions.
+the normal view. The main footer shows `:upgrade` beside the command hint.
 
 | `UPGRADE` | Meaning | Colour |
 | --- | --- | --- |
@@ -212,7 +215,7 @@ nothing is marked, and `Enter` again applies it. Each resource takes two lines: 
 name (shortened in the middle when long) and then `current -> latest` with the
 Composition, so the revision change is always visible. Each resource's
 `compositionRevisionRef` is replaced, nothing else; a paused resource stays paused.
-Delete, pause, edit, and finalizer removal are unavailable in this view, and
+Delete, pause, reconcile, edit, and finalizer removal are unavailable in this view, and
 read-only mode disables applying.
 
 ## Actions And Session
@@ -220,6 +223,7 @@ read-only mode disables applying.
 | Key | Action |
 | --- | --- |
 | `p` | Pause or unpause the marked resources, or the highlighted one when none are marked |
+| `f` | Request an immediate reconcile of the marked resources, or the highlighted one, by setting `crossplane.io/reconcile-requested-at` to the current UTC time |
 | `Ctrl+D` | Open delete confirmation for the marked resources, or the highlighted one |
 | `Ctrl+X` | Choose finalizers to remove from the marked resources, or the highlighted one, then review the exact changes |
 | `e` | Run `kubectl edit` |
@@ -268,5 +272,13 @@ while a click without dragging selects the clicked resource row and a
 double-click opens its live YAML.
 Tree copying uses the displayed text, including both pinned columns and the visible
 portion of horizontally scrolled columns.
-Right-clicking a resource opens a menu for YAML, Edit, Status, Events, and
-Describe.
+Right-clicking a resource opens a menu for YAML, Status, Events, Describe, Edit,
+Pause (Unpause when it is already paused), and Reconcile. Inspection items come
+first; Edit, Pause, and Reconcile follow and act on the clicked resource only. They
+are disabled in read-only mode.
+
+In the upgrade view the right-click menu is different: YAML, Status, Events, and
+Describe, then (only for a resource with an upgrade available) `Mark upgrade` or
+`Unmark upgrade` and `Review upgrade`. Review applies to the clicked resource alone,
+regardless of other marks, and is omitted in read-only mode. Edit, Pause, and
+Reconcile are not offered there.

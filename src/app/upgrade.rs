@@ -406,6 +406,37 @@ impl App {
         self.status = format!("Marked {added} visible upgrade(s)");
     }
 
+    fn upgrade_plan_for(&self, target: &Target) -> Option<UpgradePlan> {
+        let snapshot = self.snapshot.as_ref()?;
+        let node = snapshot
+            .nodes
+            .get(*snapshot.by_identity.get(&target.identity)?)?;
+        self.upgrade_info_for(node).plan
+    }
+
+    /// Context-menu mark/unmark of one resource.
+    pub(super) fn mark_upgrade(&mut self, target: &Target, mark: bool) {
+        if !mark {
+            self.upgrade_marked.remove(&target.identity);
+        } else if self.upgrade_plan_for(target).is_some() {
+            self.upgrade_marked
+                .insert(target.identity.clone(), target.expected_uid.clone());
+        } else {
+            self.status = "No revision upgrade available for this resource".into();
+        }
+    }
+
+    /// Context-menu review of exactly the clicked resource, ignoring other marks.
+    pub(super) fn review_upgrade_for(&mut self, target: &Target) {
+        if self.config.read_only {
+            self.status = "Upgrades are disabled in read-only mode".into();
+        } else if let Some(plan) = self.upgrade_plan_for(target) {
+            self.modal = Some(Modal::UpgradeReview { plans: vec![plan] });
+        } else {
+            self.status = "No revision upgrade available for this resource".into();
+        }
+    }
+
     pub(super) fn request_upgrade_review(&mut self) {
         if self.config.read_only {
             self.status = "Upgrades are disabled in read-only mode".into();
@@ -435,7 +466,6 @@ impl App {
     /// ordinary navigation, filtering, and help keys.
     pub(super) fn handle_upgrade_key(&mut self, key: KeyEvent) -> Option<UiAction> {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('u'), KeyModifiers::NONE) => self.leave_upgrade_view(),
             (KeyCode::Esc, _) => {
                 if self.upgrade_marked.is_empty() {
                     self.leave_upgrade_view();
@@ -447,8 +477,8 @@ impl App {
             (KeyCode::Char('a'), KeyModifiers::NONE) => self.mark_available_upgrades(),
             (KeyCode::Enter, _) => self.request_upgrade_review(),
             (KeyCode::Char('d' | 'x'), KeyModifiers::CONTROL)
-            | (KeyCode::Char('p' | 'e'), KeyModifiers::NONE) => {
-                self.status = "Not available in the upgrade view; press u to go back".into();
+            | (KeyCode::Char('p' | 'e' | 'f'), KeyModifiers::NONE) => {
+                self.status = "Not available in the upgrade view; press Esc to go back".into();
             }
             _ => return None,
         }

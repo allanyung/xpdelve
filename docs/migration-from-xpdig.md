@@ -14,7 +14,7 @@ Notable behavior changes:
   with a nonzero-status diagnostic.
 - Refresh failures retain the previous interactive tree and retry.
 - Tree branches can be collapsed, and find and filter are separate operations.
-- `Ctrl+D` is delete only; page navigation uses PageDown or `Ctrl+F`.
+- `Ctrl+D` is delete only; page navigation uses PageDown/PageUp or `Ctrl+J`/`Ctrl+K`; `Ctrl+F` starts find.
 - Delete defaults to foreground cascading and permits changing propagation in
   the confirmation modal.
 - Kubernetes inspection and mutations use native APIs, except for permanent

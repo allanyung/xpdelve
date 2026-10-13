@@ -83,7 +83,9 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
                     .clamp(12, 24),
             ),
             Modal::FinalizerReview { .. } => centered(area, 100, 24),
-            Modal::ContextMenu { column, row, .. } => context_menu_area(area, *column, *row),
+            Modal::ContextMenu {
+                column, row, items, ..
+            } => context_menu_area_with(area, *column, *row, items),
             Modal::SkinPicker { .. } => centered(
                 area,
                 58,
@@ -1227,7 +1229,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                 format!(" {}", active.join("  |  "))
             }
             InputMode::Normal | InputMode::Help if app.upgrade_view => {
-                " Space:mark  a:mark-available  Enter:review  Left/Right:collapse/expand  ::command  /:filter  r:refresh  ?:help  u/Esc:back".into()
+                " Space:mark  a:mark-available  Enter:review  Left/Right:collapse/expand  ::command  /:filter  r:refresh  ?:help  Esc:back".into()
             }
             InputMode::Normal | InputMode::Help => {
                 let details = if app
@@ -1239,7 +1241,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                     ""
                 };
                 format!(
-                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  ::command  ?:help  /:filter  ctrl-d:delete  p:pause  u:upgrade  d:describe  y:YAML  e:edit  s:status  E:events"
+                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  ::command  :upgrade  ?:help  /:filter  ctrl-d:delete  p:pause  f:reconcile  d:describe  y:YAML  e:edit  s:status  E:events"
                 )
             }
         }
@@ -1295,6 +1297,7 @@ pub(super) fn palette_list_item<'a>(entry: &'a PaletteEntry, theme: &Theme) -> L
         | PaletteAction::OpenExcludePicker
         | PaletteAction::OpenHealthPicker
         | PaletteAction::OpenSkinPicker
+        | PaletteAction::OpenUpgradeView
         | PaletteAction::ReloadConfig
         | PaletteAction::Quit => ListItem::new(Line::from(vec![
             Span::raw("  "),
@@ -1806,18 +1809,27 @@ pub(super) fn render_modal(
                 regions[2],
             );
         }
-        Modal::ContextMenu { pressed, .. } => {
+        Modal::ContextMenu { pressed, items, .. } => {
             let block = bordered_block(" Resource ", theme);
             let inner = block.inner(area);
             frame.render_widget(block, area);
             frame.render_widget(
-                Paragraph::new(vec![
-                    Line::styled(" YAML", context_menu_item_style(theme, 0, *pressed)),
-                    Line::styled(" Edit", context_menu_item_style(theme, 1, *pressed)),
-                    Line::styled(" Status", context_menu_item_style(theme, 2, *pressed)),
-                    Line::styled(" Events", context_menu_item_style(theme, 3, *pressed)),
-                    Line::styled(" Describe", context_menu_item_style(theme, 4, *pressed)),
-                ]),
+                Paragraph::new(
+                    items
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (action, label))| {
+                            if *action == ContextAction::Separator {
+                                Line::styled(format!(" {label}"), theme.subtle())
+                            } else {
+                                Line::styled(
+                                    format!(" {label}"),
+                                    context_menu_item_style(theme, index, *pressed),
+                                )
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                ),
                 inner,
             );
         }
@@ -1899,6 +1911,70 @@ pub(super) fn render_modal(
             );
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ContextAction {
+    Yaml,
+    Status,
+    Events,
+    Describe,
+    Edit,
+    Pause,
+    Reconcile,
+    Separator,
+    MarkUpgrade,
+    UnmarkUpgrade,
+    ReviewUpgrade,
+}
+
+const MENU_SEPARATOR: &str = "────────────";
+
+fn inspection_items() -> Vec<(ContextAction, &'static str)> {
+    vec![
+        (ContextAction::Yaml, "YAML"),
+        (ContextAction::Status, "Status"),
+        (ContextAction::Events, "Events"),
+        (ContextAction::Describe, "Describe"),
+    ]
+}
+
+/// Inspection first, then the actions that change the resource.
+pub(super) fn context_menu_items(paused: bool) -> Vec<(ContextAction, &'static str)> {
+    let mut items = inspection_items();
+    items.extend([
+        (ContextAction::Edit, "Edit"),
+        (
+            ContextAction::Pause,
+            if paused { "Unpause" } else { "Pause" },
+        ),
+        (ContextAction::Reconcile, "Reconcile"),
+    ]);
+    items
+}
+
+/// The upgrade view offers inspection plus what applies to the clicked resource's
+/// upgrade. Review needs an available upgrade and a writable session.
+pub(super) fn upgrade_context_menu_items(
+    available: bool,
+    marked: bool,
+    read_only: bool,
+) -> Vec<(ContextAction, &'static str)> {
+    let mut items = inspection_items();
+    let mut upgrade = Vec::new();
+    if marked {
+        upgrade.push((ContextAction::UnmarkUpgrade, "Unmark upgrade"));
+    } else if available {
+        upgrade.push((ContextAction::MarkUpgrade, "Mark upgrade"));
+    }
+    if available && !read_only {
+        upgrade.push((ContextAction::ReviewUpgrade, "Review upgrade"));
+    }
+    if !upgrade.is_empty() {
+        items.push((ContextAction::Separator, MENU_SEPARATOR));
+        items.extend(upgrade);
+    }
+    items
 }
 
 pub(super) fn context_menu_item_style(theme: &Theme, item: usize, pressed: Option<usize>) -> Style {
@@ -2211,9 +2287,29 @@ pub(super) fn centered(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
+#[cfg(test)]
 pub(super) fn context_menu_area(area: Rect, column: u16, row: u16) -> Rect {
-    let width = 14.min(area.width);
-    let height = 7.min(area.height);
+    context_menu_area_with(area, column, row, &context_menu_items(false))
+}
+
+pub(super) fn context_menu_area_with(
+    area: Rect,
+    column: u16,
+    row: u16,
+    items: &[(ContextAction, &str)],
+) -> Rect {
+    let widest = items
+        .iter()
+        .map(|(_, label)| label.width())
+        .max()
+        .unwrap_or(0);
+    let width = u16::try_from(widest + 4)
+        .unwrap_or(u16::MAX)
+        .max(14)
+        .min(area.width);
+    let height = u16::try_from(items.len() + 2)
+        .unwrap_or(u16::MAX)
+        .min(area.height);
     let max_x = area.right().saturating_sub(width);
     let below = row.saturating_add(1);
     let y = if below.saturating_add(height) <= area.bottom() {

@@ -284,6 +284,8 @@ impl App {
     ) -> Option<MouseAction> {
         let Some(Modal::ContextMenu {
             target,
+            paused,
+            items,
             column,
             row,
             pressed,
@@ -292,7 +294,9 @@ impl App {
             return None;
         };
         let target = target.clone();
-        let menu = context_menu_area(terminal_area, *column, *row);
+        let paused = *paused;
+        let items = items.clone();
+        let menu = context_menu_area_with(terminal_area, *column, *row, &items);
         let inner = Block::default().borders(Borders::ALL).inner(menu);
         let selected = (mouse.column >= inner.x
             && mouse.column < inner.x.saturating_add(inner.width)
@@ -318,20 +322,49 @@ impl App {
             _ => return None,
         }
         self.modal = None;
-        match selected {
-            Some(0) => Some(MouseAction::Action(UiAction::Yaml(target))),
-            Some(1) if self.config.read_only => {
-                self.status = "Edit is disabled in read-only mode".into();
-                None
+        let (action, _) = *items.get(selected?)?;
+        let changes_resource = matches!(
+            action,
+            ContextAction::Edit | ContextAction::Pause | ContextAction::Reconcile
+        );
+        if changes_resource && self.config.read_only {
+            self.status = match action {
+                ContextAction::Edit => "Edit is disabled in read-only mode",
+                ContextAction::Pause => "Pause is disabled in read-only mode",
+                _ => "Reconcile is disabled in read-only mode",
             }
-            Some(1) => Some(MouseAction::Action(UiAction::Edit(target))),
-            Some(2) => {
+            .into();
+            return None;
+        }
+        match action {
+            ContextAction::Yaml => Some(MouseAction::Action(UiAction::Yaml(target))),
+            ContextAction::Status => {
                 self.show_status(&target.identity);
                 None
             }
-            Some(3) => Some(MouseAction::Action(UiAction::Events(target))),
-            Some(4) => Some(MouseAction::Action(UiAction::Describe(target))),
-            _ => None,
+            ContextAction::Events => Some(MouseAction::Action(UiAction::Events(target))),
+            ContextAction::Describe => Some(MouseAction::Action(UiAction::Describe(target))),
+            ContextAction::Edit => Some(MouseAction::Action(UiAction::Edit(target))),
+            ContextAction::Pause => Some(MouseAction::Action(UiAction::SetPaused(
+                vec![target],
+                !paused,
+            ))),
+            ContextAction::Reconcile => {
+                Some(MouseAction::Action(UiAction::Reconcile(vec![target])))
+            }
+            ContextAction::Separator => None,
+            ContextAction::MarkUpgrade => {
+                self.mark_upgrade(&target, true);
+                None
+            }
+            ContextAction::UnmarkUpgrade => {
+                self.mark_upgrade(&target, false);
+                None
+            }
+            ContextAction::ReviewUpgrade => {
+                self.review_upgrade_for(&target);
+                None
+            }
         }
     }
 
@@ -502,8 +535,23 @@ impl App {
                     self.tree_selection = None;
                     self.last_tree_click = None;
                     if let Some(target) = self.selected_target() {
+                        let paused = self.selected_node().is_some_and(|node| node.paused);
+                        let items = if self.upgrade_view {
+                            let available = self
+                                .selected_node()
+                                .is_some_and(|node| self.upgrade_info_for(node).plan.is_some());
+                            upgrade_context_menu_items(
+                                available,
+                                self.upgrade_marked.contains_key(&target.identity),
+                                self.config.read_only,
+                            )
+                        } else {
+                            context_menu_items(paused)
+                        };
                         self.modal = Some(Modal::ContextMenu {
                             target,
+                            paused,
+                            items,
                             column: mouse.column,
                             row: mouse.row,
                             pressed: None,
@@ -832,6 +880,7 @@ impl App {
         }
         if self.mode == InputMode::Command {
             let entries = self.palette_entries();
+            let mut follow_up = UiAction::None;
             match key.code {
                 KeyCode::Esc => {
                     self.mode = InputMode::Normal;
@@ -840,7 +889,7 @@ impl App {
                 KeyCode::Enter => {
                     let selected = self.palette_selected.min(entries.len().saturating_sub(1));
                     if let Some(entry) = entries.get(selected) {
-                        self.execute_palette_action(entry.action.clone());
+                        follow_up = self.execute_palette_action(entry.action.clone());
                     }
                 }
                 KeyCode::Down => {
@@ -866,7 +915,7 @@ impl App {
                 }
                 _ => {}
             }
-            return UiAction::None;
+            return follow_up;
         }
         if matches!(self.mode, InputMode::Filter | InputMode::Find) {
             match key.code {
@@ -895,18 +944,18 @@ impl App {
             (KeyCode::Char('q'), _) => {
                 self.quit = true;
             }
-            (KeyCode::Char('u'), KeyModifiers::NONE) => return self.enter_upgrade_view(),
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.request_delete(),
             (KeyCode::Char(' '), KeyModifiers::NONE) => self.toggle_mark(),
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => self.request_finalizers(),
-            (KeyCode::Down | KeyCode::Char('j'), _) => self.move_selection(1),
-            (KeyCode::Up | KeyCode::Char('k'), _) => self.move_selection(-1),
-            (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            // Page keys come first: the plain j/k arms below accept any modifiers.
+            (KeyCode::PageDown, _) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
                 self.move_selection(page_size.cast_signed());
             }
-            (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            (KeyCode::PageUp, _) | (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.move_selection(-page_size.cast_signed());
             }
+            (KeyCode::Down | KeyCode::Char('j'), _) => self.move_selection(1),
+            (KeyCode::Up | KeyCode::Char('k'), _) => self.move_selection(-1),
             (KeyCode::Home | KeyCode::Char('g'), _) => self.set_selection(0),
             (KeyCode::End | KeyCode::Char('G'), _) => {
                 self.set_selection(self.visible().len().saturating_sub(1));
@@ -945,7 +994,7 @@ impl App {
                 self.input.clone_from(&self.filter);
             }
             (KeyCode::Char(':'), _) => self.open_palette(),
-            (KeyCode::Char('f'), _) => {
+            (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                 self.mode = InputMode::Find;
                 self.input.clone_from(&self.find);
             }
@@ -1004,6 +1053,7 @@ impl App {
                 }
             }
             (KeyCode::Char('p'), _) => return self.request_pause_toggle(),
+            (KeyCode::Char('f'), KeyModifiers::NONE) => return self.request_reconcile(),
             (KeyCode::Char('r'), _) => return UiAction::Refresh,
             _ => {}
         }

@@ -10,6 +10,7 @@ workflow. Use `--readonly` or `read_only = true` to disable mutation bindings.
 - Delete sends UID and resource-version preconditions to the API server.
 - Annotation and finalizer patches atomically test UID and resourceVersion.
 - A conflict is reported instead of silently overwriting concurrent changes.
+- Requesting a reconcile sets only the `crossplane.io/reconcile-requested-at` annotation, to an RFC 3339 UTC timestamp, with the same UID and resourceVersion tests as other patches.
 - Only one mutation per resource and four mutations globally may run at once. A bulk delete or pause counts as one running action per target and is rejected if any target is busy, or if four are already running.
 - Bulk actions apply every check above to each resource independently, run sequentially, and report all failures. Marks are tied to UID, so a recreated resource is never targeted by an earlier mark. Read-only mode blocks all bulk mutations.
 
