@@ -227,6 +227,11 @@ impl Kubernetes {
         Ok(lines.join("\n"))
     }
 
+    /// Confirms the live object can be read before an interactive kubectl command takes over the terminal.
+    pub async fn check_readable(&self, target: &Target) -> Result<()> {
+        self.get_current(target).await.map(|_| ())
+    }
+
     pub async fn kubectl_resource(&self, target: &Target) -> Result<String> {
         let (resource, _) = self.resolve(&target.identity).await?;
         let resource = if resource.group.is_empty() {
@@ -550,6 +555,19 @@ async fn patch(api: &Api<DynamicObject>, name: &str, operations: Vec<Value>) -> 
     Ok(())
 }
 
+/// Renders an error chain without repeating the Kubernetes API status, which kube's `Display` and `source` both include.
+pub fn format_error(error: &anyhow::Error) -> String {
+    for cause in error.chain() {
+        if let Some(kube::Error::Api(status)) = cause.downcast_ref::<kube::Error>() {
+            return format!(
+                "{} ({}, HTTP {})",
+                status.message, status.reason, status.code
+            );
+        }
+    }
+    format!("{error:#}")
+}
+
 fn ensure_uid(expected_uid: &str, live_uid: &str, identity: &Identity) -> Result<()> {
     if expected_uid != live_uid {
         bail!(
@@ -644,5 +662,28 @@ mod tests {
         assert_eq!(event_count(&modern), 7);
         assert_eq!(event_message(&legacy), "legacy");
         assert_eq!(event_count(&legacy), 3);
+    }
+}
+
+#[cfg(test)]
+mod format_error_tests {
+    use super::*;
+
+    #[test]
+    fn api_errors_show_only_the_server_message() {
+        let status =
+            kube::core::Status::failure("secrets \"x\" is forbidden", "Forbidden").with_code(403);
+        let error = anyhow::Error::new(kube::Error::Api(Box::new(status)))
+            .context("failed to fetch Secret/x");
+        assert_eq!(
+            format_error(&error),
+            "secrets \"x\" is forbidden (Forbidden, HTTP 403)"
+        );
+    }
+
+    #[test]
+    fn other_errors_keep_their_context_chain() {
+        let error = anyhow!("inner").context("outer");
+        assert_eq!(format_error(&error), "outer: inner");
     }
 }

@@ -108,7 +108,7 @@ fn mutation_failure_opens_persistent_error_modal() {
 }
 
 #[test]
-fn inspection_failure_remains_in_status_line() {
+fn inspection_failure_opens_error_modal() {
     let mut app = app();
 
     let succeeded = app.finish_action(
@@ -118,11 +118,19 @@ fn inspection_failure_remains_in_status_line() {
     );
 
     assert!(!succeeded);
-    assert!(app.modal.is_none());
-    assert_eq!(
-        app.status,
-        "Events: Root/root failed: request was forbidden"
-    );
+    assert_eq!(app.status, "Events: Root/root failed");
+    let Some(Modal::Text {
+        title,
+        content,
+        kind,
+        ..
+    }) = &app.modal
+    else {
+        panic!("expected error modal");
+    };
+    assert_eq!(title, "Events: Root/root failed");
+    assert!(content.contains("request was forbidden"));
+    assert_eq!(*kind, ContentKind::Error);
 }
 
 #[test]

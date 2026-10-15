@@ -41,7 +41,8 @@ resource UID, so a resource that is removed or recreated is unmarked on refresh.
 Esc clears marks first; a second Esc clears the filters as before.
 
 Problematic resources display short status labels: `Deleted` for structured
-NotFound/404 trace errors, `Error` for other trace or reconciliation/installation
+NotFound/404 trace errors, `Forbidden` or `Unauthorized` (shown as warnings) for
+403/401 trace errors where the user lacks access to read the object, `Error` for other trace or reconciliation/installation
 failures, `Creating` for false readiness/health conditions with reason
 `Creating`, `Unready` for other false readiness/health conditions, and `Unknown`
 or `Warning` for unknown states or those condition reasons. `Deleting` takes

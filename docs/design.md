@@ -74,9 +74,10 @@ configuration reloads unless the corresponding `ui.show_logical_name` or
 determine initial visibility. Toggling preserves
 the horizontal scroll offset, clamped to the remaining content.
 
-Problem statuses use fixed labels (`Deleted`, `Error`, `Creating`, `Unready`,
+Problem statuses use fixed labels (`Deleted`, `Forbidden`, `Unauthorized`, `Error`, `Creating`, `Unready`,
 `Unknown`, or `Warning`), with `Deleting` retaining precedence. `Deleted` uses
-structured NotFound/404 trace errors; `Creating` uses the reason on a false
+structured NotFound/404 trace errors; `Forbidden` and `Unauthorized` use structured 403/401
+trace errors, map to warning health, and add a readable access summary to the details; `Creating` uses the reason on a false
 readiness/health condition, without masking reconciliation/installation failures.
 Successful status text and health colors are unchanged. Diagnostic text is
 projected separately and remains searchable by find, plain-text filters, and

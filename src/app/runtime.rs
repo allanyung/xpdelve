@@ -97,13 +97,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                                 );
                             }
                             UiAction::Edit(target) => {
-                                let success = run_kubectl(&mut terminal, &app, cli, target, "edit").await;
-                                let should_refresh = success.is_ok();
-                                app.status = match success {
-                                    Ok(()) => "Edit completed".into(),
-                                    Err(error) => format!("Edit failed: {error}"),
-                                };
-                                if should_refresh {
+                                if run_edit(&mut terminal, &mut app, cli, target).await {
                                     request_refresh(&mut app, cli, &sender, &mut active, false);
                                 }
                             }
@@ -119,13 +113,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                             },
                             Some(MouseAction::Action(action)) => {
                                 if let UiAction::Edit(target) = action {
-                                    let success = run_kubectl(&mut terminal, &app, cli, target, "edit").await;
-                                    let should_refresh = success.is_ok();
-                                    app.status = match success {
-                                        Ok(()) => "Edit completed".into(),
-                                        Err(error) => format!("Edit failed: {error}"),
-                                    };
-                                    if should_refresh {
+                                    if run_edit(&mut terminal, &mut app, cli, target).await {
                                         request_refresh(&mut app, cli, &sender, &mut active, false);
                                     }
                                 } else {
@@ -273,7 +261,7 @@ fn start_revision_discovery(app: &mut App, sender: &mpsc::Sender<AppEvent>) {
         let result = kubernetes
             .composition_revisions()
             .await
-            .map_err(|error| format!("{error:#}"));
+            .map_err(|error| crate::kubernetes::format_error(&error));
         let _ = sender
             .send(AppEvent::RevisionsLoaded { generation, result })
             .await;
@@ -413,7 +401,7 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
             | UiAction::Edit(_)
             | UiAction::Copy(_) => return,
         };
-        let result = result.map_err(|error| format!("{error:#}"));
+        let result = result.map_err(|error| crate::kubernetes::format_error(&error));
         let _ = sender
             .send(AppEvent::ActionFinished {
                 label,
@@ -472,7 +460,11 @@ where
     let mut failed = Vec::new();
     for item in items {
         if let Err(error) = operation(item).await {
-            failures.push(format!("Resource: {}\n{error:#}", identity(item)));
+            failures.push(format!(
+                "Resource: {}\n{}",
+                identity(item),
+                crate::kubernetes::format_error(&error)
+            ));
             failed.push(identity(item).clone());
         }
     }
@@ -496,6 +488,34 @@ fn copy_osc52(value: &str) -> Result<()> {
     write!(stdout, "\x1b]52;c;{encoded}\x07")?;
     stdout.flush()?;
     Ok(())
+}
+
+/// Returns whether the edit succeeded; failures are shown in a modal.
+async fn run_edit(terminal: &mut TerminalGuard, app: &mut App, cli: &Cli, target: Target) -> bool {
+    let identity = target.identity.clone();
+    let result = match app.kubernetes.clone() {
+        Some(kubernetes) => match kubernetes.check_readable(&target).await {
+            Ok(()) => run_kubectl(terminal, app, cli, target, "edit").await,
+            Err(error) => Err(error),
+        },
+        None => Err(anyhow!("Kubernetes client is unavailable")),
+    };
+    match result {
+        Ok(()) => {
+            app.status = "Edit completed".into();
+            true
+        }
+        Err(error) => {
+            app.show_error(
+                "Edit failed".into(),
+                &format!(
+                    "Resource: {identity}\n\n{}\n",
+                    crate::kubernetes::format_error(&error)
+                ),
+            );
+            false
+        }
+    }
 }
 
 async fn run_kubectl(
