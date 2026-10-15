@@ -318,11 +318,18 @@ fn project_node(
         package_revision,
     };
     let status = status_text(&node.object, node.error.as_ref(), projection);
-    let status_details = status_details(trace_error.as_deref(), projection);
+    let status_details = status_details(
+        trace_error.as_deref(),
+        node.error.as_ref().and_then(access_denied),
+        &identity,
+        projection,
+    );
     let health = if node.object.pointer("/metadata/deletionTimestamp").is_some() {
         Health::Unhealthy
     } else if node.error.as_ref().is_some_and(error_is_not_found) {
         Health::Unknown
+    } else if node.error.as_ref().and_then(access_denied).is_some() {
+        Health::Warning
     } else if trace_error.is_some() {
         Health::Unhealthy
     } else if relevant_reason_is(ready_condition, synced_condition, "Warning") {
@@ -548,6 +555,8 @@ fn status_text(
     if let Some(error) = trace_error {
         return if error_is_not_found(error) {
             "Deleted"
+        } else if let Some(denied) = access_denied(error) {
+            denied.label()
         } else {
             "Error"
         }
@@ -624,11 +633,17 @@ fn problem_status(projection: ConditionProjection<'_>) -> Option<&'static str> {
 
 fn status_details(
     trace_error: Option<&str>,
+    denied: Option<AccessDenied>,
+    identity: &Identity,
     projection: ConditionProjection<'_>,
 ) -> Option<String> {
     let mut details = Vec::new();
     if let Some(error) = trace_error {
-        details.push(format!("Error: {error}"));
+        if let Some(denied) = denied {
+            details.push(format!("{}\n\n{error}", denied.summary(identity)));
+        } else {
+            details.push(format!("Error: {error}"));
+        }
     }
     let include_synced = !projection.package_revision
         || projection.synced_condition.is_reason("Warning")
@@ -718,7 +733,7 @@ fn error_text(error: &Value) -> String {
     text::sanitize(message.unwrap_or(fallback))
 }
 
-fn error_is_not_found(error: &Value) -> bool {
+fn error_code_and_reason(error: &Value) -> (Option<u64>, Option<&str>) {
     let code = error
         .get("code")
         .or_else(|| error.pointer("/ErrStatus/code"))
@@ -729,7 +744,53 @@ fn error_is_not_found(error: &Value) -> bool {
         .or_else(|| error.pointer("/ErrStatus/reason"))
         .or_else(|| error.pointer("/errStatus/reason"))
         .and_then(Value::as_str);
+    (code, reason)
+}
+
+fn error_is_not_found(error: &Value) -> bool {
+    let (code, reason) = error_code_and_reason(error);
     code == Some(404) || reason == Some("NotFound")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessDenied {
+    Forbidden,
+    Unauthorized,
+}
+
+impl AccessDenied {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Forbidden => "Forbidden",
+            Self::Unauthorized => "Unauthorized",
+        }
+    }
+
+    fn summary(self, identity: &Identity) -> String {
+        let resource = match &identity.namespace {
+            Some(namespace) => format!("{} in namespace {namespace}", identity.kind),
+            None => identity.kind.clone(),
+        };
+        match self {
+            Self::Forbidden => {
+                format!("Access denied: you are not permitted to read this {resource}.")
+            }
+            Self::Unauthorized => {
+                format!("Authentication failed: credentials were rejected reading this {resource}.")
+            }
+        }
+    }
+}
+
+fn access_denied(error: &Value) -> Option<AccessDenied> {
+    let (code, reason) = error_code_and_reason(error);
+    if code == Some(403) || reason == Some("Forbidden") {
+        Some(AccessDenied::Forbidden)
+    } else if code == Some(401) || reason == Some("Unauthorized") {
+        Some(AccessDenied::Unauthorized)
+    } else {
+        None
+    }
 }
 
 fn matches_query(node: &ProjectedNode, query: &str) -> bool {
@@ -1134,6 +1195,41 @@ mod tests {
             node.status_details.as_deref(),
             Some("Error: configmaps \"example\" not found")
         );
+    }
+
+    #[test]
+    fn access_denied_trace_errors_are_warnings_with_readable_details() {
+        for (error, status, summary) in [
+            (
+                serde_json::json!({"ErrStatus":{"code":403,"reason":"Forbidden","message":"secrets \"x\" is forbidden"}}),
+                "Forbidden",
+                "Access denied: you are not permitted to read this Secret in namespace ns.",
+            ),
+            (
+                serde_json::json!({"reason":"Forbidden","message":"secrets \"x\" is forbidden"}),
+                "Forbidden",
+                "Access denied: you are not permitted to read this Secret in namespace ns.",
+            ),
+            (
+                serde_json::json!({"errStatus":{"code":401,"message":"secrets \"x\" is forbidden"}}),
+                "Unauthorized",
+                "Authentication failed: credentials were rejected reading this Secret in namespace ns.",
+            ),
+        ] {
+            let trace = serde_json::json!({"object":{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x","namespace":"ns"}},"error":error});
+            let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
+            let node = &snapshot.nodes[0];
+            assert_eq!(node.status, status);
+            assert_eq!(node.health, Health::Warning);
+            assert_eq!(
+                node.status_details.as_deref(),
+                Some(format!("{summary}\n\nsecrets \"x\" is forbidden").as_str())
+            );
+            assert!(matches_query(
+                node,
+                &format!("status:{}", status.to_lowercase())
+            ));
+        }
     }
 
     #[test]

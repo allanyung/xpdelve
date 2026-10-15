@@ -590,6 +590,17 @@ impl App {
         });
     }
 
+    pub(super) fn show_error(&mut self, title: String, content: &str) {
+        self.status.clone_from(&title);
+        self.modal = Some(Modal::Text {
+            title,
+            content: text::sanitize(content).into(),
+            kind: ContentKind::Error,
+            state: TextModalState::new(ContentKind::Error),
+            selection: None,
+        });
+    }
+
     pub(super) fn finish_action(
         &mut self,
         label: &str,
@@ -636,6 +647,11 @@ impl App {
                         state: TextModalState::new(ContentKind::Error),
                         selection: None,
                     });
+                } else if ["Describe:", "YAML:", "Events:"]
+                    .iter()
+                    .any(|prefix| label.starts_with(prefix))
+                {
+                    self.show_error(format!("{label} failed"), &format!("{error}\n"));
                 } else {
                     self.status = text::sanitize(&format!("{label} failed: {error}"));
                 }
