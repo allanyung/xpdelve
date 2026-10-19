@@ -140,7 +140,7 @@ pub(super) fn render_toast(
         width,
         height,
     );
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, popup, theme);
     frame.render_widget(
         Paragraph::new(toast.message.as_str())
             .alignment(Alignment::Center)
@@ -1271,7 +1271,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
 pub(super) fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let entries = app.palette_entries();
     let popup = palette_area(area, entries.len());
-    frame.render_widget(Clear, popup);
+    clear_overlay(frame, popup, &app.theme);
     let items = if entries.is_empty() {
         vec![ListItem::new("  No matching resource kinds")]
     } else {
@@ -1359,7 +1359,7 @@ pub(super) fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
 }
 
 pub(super) fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, scroll: u16, theme: &Theme) {
-    frame.render_widget(Clear, area);
+    clear_overlay(frame, area, theme);
     let block = bordered_block(" Help ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1397,7 +1397,7 @@ pub(super) fn render_modal(
     modal: &Modal,
     theme: &Theme,
 ) {
-    frame.render_widget(Clear, area);
+    clear_overlay(frame, area, theme);
     match modal {
         Modal::Text {
             title,
@@ -1870,7 +1870,6 @@ pub(super) fn render_modal(
         } => {
             let block = bordered_block(" Exclude resource kinds ", theme);
             let inner = block.inner(area);
-            frame.render_widget(Clear, area);
             frame.render_widget(block, area);
             let regions =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
@@ -2256,6 +2255,11 @@ pub(super) fn truncate_middle(value: &str, width: usize) -> String {
     }
     tail.reverse();
     format!("{head}…{}", tail.concat())
+}
+
+fn clear_overlay(frame: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(theme.overlay()), area);
 }
 
 pub(super) fn bordered_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {

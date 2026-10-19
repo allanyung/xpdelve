@@ -230,6 +230,17 @@ impl Theme {
         self.fg(self.palette.peach)
     }
 
+    /// Background for popups, menus, and modals, so they stand apart from the tree.
+    pub fn overlay(&self) -> Style {
+        if self.colors_enabled {
+            Style::default()
+                .fg(self.palette.text)
+                .bg(self.palette.mantle)
+        } else {
+            Style::default()
+        }
+    }
+
     pub fn selected_row(&self) -> Style {
         if self.colors_enabled {
             Style::default()
