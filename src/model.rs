@@ -322,6 +322,7 @@ fn project_node(
         trace_error.as_deref(),
         node.error.as_ref().and_then(access_denied),
         &identity,
+        &node.object,
         projection,
     );
     let health = if node.object.pointer("/metadata/deletionTimestamp").is_some() {
@@ -635,6 +636,7 @@ fn status_details(
     trace_error: Option<&str>,
     denied: Option<AccessDenied>,
     identity: &Identity,
+    object: &Value,
     projection: ConditionProjection<'_>,
 ) -> Option<String> {
     let mut details = Vec::new();
@@ -680,7 +682,32 @@ fn status_details(
             "{condition_type}={state_str}\n{message}"
         )));
     }
+    if let Some(deleting) = deletion_details(object) {
+        details.push(deleting);
+    }
     (!details.is_empty()).then(|| details.join("\n\n"))
+}
+
+/// Explains why deletion may be blocked, e.g. a Terminating condition from a finalizer.
+fn deletion_details(object: &Value) -> Option<String> {
+    let since = object
+        .pointer("/metadata/deletionTimestamp")?
+        .as_str()
+        .unwrap_or("unknown time");
+    let heading = text::sanitize(&format!("Deleting since {since}"));
+    let status = object
+        .get("status")
+        .filter(|status| !status.is_null() && status.as_object().is_none_or(|map| !map.is_empty()));
+    let Some(status) = status else {
+        return Some(format!("{heading}\nNo status reported."));
+    };
+    let yaml = serde_yaml::to_string(status)
+        .unwrap_or_else(|error| format!("Could not render status: {error}\n"));
+    Some(
+        text::sanitize(&format!("{heading}\nStatus:\n{yaml}"))
+            .trim_end()
+            .to_owned(),
+    )
 }
 
 fn package_kind(identity: &Identity) -> bool {
@@ -1107,6 +1134,33 @@ mod tests {
     }
 
     #[test]
+    fn deleting_resource_shows_full_status_even_without_problem_conditions() {
+        let snapshot = Snapshot::parse(
+            br#"{"object":{"apiVersion":"protection.crossplane.io/v1beta1","kind":"Usage","metadata":{"name":"example","deletionTimestamp":"2026-10-19T07:44:28Z"},"status":{"conditions":[{"type":"Terminating","status":"True","reason":"InUse","message":"Blocking deletion while usages still exist","lastTransitionTime":"2026-10-19T07:44:28Z"}],"users":2}}}"#,
+        )
+        .unwrap();
+        let node = &snapshot.nodes[0];
+        assert_eq!(node.status, "Deleting");
+        let details = node.status_details.as_deref().unwrap();
+        assert!(details.starts_with("Deleting since 2026-10-19T07:44:28Z\nStatus:\n"));
+        assert!(details.contains("Blocking deletion while usages still exist"));
+        assert!(details.contains("type: Terminating"));
+        assert!(details.contains("users: 2"));
+    }
+
+    #[test]
+    fn deleting_resource_without_status_still_has_details() {
+        let snapshot = Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"example","deletionTimestamp":"2026-10-19T07:44:28Z"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.nodes[0].status_details.as_deref(),
+            Some("Deleting since 2026-10-19T07:44:28Z\nNo status reported.")
+        );
+    }
+
+    #[test]
     fn generic_resource_with_ready_true_and_no_synced_is_healthy() {
         let snapshot = Snapshot::parse(
             br#"{"object":{"apiVersion":"external-secrets.io/v1beta1","kind":"ExternalSecret","metadata":{"name":"credentials"},"status":{"conditions":[{"type":"Ready","status":"True","reason":"SecretSynced","message":"Secret was synced"}]}}}"#,
@@ -1285,7 +1339,8 @@ mod tests {
             let snapshot = Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap();
             assert_eq!(snapshot.nodes[0].status, "Deleting");
             assert_eq!(snapshot.nodes[0].health, Health::Unhealthy);
-            assert_eq!(snapshot.nodes[0].status_details, node.status_details);
+            let details = snapshot.nodes[0].status_details.as_deref().unwrap();
+            assert!(details.starts_with("Error: object missing\n\nDeleting since "));
         }
     }
 

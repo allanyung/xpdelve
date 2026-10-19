@@ -54,7 +54,9 @@ errors. Health colors retain their existing meanings.
 
 Press Enter to open a wrapped, scrollable details view containing the full trace
 error and any problematic Ready/Synced (or package-specific) conditions. A
-condition without a reason or message still reports its state. Details come from
+condition without a reason or message still reports its state. A resource that
+is being deleted also shows its deletion time and complete `status` (for example
+a `Terminating` condition from a blocking finalizer or usage). Details come from
 the current trace snapshot, require no API request, and remain fixed while the
 view is open, even across refreshes. Esc or `q` closes it. The footer shows
 `Enter:details` only when the selected resource has details available, not simply
