@@ -128,7 +128,7 @@ context, resource, API group, and name through the variables in `args`.
 
 - `j`/`k` or `Up`/`Down`: move through resources
 - `Space`: mark or unmark the highlighted resource for bulk actions (`Esc` clears marks)
-- `Enter`: show resource problem details when available; the footer hint appears only on those rows
+- `Enter`: show resource problem details when available (including the full status of a deleting resource); the footer hint appears only on those rows
 - `Right`: expand or select the first child
 - `Left`: collapse or select the parent
 - `[`/`]`: collapse or expand the whole tree
