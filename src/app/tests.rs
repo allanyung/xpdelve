@@ -3173,6 +3173,45 @@ fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
 }
 
 #[test]
+fn modals_fill_their_whole_area_with_the_overlay_background() {
+    for (kind, content) in [
+        (ContentKind::Error, "Resource: Widget/example\n\nboom"),
+        (ContentKind::Yaml, "key: value\nlist:\n  - item"),
+    ] {
+        let modal = Modal::Text {
+            title: "Overlay".into(),
+            content: content.into(),
+            kind,
+            state: TextModalState::new(kind),
+            selection: None,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let theme = app().theme;
+        let area = content_modal_area(Rect::new(0, 0, 60, 20), kind);
+        terminal
+            .draw(|frame| render_modal(frame, area, &modal, &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                assert_eq!(
+                    buffer.cell((x, y)).unwrap().bg,
+                    theme.palette.mantle,
+                    "{kind:?} cell ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn overlay_style_is_plain_without_colors() {
+    let mut theme = app().theme;
+    theme.colors_enabled = false;
+    assert_eq!(theme.overlay(), Style::default());
+}
+
+#[test]
 fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
     let mut app = app();
     app.modal = Some(Modal::Text {
