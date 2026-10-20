@@ -20,6 +20,7 @@
 | `Space` | Mark or unmark the highlighted resource for bulk actions; the cursor does not move |
 | `L` (Shift+L) | Show or hide the logical name column |
 | `X` (Shift+X) | Show or hide the external name column |
+| `M` (Shift+M) | Show or hide the management policies column |
 
 Expandable rows reserve a fixed disclosure slot immediately before the resource
 name. `▾` marks an expanded row and `▸` a collapsed row; ASCII mode uses `-` and
@@ -73,7 +74,10 @@ toggle them independently for the current session. Set `[ui]`
 `show_logical_name = true` or `show_external_name = true` to start with the
 corresponding column visible. Refreshes and configuration reloads retain each
 column's visibility unless its configured setting changes. Lowercase
-`l` still scrolls right. STATUS text is left-aligned within its
+`l` still scrolls right. `M` (Shift+M) toggles a `MANAGEMENT POLICIES` column
+after the other two, showing `spec.managementPolicies` (`*` for the default,
+otherwise the comma-joined names, or `-` when absent); set
+`show_management_policies = true` to start with it visible. STATUS text is left-aligned within its
 column, with one reserved space before the right border, sized from visible
 rows, and capped at 24 terminal cells or one third of
 the inner width (with a six-cell minimum on supported terminals). Longer values

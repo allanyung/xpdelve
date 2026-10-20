@@ -338,6 +338,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             }
         }
     }
+    dim_placeholder_cells(frame, app, &rendered, body);
     if horizontal.max_offset() > 0 && horizontal.viewport_width > 0 {
         let scrollbar_area = Rect::new(
             area.x + horizontal.pinned_width as u16,
@@ -385,6 +386,49 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             false,
             &app.theme,
         );
+    }
+}
+
+/// Dims standalone `-` placeholders in the scrolling and right-pinned columns
+/// so empty values read as absent rather than as data.
+fn dim_placeholder_cells(
+    frame: &mut ratatui::Frame<'_>,
+    app: &App,
+    rendered: &RenderedTree,
+    body: Rect,
+) {
+    let selected_row = app
+        .selection
+        .visible_index
+        .checked_sub(rendered.start)
+        .filter(|row| *row < rendered.row_count);
+    let first = rendered.horizontal.pinned_width as u16;
+    let boundary = |symbol: Option<&str>| matches!(symbol, None | Some(" " | "│"));
+    let dim = app.theme.subtle();
+    for row in 0..rendered.row_count {
+        if Some(row) == selected_row {
+            continue;
+        }
+        let y = body.y + 1 + row as u16;
+        let buffer = frame.buffer_mut();
+        for x in first..body.width {
+            let column = body.x + x;
+            let is_dash = buffer.cell((column, y)).is_some_and(|c| c.symbol() == "-");
+            if !is_dash {
+                continue;
+            }
+            let before = x
+                .checked_sub(1)
+                .and_then(|x| buffer.cell((body.x + x, y)))
+                .map(|c| c.symbol().to_owned());
+            let after = buffer.cell((column + 1, y)).map(|c| c.symbol().to_owned());
+            if boundary(before.as_deref())
+                && boundary(after.as_deref())
+                && let Some(cell) = buffer.cell_mut((column, y))
+            {
+                cell.set_style(dim);
+            }
+        }
     }
 }
 
@@ -471,6 +515,7 @@ pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Optio
         .with_checkboxes(!app.active_marks().is_empty())
         .with_logical_name(app.show_logical_name)
         .with_external_name(app.show_external_name)
+        .with_management_policies(app.show_management_policies)
         .with_extra_columns(columns::resolve(
             &app.config.extra_columns,
             snapshot,
@@ -621,6 +666,7 @@ pub(super) struct TablePlan {
     object: usize,
     logical_name: usize,
     external_name: usize,
+    management_policies: usize,
     group: usize,
     status: usize,
     package: bool,
@@ -660,6 +706,12 @@ impl TablePlan {
             .max()
             .unwrap_or_default()
             .max("EXTERNAL NAME".len());
+        let management_policies = visible
+            .iter()
+            .map(|index| management_policies_cell(&snapshot.nodes[*index]).width())
+            .max()
+            .unwrap_or_default()
+            .max("MANAGEMENT POLICIES".len());
         let group = visible
             .iter()
             .map(|index| group_cell(&snapshot.nodes[*index]).width())
@@ -704,6 +756,7 @@ impl TablePlan {
             object,
             logical_name,
             external_name,
+            management_policies,
             group,
             status,
             package,
@@ -731,6 +784,7 @@ impl TablePlan {
             + 2
             + optional(self.logical_name)
             + optional(self.external_name)
+            + optional(self.management_policies)
             + self.group
             + 2
             + 7
@@ -768,6 +822,13 @@ impl TablePlan {
         self
     }
 
+    fn with_management_policies(mut self, visible: bool) -> Self {
+        if !visible {
+            self.management_policies = 0;
+        }
+        self
+    }
+
     pub(super) fn fixed_width(&self) -> usize {
         let width = if self.package {
             let displayed = 3
@@ -791,6 +852,11 @@ impl TablePlan {
             }
             + if self.external_name > 0 {
                 self.external_name + 2
+            } else {
+                0
+            }
+            + if self.management_policies > 0 {
+                self.management_policies + 2
             } else {
                 0
             }
@@ -869,6 +935,9 @@ impl TablePlan {
                 ("READY", 5),
             ]
         };
+        if self.management_policies > 0 {
+            columns.insert(1, ("MANAGEMENT POLICIES", self.management_policies));
+        }
         if self.external_name > 0 {
             columns.insert(1, ("EXTERNAL NAME", self.external_name));
         }
@@ -905,6 +974,7 @@ impl TablePlan {
         };
         let logical_name = logical_name_cell(node);
         let external_name = external_name_cell(node);
+        let management_policies = management_policies_cell(node);
         let group = group_cell(node);
         let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
         let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
@@ -966,6 +1036,9 @@ impl TablePlan {
                 (condition_text(node.ready), 5),
             ]
         };
+        if self.management_policies > 0 {
+            columns.insert(1, (management_policies.as_str(), self.management_policies));
+        }
         if self.external_name > 0 {
             columns.insert(1, (external_name.as_str(), self.external_name));
         }
@@ -1036,6 +1109,28 @@ fn logical_name_cell(node: &ProjectedNode) -> String {
 
 fn external_name_cell(node: &ProjectedNode) -> String {
     annotation_cell(node, "/metadata/annotations/crossplane.io~1external-name")
+}
+
+fn management_policies_cell(node: &ProjectedNode) -> String {
+    let Some(policies) = node
+        .object
+        .pointer("/spec/managementPolicies")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "-".into();
+    };
+    let names: Vec<&str> = policies
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let value = if names.is_empty() {
+        "-".to_owned()
+    } else if names == ["*"] {
+        "*".to_owned()
+    } else {
+        names.join(",")
+    };
+    text::sanitize(&value).replace(['\n', '\t'], " ")
 }
 
 fn annotation_cell(node: &ProjectedNode, pointer: &str) -> String {
@@ -1241,7 +1336,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                     ""
                 };
                 format!(
-                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  ::command  :upgrade  ?:help  /:filter  ctrl-d:delete  p:pause  f:reconcile  d:describe  y:YAML  e:edit  s:status  E:events"
+                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  M:policies  ::command  :upgrade  ?:help  /:filter  ctrl-d:delete  p:pause  f:reconcile  d:describe  y:YAML  e:edit  s:status  E:events"
                 )
             }
         }

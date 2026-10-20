@@ -54,6 +54,7 @@ pub struct UiConfig {
     pub short: bool,
     pub show_logical_name: bool,
     pub show_external_name: bool,
+    pub show_management_policies: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -115,6 +116,7 @@ impl Default for UiConfig {
             short: false,
             show_logical_name: false,
             show_external_name: false,
+            show_management_policies: false,
         }
     }
 }
@@ -333,6 +335,21 @@ mod tests {
         Config::default().validate().unwrap();
         assert!(!Config::default().ui.show_logical_name);
         assert!(!Config::default().ui.show_external_name);
+        assert!(!Config::default().ui.show_management_policies);
+    }
+
+    #[test]
+    fn management_policies_visibility_defaults_to_false_and_accepts_only_booleans() {
+        let config: Config = toml::from_str("[ui]").unwrap();
+        assert!(!config.ui.show_management_policies);
+        let config: Config = toml::from_str("[ui]\nshow_management_policies = true").unwrap();
+        assert!(config.ui.show_management_policies);
+        for value in ["'false'", "0", "[]"] {
+            assert!(
+                toml::from_str::<Config>(&format!("[ui]\nshow_management_policies = {value}"))
+                    .is_err()
+            );
+        }
     }
 
     #[test]

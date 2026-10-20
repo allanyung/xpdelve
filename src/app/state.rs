@@ -75,6 +75,7 @@ impl App {
             resource_horizontal_scroll: 0,
             show_logical_name: config.ui.show_logical_name,
             show_external_name: config.ui.show_external_name,
+            show_management_policies: config.ui.show_management_policies,
             collapsed: HashSet::new(),
             excluded_kinds: HashSet::new(),
             mode: InputMode::Normal,
@@ -309,6 +310,9 @@ impl App {
                 }
                 if config.ui.show_external_name != self.config.ui.show_external_name {
                     self.show_external_name = config.ui.show_external_name;
+                }
+                if config.ui.show_management_policies != self.config.ui.show_management_policies {
+                    self.show_management_policies = config.ui.show_management_policies;
                 }
                 self.config = config;
                 self.theme = theme;
