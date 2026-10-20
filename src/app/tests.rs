@@ -1952,6 +1952,76 @@ fn external_name_annotation_is_sanitized_and_non_string_values_use_dash() {
 }
 
 #[test]
+fn management_policies_column_toggles_and_formats_values() {
+    let mut app = app();
+    let trace = serde_json::json!({"object": {
+        "apiVersion": "example.io/v1", "kind": "Root",
+        "metadata": {"name": "root"},
+        "spec": {"managementPolicies": ["*"]}
+    }, "children": [
+        {"object": {
+            "apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "a"},
+            "spec": {"managementPolicies": ["Observe", "Create"]}
+        }},
+        {"object": {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "b"}}}
+    ]});
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    let area = Rect::new(0, 0, 240, 16);
+    let tree = resource_tree_area(area).unwrap();
+    assert!(!rendered_tree(&app, tree).unwrap().lines[0].contains("MANAGEMENT POLICIES"));
+    app.handle_key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT), area);
+    assert!(app.show_management_policies);
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT), area);
+    let shown = rendered_tree(&app, tree).unwrap();
+    let start = shown.horizontal.pinned_width;
+    let external_width = "EXTERNAL NAME".width() + 2;
+    let start = start + external_width;
+    assert_eq!(
+        horizontal_slice(&shown.lines[0], start, 19),
+        "MANAGEMENT POLICIES"
+    );
+    assert_eq!(horizontal_slice(&shown.lines[1], start, 1), "*");
+    assert_eq!(
+        horizontal_slice(&shown.lines[2], start, 14),
+        "Observe,Create"
+    );
+    assert_eq!(horizontal_slice(&shown.lines[3], start, 1), "-");
+    app.handle_key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE), area);
+    assert!(!app.show_management_policies);
+}
+
+#[test]
+fn placeholder_dashes_are_dimmed_but_other_text_is_not() {
+    let mut app = app();
+    app.show_management_policies = true;
+    let trace = serde_json::json!({"object": {
+        "apiVersion": "example.io/v1", "kind": "Root", "metadata": {"name": "root"}
+    }, "children": [{"object": {
+        "apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "a"},
+        "spec": {"managementPolicies": ["*"]}
+    }}]});
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    app.selection.visible_index = 1;
+    let area = Rect::new(0, 0, 240, 16);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+        .draw(|frame| render_tree(frame, area, &app))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let pinned = rendered_tree(&app, area).unwrap().horizontal.pinned_width as u16 + 1;
+    let find = |row: u16, symbol: &str| {
+        (pinned..area.width).find(|x| buffer.cell((*x, row)).unwrap().symbol() == symbol)
+    };
+    let subtle = app.theme.subtle();
+    let dash = buffer.cell((find(2, "-").unwrap(), 2)).unwrap();
+    assert_eq!(dash.fg, subtle.fg.unwrap_or(dash.fg));
+    assert!(subtle.fg.is_some() || dash.modifier.contains(Modifier::DIM));
+    let star = buffer.cell((find(3, "*").unwrap(), 3)).unwrap();
+    assert_ne!(star.fg, subtle.fg.unwrap_or(Color::Reset));
+    assert!(!star.modifier.contains(Modifier::DIM));
+}
+
+#[test]
 fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
     let mut app = app();
     let area = Rect::new(0, 0, 50, 16);

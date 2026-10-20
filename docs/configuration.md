@@ -35,6 +35,7 @@ ascii = false
 short = false
 show_logical_name = false
 show_external_name = false
+show_management_policies = false
 
 [skin]
 # Omit name to detect a light/dark terminal and select Latte/Mocha.
@@ -67,6 +68,7 @@ name = "catppuccin-mocha"
 | `ui.short` | Hide condition transition-time columns when `true` |
 | `ui.show_logical_name` | Show the logical name column when `true`; hidden by default (`false`) |
 | `ui.show_external_name` | Show the external name column when `true`; hidden by default (`false`) |
+| `ui.show_management_policies` | Show the management policies column (`spec.managementPolicies`) when `true`; hidden by default (`false`). Toggle with `M` |
 | `skin.name` | Built-in theme name; omit it for terminal-background detection |
 | `skin.colors` | Optional per-swatch RGB overrides |
 | `extra_columns` | Additional main-tree columns keyed by exact resource kind and API group |

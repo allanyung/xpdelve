@@ -975,6 +975,10 @@ impl App {
                 self.show_external_name = !self.show_external_name;
                 self.clamp_tree_horizontal_scroll(terminal_area);
             }
+            (KeyCode::Char('M'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                self.show_management_policies = !self.show_management_policies;
+                self.clamp_tree_horizontal_scroll(terminal_area);
+            }
             (KeyCode::Right, _) => self.expand_or_child(),
             (KeyCode::Left, _) => self.collapse_or_parent(),
             (KeyCode::Char(']'), _) => self.collapsed.clear(),

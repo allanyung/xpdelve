@@ -134,6 +134,7 @@ context, resource, API group, and name through the variables in `args`.
 - `[`/`]`: collapse or expand the whole tree
 - `L` (Shift+L): show or hide the logical name column (`crossplane.io/composition-resource-name`); hidden by default, enable with `ui.show_logical_name = true`
 - `X` (Shift+X): show or hide the external name column (`crossplane.io/external-name`); hidden by default, enable with `ui.show_external_name = true`
+- `M` (Shift+M): show or hide the management policies column (`spec.managementPolicies`, `*` for the default); hidden by default, enable with `ui.show_management_policies = true`
 - `:`: choose a resource kind; `/`: filter; `Ctrl+F`: find; `n`/`N`: next or previous match
 - `d`, `y`, `s`, `E`: describe, live YAML, status, and events
 - `:upgrade`: open the revision upgrade view (see `docs/keys.md`): `Space`/`a` mark, `Enter` review, `Esc` back
