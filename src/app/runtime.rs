@@ -96,6 +96,10 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                                     |()| format!("Copied {value}"),
                                 );
                             }
+                            UiAction::CopyText(value) => match copy_osc52(&value) {
+                                Ok(()) => app.show_toast("● Copied to clipboard"),
+                                Err(error) => app.status = format!("Copy failed: {error}"),
+                            },
                             UiAction::Edit(target) => {
                                 if run_edit(&mut terminal, &mut app, cli, target).await {
                                     request_refresh(&mut app, cli, &sender, &mut active, false);
@@ -399,7 +403,8 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
             | UiAction::Refresh
             | UiAction::DiscoverRevisions
             | UiAction::Edit(_)
-            | UiAction::Copy(_) => return,
+            | UiAction::Copy(_)
+            | UiAction::CopyText(_) => return,
         };
         let result = result.map_err(|error| crate::kubernetes::format_error(&error));
         let _ = sender

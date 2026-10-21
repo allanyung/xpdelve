@@ -212,8 +212,8 @@ const HELP_LINES: &[&str] = &[
     "  :upgrade          revision upgrade view (Space/a mark, Enter review)",
     "  :skin             choose theme",
     "  :quit             exit xpdelve",
-    "  /                 filter tree",
-    "  Ctrl+F            find text",
+    "  /                 filter tree (live; Enter keeps, Esc restores)",
+    "  Ctrl+F            find text (live)",
     "  n / N             next / previous match",
     "  Esc               clear marks, or find, text filter, kind, and health",
     "",
@@ -298,6 +298,13 @@ struct TextModalState {
 }
 
 impl TextModalState {
+    /// The text to highlight: what is being typed, otherwise the committed query.
+    fn highlight_query(&self) -> &str {
+        self.search_input
+            .as_deref()
+            .map_or(self.query.as_str(), str::trim)
+    }
+
     fn new(kind: ContentKind) -> Self {
         Self {
             wrapped: kind.wraps_by_default(),
@@ -328,7 +335,7 @@ impl TextModalState {
                 KeyCode::Enter => {
                     self.query = input.trim().to_owned();
                     self.search_input = None;
-                    return TextModalAction::FindNext;
+                    return TextModalAction::FindFirst;
                 }
                 KeyCode::Backspace => {
                     input.pop();
@@ -389,6 +396,7 @@ impl TextModalState {
                 self.search_input = Some(self.query.clone());
                 TextModalAction::None
             }
+            (KeyCode::Char('c'), KeyModifiers::NONE) => TextModalAction::Copy,
             (KeyCode::Char('n'), _) => TextModalAction::FindNext,
             (KeyCode::Char('N'), _) => TextModalAction::FindPrevious,
             _ => TextModalAction::None,
@@ -400,8 +408,10 @@ impl TextModalState {
 enum TextModalAction {
     None,
     Close,
+    FindFirst,
     FindNext,
     FindPrevious,
+    Copy,
 }
 
 // Only one modal exists at a time, so the size gap to the text view is harmless.
@@ -567,6 +577,7 @@ struct App {
     health_filter: HealthFilter,
     palette_selected: usize,
     find: String,
+    prompt_before: String,
     loading: bool,
     paused: bool,
     generation: u64,
@@ -617,6 +628,7 @@ enum UiAction {
     Events(Target),
     Edit(Target),
     Copy(String),
+    CopyText(String),
     Delete(Vec<Target>, DeletePropagation),
     SetPaused(Vec<Target>, bool),
     Reconcile(Vec<Target>),

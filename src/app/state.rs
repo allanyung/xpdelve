@@ -20,6 +20,21 @@ fn maybe_add_command(
     }
 }
 
+/// Turns an action label such as `YAML: Kind.group/name` into the view title
+/// `Kind.group/name — YAML`.
+pub(super) fn view_title(label: &str) -> String {
+    for (prefix, word) in [
+        ("YAML: ", "YAML"),
+        ("Events: ", "events"),
+        ("Describe: ", "describe"),
+    ] {
+        if let Some(identity) = label.strip_prefix(prefix) {
+            return format!("{identity} — {word}");
+        }
+    }
+    label.to_owned()
+}
+
 /// Unique finalizer names across the targets with the number of targets holding each.
 pub(super) fn finalizer_names(targets: &[FinalizerTarget]) -> Vec<(String, usize)> {
     let mut counts = std::collections::BTreeMap::new();
@@ -86,6 +101,7 @@ impl App {
             health_filter: HealthFilter::All,
             palette_selected: 0,
             find: String::new(),
+            prompt_before: String::new(),
             loading: false,
             paused: false,
             generation: 0,
@@ -574,7 +590,7 @@ impl App {
         }) else {
             return;
         };
-        let title = format!("Status: {}", node.identity);
+        let title = format!("{} — status", node.identity);
         let content = node.object.get("status").map_or_else(
             || "No status reported.\n".to_owned(),
             |status| {
@@ -602,7 +618,7 @@ impl App {
             return;
         };
         self.modal = Some(Modal::Text {
-            title: format!("Resource details: {}", node.identity),
+            title: format!("{} — details", node.identity),
             content: content.clone().into(),
             kind: ContentKind::Error,
             state: TextModalState::new(ContentKind::Error),
@@ -638,7 +654,7 @@ impl App {
                     _ => ContentKind::Describe,
                 };
                 self.modal = Some(Modal::Text {
-                    title: label.to_owned(),
+                    title: view_title(label),
                     content: content.into(),
                     kind,
                     state: TextModalState::new(kind),
@@ -956,6 +972,44 @@ impl App {
                 .unwrap_or(matches[0])
         };
         self.set_selection(next);
+    }
+
+    /// Applies the prompt text immediately so results update as you type.
+    pub(super) fn apply_prompt_value(&mut self) {
+        let value = self.input.trim().to_owned();
+        match self.mode {
+            InputMode::Filter => {
+                self.filter = value;
+                self.reselect_after_filter();
+            }
+            InputMode::Find => self.find = value,
+            InputMode::Normal | InputMode::Command | InputMode::Help => {}
+        }
+    }
+
+    /// Cancels a prompt edit, putting back the value from before it opened.
+    pub(super) fn restore_prompt_value(&mut self) {
+        let before = std::mem::take(&mut self.prompt_before);
+        match self.mode {
+            InputMode::Filter => {
+                self.filter = before;
+                self.reselect_after_filter();
+            }
+            InputMode::Find => self.find = before,
+            InputMode::Normal | InputMode::Command | InputMode::Help => {}
+        }
+    }
+
+    /// Keeps the selected resource when it survives the filter, else selects the first row.
+    fn reselect_after_filter(&mut self) {
+        let visible = self.visible();
+        let position = self.snapshot.as_ref().and_then(|snapshot| {
+            let identity = self.selection.identity.as_ref()?;
+            visible
+                .iter()
+                .position(|index| &snapshot.nodes[*index].identity == identity)
+        });
+        self.set_selection(position.unwrap_or(0));
     }
 
     pub(super) fn submit_input(&mut self) {

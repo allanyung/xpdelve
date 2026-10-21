@@ -620,12 +620,22 @@ impl App {
                         page_size,
                     ) {
                         TextModalAction::Close => self.modal = None,
+                        TextModalAction::FindFirst => {
+                            move_modal_match(
+                                content,
+                                &state.query,
+                                &mut state.vertical_scroll,
+                                (false, true),
+                                body_width,
+                                state.wrapped,
+                            );
+                        }
                         TextModalAction::FindNext => {
                             move_modal_match(
                                 content,
                                 &state.query,
                                 &mut state.vertical_scroll,
-                                false,
+                                (false, false),
                                 body_width,
                                 state.wrapped,
                             );
@@ -635,10 +645,14 @@ impl App {
                                 content,
                                 &state.query,
                                 &mut state.vertical_scroll,
-                                true,
+                                (true, false),
                                 body_width,
                                 state.wrapped,
                             );
+                        }
+                        TextModalAction::Copy => {
+                            let text: &str = content;
+                            return UiAction::CopyText(text.to_owned());
                         }
                         TextModalAction::None => {}
                     }
@@ -932,14 +946,19 @@ impl App {
         if matches!(self.mode, InputMode::Filter | InputMode::Find) {
             match key.code {
                 KeyCode::Esc => {
+                    self.restore_prompt_value();
                     self.mode = InputMode::Normal;
                     self.input.clear();
                 }
                 KeyCode::Enter => self.submit_input(),
                 KeyCode::Backspace => {
                     self.input.pop();
+                    self.apply_prompt_value();
                 }
-                KeyCode::Char(character) => self.input.push(character),
+                KeyCode::Char(character) => {
+                    self.input.push(character);
+                    self.apply_prompt_value();
+                }
                 _ => {}
             }
             self.ensure_selection_visible(page_size);
@@ -1008,11 +1027,13 @@ impl App {
             (KeyCode::Char('/'), _) => {
                 self.mode = InputMode::Filter;
                 self.input.clone_from(&self.filter);
+                self.prompt_before.clone_from(&self.filter);
             }
             (KeyCode::Char(':'), _) => self.open_palette(),
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                 self.mode = InputMode::Find;
                 self.input.clone_from(&self.find);
+                self.prompt_before.clone_from(&self.find);
             }
             (KeyCode::Char('n'), _) => self.find_next(false),
             (KeyCode::Char('N'), _) => self.find_next(true),
