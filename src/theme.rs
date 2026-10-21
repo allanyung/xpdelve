@@ -255,8 +255,8 @@ impl Theme {
     pub fn text_selection(&self, base: Style) -> Style {
         if self.colors_enabled {
             Style::default()
-                .fg(self.palette.base)
-                .bg(self.palette.yellow)
+                .fg(self.palette.text)
+                .bg(self.palette.surface2)
                 .bold()
         } else if base.add_modifier.contains(Modifier::REVERSED) {
             Style::default()
@@ -269,6 +269,18 @@ impl Theme {
 
     pub fn danger(&self) -> Style {
         self.fg(self.palette.red).bold()
+    }
+
+    pub fn header_row(&self) -> Style {
+        if self.colors_enabled {
+            Style::default().fg(self.palette.yellow)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    pub fn counter(&self) -> Style {
+        self.fg(self.palette.yellow).remove_modifier(Modifier::BOLD)
     }
 
     pub fn subtle(&self) -> Style {

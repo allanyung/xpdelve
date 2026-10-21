@@ -2080,6 +2080,27 @@ fn placeholder_dashes_are_dimmed_but_other_text_is_not() {
 }
 
 #[test]
+fn header_row_and_resource_count_use_the_yellow_slot() {
+    let app = app();
+    let area = Rect::new(0, 0, 100, 16);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+        .draw(|frame| render_tree(frame, area, &app))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let yellow = app.theme.palette.yellow;
+    let find = |row: u16, symbol: &str| {
+        (0..area.width).find(|x| buffer.cell((*x, row)).unwrap().symbol() == symbol)
+    };
+    let object = find(1, "O").unwrap();
+    assert_eq!(buffer.cell((object, 1)).unwrap().fg, yellow);
+    let count = find(0, "[").unwrap();
+    assert_eq!(buffer.cell((count, 0)).unwrap().fg, yellow);
+    let heading = find(0, "R").unwrap();
+    assert_ne!(buffer.cell((heading, 0)).unwrap().fg, yellow);
+}
+
+#[test]
 fn tree_horizontal_keys_scroll_columns_but_keep_objects_pinned() {
     let mut app = app();
     let area = Rect::new(0, 0, 50, 16);
@@ -2680,8 +2701,8 @@ fn tree_divider_uses_subtle_style_without_changing_row_selection() {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             let highlighted = terminal.backend().buffer().cell((divider, 3)).unwrap();
             if app.theme.colors_enabled {
-                assert_eq!(highlighted.bg, app.theme.palette.yellow);
-                assert_eq!(highlighted.fg, app.theme.palette.base);
+                assert_eq!(highlighted.bg, app.theme.palette.surface2);
+                assert_eq!(highlighted.fg, app.theme.palette.text);
             } else {
                 assert!(!highlighted.modifier.contains(Modifier::REVERSED));
                 assert!(highlighted.modifier.contains(Modifier::UNDERLINED));
@@ -2875,7 +2896,7 @@ fn text_selection_is_visible_on_selected_row() {
     terminal.draw(|frame| render(frame, &app)).unwrap();
     let buffer = terminal.backend().buffer();
 
-    assert_eq!(buffer.cell((1, 3)).unwrap().bg, app.theme.palette.yellow);
+    assert_eq!(buffer.cell((1, 3)).unwrap().bg, app.theme.palette.surface2);
     assert_eq!(buffer.cell((5, 3)).unwrap().bg, app.theme.palette.lavender);
 }
 
@@ -3923,7 +3944,7 @@ fn tree_refresh_does_not_interrupt_mouse_selection() {
                 .cell((body.x + 2, body.y + 1))
                 .unwrap()
                 .bg,
-            app.theme.palette.yellow
+            app.theme.palette.surface2
         );
 
         assert_eq!(
@@ -5126,7 +5147,7 @@ fn u_opens_the_upgrade_view_and_renders_colored_states() {
     terminal.draw(|frame| render(frame, &app)).unwrap();
     let rendered = terminal.backend().to_string();
     assert!(
-        rendered.contains("Upgrade revisions (4/4) · 1 available"),
+        rendered.contains("Upgrade revisions [4/4] · 1 available"),
         "{rendered}"
     );
     for header in ["CURRENT", "LATEST", "UPGRADE"] {

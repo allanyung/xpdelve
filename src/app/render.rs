@@ -212,7 +212,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     let mut lines = Vec::with_capacity(rendered.row_count + 1);
     lines.push(Line::styled(
         rendered.lines[0].clone(),
-        Style::default().add_modifier(Modifier::BOLD),
+        app.theme.header_row(),
     ));
     for (row, (visible_position, index)) in visible
         .iter()
@@ -255,7 +255,8 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     } else {
         "Resources"
     };
-    let mut title = if app.upgrade_view {
+    let count = format!("[{}/{}]", visible.len(), snapshot.nodes.len());
+    let mut suffix = if app.upgrade_view {
         let note = if app.revisions.is_refreshing() && app.revisions.has_cache() {
             " · refreshing"
         } else if app.revisions.error().is_some() && app.revisions.has_cache() {
@@ -263,20 +264,15 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         } else {
             ""
         };
-        format!(
-            " {heading} ({}/{}) · {} available{note} ",
-            visible.len(),
-            snapshot.nodes.len(),
-            app.upgrade_available_count()
-        )
+        format!(" · {} available{note} ", app.upgrade_available_count())
     } else {
-        format!(" {heading} ({}/{}) ", visible.len(), snapshot.nodes.len())
+        " ".to_owned()
     };
     if !app.active_marks().is_empty() {
         let hidden = app.hidden_marked_count();
-        title = format!(
-            "{}· {} marked{} ",
-            title.trim_end().to_owned() + " ",
+        suffix = format!(
+            "{} · {} marked{} ",
+            suffix.trim_end(),
             app.active_marks().len(),
             if hidden > 0 {
                 format!(" ({hidden} hidden)")
@@ -285,6 +281,11 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             }
         );
     }
+    let title = Line::from(vec![
+        Span::raw(format!(" {heading} ")),
+        Span::styled(count, app.theme.counter()),
+        Span::raw(suffix),
+    ]);
     let block = if app.upgrade_view {
         bordered_block(title, &app.theme).border_style(app.theme.upgrade_border())
     } else {
@@ -696,7 +697,14 @@ pub(super) fn render_resource_missing(frame: &mut ratatui::Frame<'_>, area: Rect
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .block(bordered_block(" Resources (0/0) ", &app.theme)),
+            .block(bordered_block(
+                Line::from(vec![
+                    Span::raw(" Resources "),
+                    Span::styled("[0/0]", app.theme.counter()),
+                    Span::raw(" "),
+                ]),
+                &app.theme,
+            )),
         area,
     );
 }
