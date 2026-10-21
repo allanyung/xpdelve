@@ -17,11 +17,11 @@ The demo creates this nested Crossplane v2 trace:
 DemoPlatform/xpdelve-demo
 ├── DemoNetwork/xpdelve-demo-network
 │   ├── ConfigMap/xpdelve-demo-network-settings
-│   └── NetworkPolicy/xpdelve-demo-default-deny
-└── DemoApplication/xpdelve-demo-app
+│   ╰── NetworkPolicy/xpdelve-demo-default-deny
+╰── DemoApplication/xpdelve-demo-app
     ├── Deployment/xpdelve-demo-web
     ├── Service/xpdelve-demo-web
-    └── ConfigMap/xpdelve-demo-app-settings
+    ╰── ConfigMap/xpdelve-demo-app-settings
 ```
 
 The network settings ConfigMap has a demonstration finalizer. A foreground

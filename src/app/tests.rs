@@ -345,7 +345,7 @@ fn unicode_tree_uses_disconnected_xpdig_indentation() {
     let snapshot = app.snapshot.as_ref().unwrap();
     let child = &snapshot.nodes[1];
     let cell = object_cell_with_state(snapshot, child, false);
-    assert!(cell.starts_with("└─── Child/child"));
+    assert!(cell.starts_with("╰─── Child/child"));
 
     let root = &snapshot.nodes[0];
     let cell = object_cell_with_state(snapshot, root, false);
@@ -466,7 +466,7 @@ fn kind_filtered_rows_are_rendered_without_tree_prefixes() {
     let rendered = rendered_tree(&app, Rect::new(0, 0, 100, 16)).unwrap();
 
     assert!(rendered.lines[1].starts_with("  Child/child"));
-    assert!(!rendered.lines[1].contains("└─"));
+    assert!(!rendered.lines[1].contains("╰─"));
 }
 
 #[test]
@@ -1001,7 +1001,13 @@ fn paused_resources_show_paused_status_and_theme_orange_without_name_suffix() {
             } else {
                 Color::Reset
             };
-            assert_eq!(buffer.cell((1, child_row)).unwrap().fg, expected);
+            let label = (1..area.width)
+                .find(|x| buffer.cell((*x, child_row)).unwrap().symbol() == "C")
+                .unwrap();
+            assert_eq!(buffer.cell((label, child_row)).unwrap().fg, expected);
+            // The tree connector keeps the subtle style instead of the row colour.
+            let guide = buffer.cell((1, child_row)).unwrap();
+            assert_eq!(guide.fg, app.theme.subtle().fg.unwrap_or(Color::Reset));
             let status_column = rendered_tree(&app, area).unwrap().lines[0]
                 .find("STATUS")
                 .unwrap();

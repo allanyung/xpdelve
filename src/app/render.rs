@@ -339,6 +339,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         }
     }
     dim_placeholder_cells(frame, app, &rendered, body);
+    subtle_tree_guides(frame, app, &rendered, &visible, body);
     if horizontal.max_offset() > 0 && horizontal.viewport_width > 0 {
         let scrollbar_area = Rect::new(
             area.x + horizontal.pinned_width as u16,
@@ -386,6 +387,53 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             false,
             &app.theme,
         );
+    }
+}
+
+/// Draws the tree connectors and disclosure markers in the subtle style
+/// regardless of the row's health colour.
+fn subtle_tree_guides(
+    frame: &mut ratatui::Frame<'_>,
+    app: &App,
+    rendered: &RenderedTree,
+    visible: &[usize],
+    body: Rect,
+) {
+    let Some(snapshot) = app.snapshot.as_ref() else {
+        return;
+    };
+    let show_tree_prefix = app.kind_filter.is_none() || app.health_filter != HealthFilter::All;
+    let checkbox = if app.active_marks().is_empty() {
+        0
+    } else {
+        CHECKBOX_WIDTH
+    };
+    let object_width = rendered.horizontal.pinned_width.saturating_sub(2);
+    let subtle = app.theme.subtle();
+    for (row, index) in visible
+        .iter()
+        .skip(rendered.start)
+        .take(rendered.row_count)
+        .enumerate()
+    {
+        if rendered.start + row == app.selection.visible_index {
+            continue;
+        }
+        let node = &snapshot.nodes[*index];
+        let guides = tree_guides(
+            snapshot,
+            node,
+            app.config.ui.ascii,
+            show_tree_prefix,
+            app.collapsed.contains(&node.identity),
+        );
+        let width = (checkbox + guides.width()).min(object_width);
+        let y = body.y + 1 + row as u16;
+        for x in checkbox..width {
+            if let Some(cell) = frame.buffer_mut().cell_mut((body.x + x as u16, y)) {
+                cell.set_style(subtle);
+            }
+        }
     }
 }
 
@@ -1075,6 +1123,22 @@ pub(super) fn object_cell_with_tree_state(
     show_tree_prefix: bool,
     collapsed: bool,
 ) -> String {
+    format!(
+        "{}{}/{}",
+        tree_guides(snapshot, node, ascii, show_tree_prefix, collapsed),
+        text::sanitize(&node.identity.kind),
+        text::sanitize(&node.identity.name)
+    )
+}
+
+/// The tree connector prefix and disclosure marker that lead an object cell.
+fn tree_guides(
+    snapshot: &Snapshot,
+    node: &ProjectedNode,
+    ascii: bool,
+    show_tree_prefix: bool,
+    collapsed: bool,
+) -> String {
     let mut prefix = if show_tree_prefix {
         tree_prefix(snapshot, node, ascii)
     } else {
@@ -1093,11 +1157,7 @@ pub(super) fn object_cell_with_tree_state(
         (true, true, false) => "▸ ",
         (true, false, false) => "▾ ",
     };
-    format!(
-        "{prefix}{disclosure}{}/{}",
-        text::sanitize(&node.identity.kind),
-        text::sanitize(&node.identity.name)
-    )
+    format!("{prefix}{disclosure}")
 }
 
 fn logical_name_cell(node: &ProjectedNode) -> String {
@@ -1269,7 +1329,7 @@ pub(super) fn tree_prefix(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool
         prefix.push_str(if node.is_last_child { "`- " } else { "|- " });
     } else {
         prefix.push_str(if node.is_last_child {
-            "└─ "
+            "╰─ "
         } else {
             "├─ "
         });
