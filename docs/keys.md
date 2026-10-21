@@ -108,8 +108,8 @@ required for these mouse events. Ordinary vertical-wheel behavior is unchanged.
 | Key | Action |
 | --- | --- |
 | `:` | Open the resource-kind command palette |
-| `/` | Filter rows while retaining matching ancestor paths |
-| `Ctrl+F` | Find text without hiding rows |
+| `/` | Filter rows while retaining matching ancestor paths; applies as you type, Enter keeps it, Esc restores the previous filter |
+| `Ctrl+F` | Find text without hiding rows; applies as you type |
 | `n`, `N` | Select the next or previous find match |
 | `Esc` | Clear find, text filter, kind filter, and health filter |
 | `d` | Open captured `kubectl describe` output |
@@ -147,6 +147,15 @@ Field names and values are case-insensitive:
 The `ready` and `synced` fields accept `true`, `false`, or `unknown`. Text-filter
 matches retain their ancestor paths. The kind selected from the command palette
 is a separate exact-match filter and does not retain non-matching ancestors.
+
+Typing in the `/` prompt (and in the `Ctrl+F` find prompt) applies immediately:
+rows filter and matching text is highlighted as you type, and the active filter
+appears in the table title (`Resources [3/8] /query`). Enter keeps the text and
+Esc restores whatever was active before the prompt opened. Matched characters in
+the table are bold yellow (bold and underlined on the selected row); a field
+filter such as `status:error` marks only that column. The `/` find inside the
+YAML, Describe, and Events views also highlights while typing, and Esc restores
+the previous search.
 
 ### Palette Commands
 
@@ -269,8 +278,10 @@ line. The view remains open across trace refreshes until Esc or `q` closes it.
 Content modals use `j`/`k` or Up/Down, PageUp/PageDown, and `g`/`G` for vertical
 navigation. Describe, event, and error content wraps long lines. YAML wraps by
 default; press `w` to toggle wrapping. `h`/`l` or Left/Right scroll unwrapped
-YAML horizontally. `/` starts modal-local search, and `n`/`N` navigate matching
-lines. In Describe, live YAML, Events, resource details, and mutation errors,
+YAML horizontally. `/` starts modal-local search: the prompt shows `search /`, matches
+highlight as you type, and the title shows the term with `[current/total]` matching
+lines. `n` jumps to the next match and `N` to the previous one. `c` copies the
+whole document to the clipboard. In Describe, live YAML, Events, resource details, and mutation errors,
 drag across text to copy it on mouse release; visual soft wraps do not add
 newlines to the copied text. Hold a drag at the top or bottom edge of a text view
 to scroll and extend the selection; wheel scrolling also preserves an active drag.

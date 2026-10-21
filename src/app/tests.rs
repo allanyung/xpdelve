@@ -222,7 +222,7 @@ fn enter_opens_wrapped_problem_details_that_survive_refresh() {
     else {
         panic!("expected resource problem details");
     };
-    assert_eq!(title, "Resource details: Child/child");
+    assert_eq!(title, "Child/child — details");
     assert!(content.contains("Error: cannot connect"));
     assert!(content.contains("Ready=False\nWaiting: a long diagnostic"));
     assert_eq!(*kind, ContentKind::Error);
@@ -1221,7 +1221,7 @@ fn status_shortcut_opens_selected_resource_status() {
     else {
         panic!("expected status text modal");
     };
-    assert_eq!(title, "Status: Root.example.io/root");
+    assert_eq!(title, "Root.example.io/root — status");
     assert_eq!(*kind, ContentKind::Yaml);
     assert!(content.contains("conditions:"));
     assert!(content.contains("type: Ready"));
@@ -2098,6 +2098,302 @@ fn header_row_and_resource_count_use_the_yellow_slot() {
     assert_eq!(buffer.cell((count, 0)).unwrap().fg, yellow);
     let heading = find(0, "R").unwrap();
     assert_ne!(buffer.cell((heading, 0)).unwrap().fg, yellow);
+}
+
+fn type_keys(app: &mut App, text: &str, area: Rect) {
+    for character in text.chars() {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            area,
+        );
+    }
+}
+
+#[test]
+fn filter_applies_as_you_type_and_escape_restores_the_previous_filter() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 20);
+    app.filter = "root".into();
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
+    for _ in 0..4 {
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), area);
+    }
+    assert_eq!(app.filter, "");
+    type_keys(&mut app, "child", area);
+    assert_eq!(app.filter, "child");
+    assert_eq!(app.mode, InputMode::Filter);
+    let names = |app: &App| {
+        let snapshot = app.snapshot.as_ref().unwrap();
+        app.visible()
+            .iter()
+            .map(|index| snapshot.nodes[*index].identity.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&app), ["root", "child"]);
+    type_keys(&mut app, "x", area);
+    assert!(names(&app).is_empty());
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    assert_eq!(app.mode, InputMode::Normal);
+    assert_eq!(app.filter, "root");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
+    type_keys(&mut app, "s", area);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    assert_eq!(app.mode, InputMode::Normal);
+    assert_eq!(app.filter, "roots");
+}
+
+#[test]
+fn find_applies_as_you_type_and_escape_restores_the_previous_find() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 100, 20);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        area,
+    );
+    type_keys(&mut app, "chi", area);
+    assert_eq!(app.find, "chi");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+    assert!(app.find.is_empty());
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn prompts_use_sofka_colors_and_a_block_cursor() {
+    for (mode, expected) in [
+        (InputMode::Filter, "teal"),
+        (InputMode::Find, "teal"),
+        (InputMode::Command, "mauve"),
+    ] {
+        let mut app = app();
+        app.mode = mode;
+        app.input = "abc".into();
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = 18;
+        let color = if expected == "teal" {
+            app.theme.palette.teal
+        } else {
+            app.theme.palette.mauve
+        };
+        let cursor = (0..100)
+            .find(|x| buffer.cell((*x, row)).unwrap().symbol() == "█")
+            .unwrap();
+        assert_eq!(buffer.cell((cursor, row)).unwrap().fg, color);
+        let text = buffer.cell((cursor - 1, row)).unwrap();
+        assert_eq!(text.symbol(), "c");
+        assert_eq!(text.fg, app.theme.palette.text);
+        let sigil = (0..cursor)
+            .find(|x| buffer.cell((*x, row)).unwrap().fg == color)
+            .unwrap();
+        assert!(
+            buffer
+                .cell((sigil, row))
+                .unwrap()
+                .modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+}
+
+#[test]
+fn title_shows_the_filter_in_teal_next_to_the_yellow_count() {
+    let mut app = app();
+    app.filter = "child".into();
+    let area = Rect::new(0, 0, 100, 16);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+        .draw(|frame| render_tree(frame, area, &app))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let find = |symbol: &str, after: u16| {
+        (after..area.width)
+            .find(|x| buffer.cell((*x, 0)).unwrap().symbol() == symbol)
+            .unwrap()
+    };
+    let slash = find("/", find("]", 0));
+    assert_eq!(buffer.cell((slash, 0)).unwrap().fg, app.theme.palette.teal);
+    assert!(
+        !buffer
+            .cell((slash, 0))
+            .unwrap()
+            .modifier
+            .contains(Modifier::BOLD)
+    );
+    assert_eq!(
+        buffer.cell((find("[", 0), 0)).unwrap().fg,
+        app.theme.palette.yellow
+    );
+}
+
+#[test]
+fn filter_matches_are_highlighted_in_rows_and_field_filters_only_mark_their_field() {
+    let draw = |filter: &str| {
+        let mut app = app();
+        app.filter = filter.into();
+        let area = Rect::new(0, 0, 100, 16);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| render_tree(frame, area, &app))
+            .unwrap();
+        (app, terminal.backend().buffer().clone())
+    };
+    let cells = |buffer: &ratatui::buffer::Buffer, symbol: &str| {
+        (0..100)
+            .filter(|x| buffer.cell((*x, 3)).unwrap().symbol() == symbol)
+            .collect::<Vec<_>>()
+    };
+
+    let (app, buffer) = draw("child");
+    let yellow = app.theme.palette.yellow;
+    for column in cells(&buffer, "C").into_iter().chain(cells(&buffer, "h")) {
+        assert_eq!(buffer.cell((column, 3)).unwrap().fg, yellow);
+    }
+    assert!(!cells(&buffer, "C").is_empty());
+    assert_ne!(buffer.cell((1, 2)).unwrap().fg, yellow);
+
+    let (app, buffer) = draw("kind:chi");
+    let uppercase = cells(&buffer, "C")[0];
+    assert_eq!(
+        buffer.cell((uppercase, 3)).unwrap().fg,
+        app.theme.palette.yellow
+    );
+    let lowercase = *cells(&buffer, "c").last().unwrap();
+    assert_ne!(
+        buffer.cell((lowercase, 3)).unwrap().fg,
+        app.theme.palette.yellow
+    );
+}
+
+#[test]
+fn modal_find_highlights_while_typing() {
+    let mut state = TextModalState::new(ContentKind::Yaml);
+    state.query = "old".into();
+    assert_eq!(state.highlight_query(), "old");
+    state.search_input = Some(" new ".into());
+    assert_eq!(state.highlight_query(), "new");
+}
+
+#[test]
+fn yaml_matches_keep_their_syntax_colors() {
+    let theme = app().theme;
+    let line = styled_content_line("kind: Widget", ContentKind::Yaml, "wid", &theme);
+    let key = &line.spans[0];
+    assert_eq!(key.content, "kind");
+    assert_eq!(key.style.fg, theme.syntax_key().fg);
+    let matched = line
+        .spans
+        .iter()
+        .find(|span| span.style.bg == Some(theme.palette.yellow))
+        .unwrap();
+    assert_eq!(matched.content, "Wid");
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(text, "kind: Widget");
+
+    let crossing = styled_content_line("kind: Widget", ContentKind::Yaml, "d: w", &theme);
+    assert_eq!(crossing.spans[0].content, "kin");
+    assert_eq!(crossing.spans[0].style.fg, theme.syntax_key().fg);
+    let marked: String = crossing
+        .spans
+        .iter()
+        .filter(|span| span.style.bg == Some(theme.palette.yellow))
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(marked, "d: W");
+}
+
+fn yaml_modal(app: &mut App, content: String) {
+    app.modal = Some(Modal::Text {
+        title: "demo — YAML".into(),
+        content: content.into(),
+        kind: ContentKind::Yaml,
+        state: TextModalState::new(ContentKind::Yaml),
+        selection: None,
+    });
+}
+
+fn numbered_matches() -> String {
+    (0..60)
+        .map(|line| {
+            if line % 25 == 0 {
+                format!("alpha {line}")
+            } else {
+                format!("other {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn modal_search_shows_prompt_term_and_current_match_count() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 120, 20);
+    yaml_modal(&mut app, numbered_matches());
+    let draw = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal.backend().to_string()
+    };
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
+    type_keys(&mut app, "alpha", area);
+    let typing = draw(&app);
+    assert!(typing.contains("search /alpha█"));
+    assert!(typing.contains("· /alpha [1/3]"));
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
+    assert!(draw(&app).contains("· /alpha [1/3]"));
+    type_keys(&mut app, "n", area);
+    assert!(draw(&app).contains("· /alpha [2/3]"));
+    type_keys(&mut app, "N", area);
+    assert!(draw(&app).contains("· /alpha [1/3]"));
+    assert!(!draw(&app).contains("search /"));
+    assert!(draw(&app).contains("/:search  n:next match  N:previous match"));
+}
+
+#[test]
+fn modal_c_copies_the_whole_document() {
+    let mut app = app();
+    let area = Rect::new(0, 0, 120, 20);
+    let text = numbered_matches();
+    yaml_modal(&mut app, text.clone());
+    let action = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), area);
+    assert!(matches!(action, UiAction::CopyText(copied) if copied == text));
+    assert!(app.modal.is_some());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), area);
+    let action = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), area);
+    assert!(matches!(action, UiAction::None));
+    assert!(
+        matches!(&app.modal, Some(Modal::Text { state, .. }) if state.search_input.as_deref() == Some("c"))
+    );
+}
+
+#[test]
+fn inspection_view_titles_use_the_full_identity_and_a_lowercase_view() {
+    assert_eq!(
+        super::state::view_title("YAML: Root.example.io/root"),
+        "Root.example.io/root — YAML"
+    );
+    assert_eq!(
+        super::state::view_title("Events: Root/root"),
+        "Root/root — events"
+    );
+    assert_eq!(
+        super::state::view_title("Describe: Widget.example.io/a-b"),
+        "Widget.example.io/a-b — describe"
+    );
+    assert_eq!(
+        super::state::view_title("Delete (Foreground) failed"),
+        "Delete (Foreground) failed"
+    );
 }
 
 #[test]
@@ -3145,7 +3441,7 @@ fn tree_scroll_hint_is_right_aligned_and_only_shown_for_overflow() {
     let mut terminal = Terminal::new(TestBackend::new(32, 20)).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
     let output = terminal.backend().to_string();
-    assert!(output.contains("Filter: child"));
+    assert!(output.contains("/child"));
     assert!(output.contains("h/l:scroll"));
 
     for mode in [InputMode::Filter, InputMode::Find, InputMode::Command] {
@@ -3257,19 +3553,19 @@ fn yaml_key_legend_uses_sofka_subtle_color() {
 fn content_footer_groups_navigation_before_other_actions() {
     assert_eq!(
         content_modal_footer(ContentKind::Yaml, false),
-        " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:find  n/N:matches  Esc:close"
+        " drag:copy  c:copy all  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:search  n:next match  N:previous match  Esc:close"
     );
     assert_eq!(
         content_modal_footer(ContentKind::Yaml, true),
-        " drag:copy  j/k or ↑/↓:vertical  w:unwrap  /:find  n/N:matches  Esc:close"
+        " drag:copy  c:copy all  j/k or ↑/↓:vertical  w:unwrap  /:search  n:next match  N:previous match  Esc:close"
     );
     assert_eq!(
         content_modal_footer(ContentKind::Events, true),
-        " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
+        " drag:copy  c:copy all  j/k or ↑/↓:vertical  /:search  n:next match  N:previous match  Esc:close"
     );
     assert_eq!(
         content_modal_footer(ContentKind::Error, true),
-        " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
+        " drag:copy  c:copy all  j/k or ↑/↓:vertical  /:search  n:next match  N:previous match  Esc:close"
     );
 }
 
@@ -4219,7 +4515,7 @@ fn context_menu_status_opens_the_status_modal() {
     let Some(Modal::Text { title, content, .. }) = &app.modal else {
         panic!("expected status modal");
     };
-    assert_eq!(title, "Status: Root/root");
+    assert_eq!(title, "Root/root — status");
     assert_eq!(content, "No status reported.\n");
 }
 
@@ -4337,11 +4633,12 @@ fn wrapped_yaml_selection_uses_original_newlines_only() {
 #[test]
 fn modal_find_moves_between_matching_lines() {
     let mut scroll = 0;
+    let forward = (false, false);
     move_modal_match(
         "one\nmatch\nthree\nmatch",
         "MATCH",
         &mut scroll,
-        false,
+        forward,
         80,
         false,
     );
@@ -4350,7 +4647,7 @@ fn modal_find_moves_between_matching_lines() {
         "one\nmatch\nthree\nmatch",
         "MATCH",
         &mut scroll,
-        false,
+        forward,
         80,
         false,
     );
@@ -4359,7 +4656,7 @@ fn modal_find_moves_between_matching_lines() {
         "one\nmatch\nthree\nmatch",
         "MATCH",
         &mut scroll,
-        false,
+        forward,
         80,
         false,
     );

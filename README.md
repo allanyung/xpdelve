@@ -135,7 +135,7 @@ context, resource, API group, and name through the variables in `args`.
 - `L` (Shift+L): show or hide the logical name column (`crossplane.io/composition-resource-name`); hidden by default, enable with `ui.show_logical_name = true`
 - `X` (Shift+X): show or hide the external name column (`crossplane.io/external-name`); hidden by default, enable with `ui.show_external_name = true`
 - `M` (Shift+M): show or hide the management policies column (`spec.managementPolicies`, `*` for the default); hidden by default, enable with `ui.show_management_policies = true`
-- `:`: choose a resource kind; `/`: filter; `Ctrl+F`: find; `n`/`N`: next or previous match
+- `:`: choose a resource kind; `/`: filter; `Ctrl+F`: find (both apply and highlight as you type; Esc restores the previous value); `n`/`N`: next or previous match
 - `d`, `y`, `s`, `E`: describe, live YAML, status, and events
 - `:upgrade`: open the revision upgrade view (see `docs/keys.md`): `Space`/`a` mark, `Enter` review, `Esc` back
 - `p`: pause or unpause the highlighted (or marked) Crossplane resources; mixed selections ask which direction
@@ -230,7 +230,9 @@ visual soft wraps are not included as newlines.
 Hold a text-view drag at the top or bottom edge to scroll and extend the
 selection beyond the visible screen. The mouse wheel also preserves an active drag.
 Describe, YAML, and Events use the full terminal and wrap long lines. Content
-views support `/` search and vertical scrolling. In YAML, `w` toggles wrapping;
+views support `/` search (with `n`/`N` for the next and previous match, shown as
+`[current/total]` in the title), `c` to copy the whole document, and vertical
+scrolling. In YAML, `w` toggles wrapping;
 `h`/`l` or Left/Right scroll unwrapped YAML horizontally.
 
 ## Themes

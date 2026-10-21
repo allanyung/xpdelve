@@ -281,11 +281,20 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             }
         );
     }
-    let title = Line::from(vec![
+    let mut title_spans = vec![
         Span::raw(format!(" {heading} ")),
         Span::styled(count, app.theme.counter()),
-        Span::raw(suffix),
-    ]);
+    ];
+    if !app.filter.is_empty() {
+        title_spans.push(Span::styled(
+            format!(" /{}", text::sanitize(&app.filter)),
+            app.theme
+                .fg(app.theme.palette.teal)
+                .remove_modifier(Modifier::BOLD),
+        ));
+    }
+    title_spans.push(Span::raw(suffix));
+    let title = Line::from(title_spans);
     let block = if app.upgrade_view {
         bordered_block(title, &app.theme).border_style(app.theme.upgrade_border())
     } else {
@@ -341,6 +350,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     }
     dim_placeholder_cells(frame, app, &rendered, body);
     subtle_tree_guides(frame, app, &rendered, &visible, body);
+    highlight_filter_matches(frame, app, &rendered, &visible, body);
     if horizontal.max_offset() > 0 && horizontal.viewport_width > 0 {
         let scrollbar_area = Rect::new(
             area.x + horizontal.pinned_width as u16,
@@ -388,6 +398,174 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             false,
             &app.theme,
         );
+    }
+}
+
+/// Splits a rendered header into `(label, start column)` pairs. Columns are
+/// separated by two or more spaces or a divider bar.
+fn header_segments(header: &str) -> Vec<(String, usize)> {
+    let mut segments = Vec::new();
+    let mut label = String::new();
+    let mut start = 0;
+    let mut column = 0;
+    let mut spaces = 0;
+    let mut finish = |label: &mut String, start: usize| {
+        let text = label.trim_end().to_owned();
+        if !text.is_empty() {
+            segments.push((text, start));
+        }
+        label.clear();
+    };
+    for character in header.chars() {
+        let width = character.width().unwrap_or(0);
+        match character {
+            '│' | '|' => {
+                finish(&mut label, start);
+                spaces = 0;
+            }
+            ' ' => {
+                spaces += 1;
+                if spaces >= 2 {
+                    finish(&mut label, start);
+                } else if !label.is_empty() {
+                    label.push(' ');
+                }
+            }
+            _ => {
+                if label.is_empty() {
+                    start = column;
+                }
+                spaces = 0;
+                label.push(character);
+            }
+        }
+        column += width;
+    }
+    finish(&mut label, start);
+    segments
+}
+
+/// Marks the characters matching the active `/` filter so you can see why each
+/// row is shown. Field filters (`status:error`) only mark their own column.
+fn highlight_filter_matches(
+    frame: &mut ratatui::Frame<'_>,
+    app: &App,
+    rendered: &RenderedTree,
+    visible: &[usize],
+    body: Rect,
+) {
+    let Some(snapshot) = app.snapshot.as_ref() else {
+        return;
+    };
+    let lowered = app.filter.trim().to_lowercase();
+    let (field, needle) = match lowered.split_once(':') {
+        Some((
+            field @ ("kind" | "group" | "namespace" | "status" | "ready" | "synced"),
+            needle,
+        )) => (Some(field), needle),
+        _ => (None, lowered.as_str()),
+    };
+    let fold = |character: char| character.to_lowercase().next().unwrap_or(character);
+    let needle: Vec<char> = needle.chars().map(fold).collect();
+    if needle.is_empty() {
+        return;
+    }
+    let column_range = field.and_then(|field| {
+        let labels: &[&str] = match field {
+            "group" => &["GROUP"],
+            "status" => &["STATUS"],
+            "ready" => &["READY", "HEALTHY"],
+            "synced" => &["SYNCED", "INSTALLED"],
+            "namespace" => &["NAMESPACE"],
+            _ => return None,
+        };
+        let segments = header_segments(&rendered.lines[0]);
+        let position = segments
+            .iter()
+            .position(|(label, _)| labels.contains(&label.as_str()))?;
+        let end = segments
+            .get(position + 1)
+            .map_or(usize::MAX, |(_, start)| *start);
+        Some((segments[position].1, end))
+    });
+    if field.is_some_and(|field| field != "kind") && column_range.is_none() {
+        return;
+    }
+    let show_tree_prefix = app.kind_filter.is_none() || app.health_filter != HealthFilter::All;
+    let checkbox = if app.active_marks().is_empty() {
+        0
+    } else {
+        CHECKBOX_WIDTH
+    };
+    let style = if app.theme.colors_enabled {
+        app.theme.fg(app.theme.palette.yellow).bold()
+    } else {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    };
+    let selected_style = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    for (row, index) in visible
+        .iter()
+        .skip(rendered.start)
+        .take(rendered.row_count)
+        .enumerate()
+    {
+        let node = &snapshot.nodes[*index];
+        let guides = tree_guides(
+            snapshot,
+            node,
+            app.config.ui.ascii,
+            show_tree_prefix,
+            app.collapsed.contains(&node.identity),
+        );
+        let guides_end = checkbox + guides.width();
+        let mut cells = Vec::new();
+        let mut column = 0;
+        for character in rendered.lines[row + 1].chars() {
+            let width = character.width().unwrap_or(0);
+            cells.push((column, width, character));
+            column += width;
+        }
+        let (from, to) = match (field, column_range) {
+            (Some("kind"), _) => {
+                let slash = cells
+                    .iter()
+                    .find(|(column, _, character)| *column >= guides_end && *character == '/')
+                    .map_or(guides_end, |(column, _, _)| *column);
+                (guides_end, slash)
+            }
+            (Some(_), Some(range)) => range,
+            _ => (guides_end, usize::MAX),
+        };
+        let eligible: Vec<_> = cells
+            .iter()
+            .filter(|(column, _, _)| *column >= from && *column < to)
+            .collect();
+        let y = body.y + 1 + row as u16;
+        let paint = if rendered.start + row == app.selection.visible_index {
+            selected_style
+        } else {
+            style
+        };
+        let mut position = 0;
+        while position + needle.len() <= eligible.len() {
+            let matches = needle
+                .iter()
+                .zip(&eligible[position..])
+                .all(|(wanted, (_, _, character))| fold(*character) == *wanted);
+            if matches {
+                for (column, width, _) in &eligible[position..position + needle.len()] {
+                    for offset in 0..(*width).max(1) {
+                        let x = body.x + (*column + offset) as u16;
+                        if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                            cell.set_style(paint);
+                        }
+                    }
+                }
+                position += needle.len();
+            } else {
+                position += 1;
+            }
+        }
     }
 }
 
@@ -1346,18 +1524,19 @@ pub(super) fn tree_prefix(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool
 }
 
 pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let line = if app.resource_missing {
-        " r:retry  q:quit".into()
+    let line: Line<'static> = if app.resource_missing {
+        Line::from(" r:retry  q:quit")
     } else {
         match app.mode {
-            InputMode::Command => format!(":{}▏", app.input),
-            InputMode::Filter => format!(" Filter: {}_", app.input),
-            InputMode::Find => format!(" Find: {}_", app.input),
+            InputMode::Command => prompt_line(&app.theme, ":", app.theme.palette.mauve, &app.input),
+            InputMode::Filter => prompt_line(&app.theme, "/", app.theme.palette.teal, &app.input),
+            InputMode::Find => {
+                prompt_line(&app.theme, " Find:", app.theme.palette.teal, &app.input)
+            }
             InputMode::Normal | InputMode::Help
                 if app.kind_filter.is_some()
                     || app.health_filter != HealthFilter::All
                     || !app.excluded_kinds.is_empty()
-                    || !app.filter.is_empty()
                     || !app.find.is_empty() =>
             {
                 let mut active = Vec::new();
@@ -1383,17 +1562,14 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                         format!("Excluded kinds: {}", excluded.len())
                     });
                 }
-                if !app.filter.is_empty() {
-                    active.push(format!("Filter: {}", app.filter));
-                }
                 if !app.find.is_empty() {
                     active.push(format!("Find: {}", app.find));
                 }
-                format!(" {}", active.join("  |  "))
+                Line::from(format!(" {}", active.join("  |  ")))
             }
-            InputMode::Normal | InputMode::Help if app.upgrade_view => {
-                " Space:mark  a:mark-available  Enter:review  Left/Right:collapse/expand  ::command  /:filter  r:refresh  ?:help  Esc:back".into()
-            }
+            InputMode::Normal | InputMode::Help if app.upgrade_view => Line::from(
+                " Space:mark  a:mark-available  Enter:review  Left/Right:collapse/expand  ::command  /:filter  r:refresh  ?:help  Esc:back",
+            ),
             InputMode::Normal | InputMode::Help => {
                 let details = if app
                     .selected_node()
@@ -1403,9 +1579,9 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                 } else {
                     ""
                 };
-                format!(
+                Line::from(format!(
                     "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  M:policies  ::command  :upgrade  ?:help  /:filter  ctrl-d:delete  p:pause  f:reconcile  d:describe  y:YAML  e:edit  s:status  E:events"
-                )
+                ))
             }
         }
     };
@@ -1429,6 +1605,28 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
     } else {
         frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), area);
     }
+}
+
+/// A sofka-style input prompt: a bold coloured sigil, the typed text, then a
+/// block cursor in the sigil colour.
+fn prompt_line(
+    theme: &Theme,
+    sigil: &str,
+    color: ratatui::style::Color,
+    input: &str,
+) -> Line<'static> {
+    let plain = Modifier::DIM;
+    Line::from(vec![
+        Span::styled(
+            sigil.to_owned(),
+            theme.fg(color).bold().remove_modifier(plain),
+        ),
+        Span::styled(
+            input.to_owned(),
+            theme.fg(theme.palette.text).remove_modifier(plain),
+        ),
+        Span::styled("█", theme.fg(color).remove_modifier(plain)),
+    ])
 }
 
 pub(super) fn render_palette(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -1569,7 +1767,31 @@ pub(super) fn render_modal(
             state,
             selection,
         } => {
-            let title = format!(" {} ", text::sanitize(title));
+            let title = {
+                let mut spans = vec![Span::raw(format!(" {}", text::sanitize(title)))];
+                let query = state.highlight_query();
+                if !query.is_empty() {
+                    spans.push(Span::raw(" · "));
+                    spans.push(Span::styled(
+                        format!("/{}", text::sanitize(query)),
+                        theme.fg(theme.palette.teal).remove_modifier(Modifier::BOLD),
+                    ));
+                    if let Some((current, total)) = modal_match_position(
+                        content,
+                        query,
+                        state.vertical_scroll,
+                        usize::from(area.width.saturating_sub(2)),
+                        state.wrapped,
+                    ) {
+                        spans.push(Span::styled(
+                            format!(" [{current}/{total}]"),
+                            theme.counter(),
+                        ));
+                    }
+                }
+                spans.push(Span::raw(" "));
+                Line::from(spans)
+            };
             let block = if matches!(kind, ContentKind::Error | ContentKind::SmallError) {
                 destructive_block(title, theme)
             } else {
@@ -1583,7 +1805,7 @@ pub(super) fn render_modal(
                 frame,
                 regions[0],
                 *kind,
-                &state.query,
+                state.highlight_query(),
                 state.wrapped,
                 state.vertical_scroll,
                 state.horizontal_scroll,
@@ -1602,8 +1824,8 @@ pub(super) fn render_modal(
                 );
             }
             let footer = state.search_input.as_ref().map_or_else(
-                || content_modal_footer(*kind, state.wrapped).into(),
-                |input| format!(" Find: {input}_"),
+                || Line::from(content_modal_footer(*kind, state.wrapped)),
+                |input| prompt_line(theme, "search /", theme.palette.teal, input),
             );
             frame.render_widget(Paragraph::new(footer).style(theme.subtle()), regions[1]);
         }
@@ -2249,24 +2471,31 @@ pub(super) fn content_modal_footer(kind: ContentKind, wrapped: bool) -> &'static
     match (kind, wrapped) {
         (ContentKind::SmallError, _) => " j/k or ↑/↓:scroll  Esc/q:close",
         (ContentKind::Yaml, true) => {
-            " drag:copy  j/k or ↑/↓:vertical  w:unwrap  /:find  n/N:matches  Esc:close"
+            " drag:copy  c:copy all  j/k or ↑/↓:vertical  w:unwrap  /:search  n:next match  N:previous match  Esc:close"
         }
         (ContentKind::Yaml, false) => {
-            " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:find  n/N:matches  Esc:close"
+            " drag:copy  c:copy all  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  w:wrap  /:search  n:next match  N:previous match  Esc:close"
         }
         (ContentKind::Describe | ContentKind::Events | ContentKind::Error, true) => {
-            " drag:copy  j/k or ↑/↓:vertical  /:find  n/N:matches  Esc:close"
+            " drag:copy  c:copy all  j/k or ↑/↓:vertical  /:search  n:next match  N:previous match  Esc:close"
         }
         (ContentKind::Describe | ContentKind::Events | ContentKind::Error, false) => {
-            " drag:copy  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  /:find  n/N:matches  Esc:close"
+            " drag:copy  c:copy all  j/k or ↑/↓:vertical  h/l or ←/→:horizontal  /:search  n:next match  N:previous match  Esc:close"
         }
     }
 }
 
 pub(super) fn yaml_line<'a>(line: &'a str, query: &str, theme: &Theme) -> Line<'a> {
-    if case_insensitive_regex(query).is_some_and(|expression| expression.is_match(line)) {
-        return highlighted_line(line, query, Style::default(), theme);
+    let syntax = yaml_syntax_line(line, theme);
+    match case_insensitive_regex(query) {
+        Some(expression) if expression.is_match(line) => {
+            overlay_matches(syntax, &expression, theme)
+        }
+        _ => syntax,
     }
+}
+
+fn yaml_syntax_line<'a>(line: &'a str, theme: &Theme) -> Line<'a> {
     let trimmed = line.trim_start();
     if trimmed.starts_with('#') || trimmed == "---" {
         return Line::styled(line, Style::default().add_modifier(Modifier::DIM));
@@ -2283,6 +2512,61 @@ pub(super) fn yaml_line<'a>(line: &'a str, query: &str, theme: &Theme) -> Line<'
         ]);
     }
     Line::styled(line, yaml_value_style(trimmed, theme))
+}
+
+/// Highlights regex matches on top of an already styled line, keeping each
+/// piece's own syntax style for the text around the match. Matches may span
+/// several spans, such as a key and its value.
+fn overlay_matches<'a>(line: Line<'a>, expression: &regex::Regex, theme: &Theme) -> Line<'a> {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let matches: Vec<_> = expression
+        .find_iter(&text)
+        .filter(|matched| !matched.is_empty())
+        .map(|matched| matched.range())
+        .collect();
+    if matches.is_empty() {
+        return line;
+    }
+    let line_style = line.style;
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for span in line.spans {
+        let base = line_style.patch(span.style);
+        let length = span.content.len();
+        let (start, end) = (offset, offset + length);
+        offset = end;
+        let mut cuts = vec![start, end];
+        for matched in &matches {
+            for edge in [matched.start, matched.end] {
+                if edge > start && edge < end {
+                    cuts.push(edge);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            let piece = match &span.content {
+                std::borrow::Cow::Borrowed(content) => {
+                    std::borrow::Cow::Borrowed(&content[from - start..to - start])
+                }
+                std::borrow::Cow::Owned(content) => {
+                    std::borrow::Cow::Owned(content[from - start..to - start].to_owned())
+                }
+            };
+            let matched = matches
+                .iter()
+                .any(|matched| from >= matched.start && to <= matched.end);
+            let style = if matched { theme.search(base) } else { base };
+            spans.push(Span::styled(piece, style));
+        }
+    }
+    Line::from(spans)
 }
 
 pub(super) fn yaml_value_style(value: &str, theme: &Theme) -> Style {
@@ -2330,22 +2614,14 @@ pub(super) fn highlighted_line<'a>(
     Line::from(spans)
 }
 
-pub(super) fn move_modal_match(
+fn matching_rows(
     content: &str,
-    query: &str,
-    scroll: &mut u16,
-    reverse: bool,
+    expression: &regex::Regex,
     width: usize,
     wrapped: bool,
-) {
-    if query.is_empty() {
-        return;
-    }
-    let Some(expression) = case_insensitive_regex(query) else {
-        return;
-    };
+) -> Vec<usize> {
     let mut rendered_row = 0;
-    let matches = content
+    content
         .lines()
         .filter_map(|line| {
             let current_row = rendered_row;
@@ -2356,7 +2632,44 @@ pub(super) fn move_modal_match(
             };
             expression.is_match(line).then_some(current_row)
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+/// `(current, total)` matching lines for the title; `current` is 0 until the
+/// view is scrolled onto a match with `n`/`N`.
+pub(super) fn modal_match_position(
+    content: &str,
+    query: &str,
+    scroll: u16,
+    width: usize,
+    wrapped: bool,
+) -> Option<(usize, usize)> {
+    let expression = case_insensitive_regex(query)?;
+    let matches = matching_rows(content, &expression, width, wrapped);
+    let current = matches
+        .iter()
+        .position(|row| *row == usize::from(scroll))
+        .map_or(0, |position| position + 1);
+    Some((current, matches.len()))
+}
+
+/// `direction` is `(reverse, include_current_row)`.
+pub(super) fn move_modal_match(
+    content: &str,
+    query: &str,
+    scroll: &mut u16,
+    direction: (bool, bool),
+    width: usize,
+    wrapped: bool,
+) {
+    let (reverse, inclusive) = direction;
+    if query.is_empty() {
+        return;
+    }
+    let Some(expression) = case_insensitive_regex(query) else {
+        return;
+    };
+    let matches = matching_rows(content, &expression, width, wrapped);
     if matches.is_empty() {
         return;
     }
@@ -2372,7 +2685,13 @@ pub(super) fn move_modal_match(
         matches
             .iter()
             .copied()
-            .find(|index| *index > current)
+            .find(|index| {
+                if inclusive {
+                    *index >= current
+                } else {
+                    *index > current
+                }
+            })
             .unwrap_or(matches[0])
     };
     *scroll = next.try_into().unwrap_or(u16::MAX);
