@@ -188,10 +188,11 @@ toggle an entry, `a` to show all, `x` to hide all, or `o` to show only the
 highlighted kind, then press Enter to apply. Exclusions remain active across
 trace refreshes but are not written to configuration.
 
-Enter `:skin` to open the theme picker. Use Up/Down to choose a built-in theme
-and Enter to apply it. The choice takes effect immediately and is saved as
-`skin.name` in the active configuration file (normally
-`~/.config/xpdelve/config.toml`).
+Enter `:skin` to open the theme picker. Moving the selection with Up/Down
+previews each built-in theme live. Enter keeps the highlighted theme and saves it
+as `skin.name` in the active configuration file (normally
+`~/.config/xpdelve/config.toml`); Esc restores the previous theme and writes
+nothing.
 
 Enter `:quit` to close xpdelve from the command palette.
 

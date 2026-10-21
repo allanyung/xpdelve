@@ -748,17 +748,29 @@ impl App {
                         self.modal = None;
                     }
                 }
-                Modal::SkinPicker { selected } => {
+                Modal::SkinPicker { selected, original } => {
                     let mut picker =
                         ListPicker::with_cursor(*selected, crate::theme::BUILTIN_NAMES.len());
                     match picker.handle_key(key, 10) {
-                        ListPickerAction::Close => self.modal = None,
+                        ListPickerAction::Close => {
+                            self.theme = original.clone();
+                            self.modal = None;
+                        }
                         ListPickerAction::Select(index) => {
                             let name = crate::theme::BUILTIN_NAMES[index].to_owned();
+                            // Restore first so a failed save leaves the previous skin.
+                            self.theme = original.clone();
                             self.modal = None;
                             self.apply_skin(&name);
                         }
-                        ListPickerAction::None => *selected = picker.cursor(),
+                        ListPickerAction::None => {
+                            let cursor = picker.cursor();
+                            if cursor != *selected {
+                                *selected = cursor;
+                                let name = crate::theme::BUILTIN_NAMES[cursor];
+                                self.preview_skin(name);
+                            }
+                        }
                     }
                 }
                 Modal::HealthPicker { selected } => {
