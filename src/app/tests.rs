@@ -512,7 +512,10 @@ fn skin_palette_command_opens_the_skin_picker() {
     assert_eq!(entries[0].action, PaletteAction::OpenSkinPicker);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
-    assert!(matches!(app.modal, Some(Modal::SkinPicker { selected: 0 })));
+    assert!(matches!(
+        app.modal,
+        Some(Modal::SkinPicker { selected: 0, .. })
+    ));
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -937,6 +940,20 @@ fn quit_palette_command_exits_the_application() {
 }
 
 #[test]
+fn skin_picker_opens_on_the_current_skin() {
+    let mut app = app();
+    let index = crate::theme::BUILTIN_NAMES.len() - 1;
+    app.preview_skin(crate::theme::BUILTIN_NAMES[index]);
+    app.open_palette();
+    app.input = "skin".into();
+    app.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        Rect::new(0, 0, 100, 24),
+    );
+    assert!(matches!(app.modal, Some(Modal::SkinPicker { selected, .. }) if selected == index));
+}
+
+#[test]
 fn selecting_a_skin_applies_and_persists_it() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("xpdelve/config.toml");
@@ -948,10 +965,20 @@ fn selecting_a_skin_applies_and_persists_it() {
     .unwrap();
     let mut app = app();
     app.config_path = path.clone();
-    app.modal = Some(Modal::SkinPicker { selected: 0 });
+    app.modal = Some(Modal::SkinPicker {
+        selected: 0,
+        original: app.theme.clone(),
+    });
     let area = Rect::new(0, 0, 100, 24);
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+    assert_eq!(app.theme.resolved_name, "catppuccin-latte");
+    assert_eq!(app.config.skin.name.as_deref(), Some("catppuccin-mocha"));
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("catppuccin-mocha")
+    );
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert!(app.modal.is_none());
@@ -961,6 +988,31 @@ fn selecting_a_skin_applies_and_persists_it() {
     let saved = std::fs::read_to_string(path).unwrap();
     assert!(saved.contains("# preserved"));
     assert!(saved.contains("name = \"catppuccin-latte\""));
+}
+
+#[test]
+fn cancelling_a_skin_preview_restores_the_original_theme_without_saving() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("xpdelve/config.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let source = "schema_version = 1\n\n[skin]\nname = 'catppuccin-mocha'\n";
+    std::fs::write(&path, source).unwrap();
+    let mut app = app();
+    app.config_path = path.clone();
+    let original = app.theme.resolved_name.clone();
+    app.modal = Some(Modal::SkinPicker {
+        selected: 0,
+        original: app.theme.clone(),
+    });
+    let area = Rect::new(0, 0, 100, 24);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
+    assert_ne!(app.theme.resolved_name, original);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
+
+    assert!(app.modal.is_none());
+    assert_eq!(app.theme.resolved_name, original);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
 }
 
 #[test]

@@ -450,6 +450,8 @@ enum Modal {
     },
     SkinPicker {
         selected: usize,
+        /// Theme to restore when the preview is cancelled.
+        original: Theme,
     },
     HealthPicker {
         selected: usize,

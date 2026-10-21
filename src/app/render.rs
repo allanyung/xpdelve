@@ -1988,7 +1988,7 @@ pub(super) fn render_modal(
                 inner,
             );
         }
-        Modal::SkinPicker { selected } => {
+        Modal::SkinPicker { selected, .. } => {
             let mut state = ListState::default().with_selected(Some(*selected));
             let items = crate::theme::BUILTIN_NAMES
                 .iter()
@@ -1996,7 +1996,7 @@ pub(super) fn render_modal(
                 .collect::<Vec<_>>();
             let list = List::new(items)
                 .block(bordered_block(
-                    " Skins (↑/↓:select, Enter:apply, Esc:cancel) ",
+                    " Skins (↑/↓:preview, Enter:save, Esc:cancel) ",
                     theme,
                 ))
                 .highlight_style(theme.selected_row());

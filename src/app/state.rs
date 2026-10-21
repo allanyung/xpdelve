@@ -269,7 +269,14 @@ impl App {
             PaletteAction::OpenSkinPicker => {
                 self.mode = InputMode::Normal;
                 self.input.clear();
-                self.modal = Some(Modal::SkinPicker { selected: 0 });
+                let selected = crate::theme::BUILTIN_NAMES
+                    .iter()
+                    .position(|name| *name == self.theme.resolved_name)
+                    .unwrap_or_default();
+                self.modal = Some(Modal::SkinPicker {
+                    selected,
+                    original: self.theme.clone(),
+                });
                 return UiAction::None;
             }
             PaletteAction::ReloadConfig => {
@@ -333,6 +340,15 @@ impl App {
                     selection: None,
                 });
             }
+        }
+    }
+
+    /// Applies a skin for display only; nothing is written to the config.
+    pub(super) fn preview_skin(&mut self, name: &str) {
+        let mut skin = self.config.skin.clone();
+        skin.name = Some(name.to_owned());
+        if let Ok(theme) = Theme::resolve(&skin, self.config.ui.color) {
+            self.theme = theme;
         }
     }
 
@@ -787,6 +803,9 @@ impl App {
                 ..
             })
         ) {
+            if let Some(Modal::SkinPicker { original, .. }) = self.modal.take() {
+                self.theme = original;
+            }
             self.modal = None;
         }
         self.refresh_pending = false;
