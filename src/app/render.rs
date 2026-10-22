@@ -607,16 +607,12 @@ fn subtle_tree_guides(
             show_tree_prefix,
             app.collapsed.contains(&node.identity),
         );
-        let full = object_cell_with_tree_state(
-            snapshot,
-            node,
-            app.config.ui.ascii,
-            show_tree_prefix,
-            app.collapsed.contains(&node.identity),
-        );
         let available = object_width.saturating_sub(checkbox);
-        // A compacted cell keeps only its first marker before the ellipsis.
-        let guides_width = if full.width() > available && available >= 4 {
+        // When the guides leave no room for the label, the cell falls back to
+        // keeping only its first marker before the ellipsis.
+        let guides_width = if guides.width() + object_label(node).width() > available
+            && guides_overflow(guides.width(), available)
+        {
             1
         } else {
             guides.width()
@@ -1210,16 +1206,16 @@ impl TablePlan {
         collapsed: bool,
         marked: bool,
     ) -> String {
-        let object =
-            object_cell_with_tree_state(snapshot, node, self.ascii, show_tree_prefix, collapsed);
+        let guides = tree_guides(snapshot, node, self.ascii, show_tree_prefix, collapsed);
+        let label = object_label(node);
         let object = if self.checkboxes {
             format!(
                 "{} {}",
                 if marked { "[x]" } else { "[ ]" },
-                compact_object(&object, self.object.saturating_sub(CHECKBOX_WIDTH))
+                compact_object(&guides, &label, self.object.saturating_sub(CHECKBOX_WIDTH))
             )
         } else {
-            compact_object(&object, self.object)
+            compact_object(&guides, &label, self.object)
         };
         let logical_name = logical_name_cell(node);
         let external_name = external_name_cell(node);
@@ -1325,8 +1321,15 @@ pub(super) fn object_cell_with_tree_state(
     collapsed: bool,
 ) -> String {
     format!(
-        "{}{}/{}",
+        "{}{}",
         tree_guides(snapshot, node, ascii, show_tree_prefix, collapsed),
+        object_label(node)
+    )
+}
+
+fn object_label(node: &ProjectedNode) -> String {
+    format!(
+        "{}/{}",
         text::sanitize(&node.identity.kind),
         text::sanitize(&node.identity.name)
     )
@@ -1458,7 +1461,27 @@ pub(super) fn pad_or_truncate(value: &str, width: usize) -> String {
     result
 }
 
-pub(super) fn compact_object(value: &str, width: usize) -> String {
+/// Fewer cells than this left for the label means the guides are kept only
+/// as a single marker.
+const MIN_LABEL_WIDTH: usize = 4;
+
+fn guides_overflow(guides_width: usize, width: usize) -> bool {
+    width < MIN_LABEL_WIDTH || guides_width + MIN_LABEL_WIDTH > width
+}
+
+/// Fits an object cell into `width`, shortening the middle of the label so
+/// the tree guides always stay whole and the ellipsis never lands inside them.
+pub(super) fn compact_object(guides: &str, label: &str, width: usize) -> String {
+    if guides.width() + label.width() <= width {
+        return format!("{guides}{label}");
+    }
+    if guides_overflow(guides.width(), width) {
+        return compact_marker(&format!("{guides}{label}"), width);
+    }
+    format!("{guides}{}", truncate_middle(label, width - guides.width()))
+}
+
+fn compact_marker(value: &str, width: usize) -> String {
     if value.width() <= width || width < 4 {
         return value.to_owned();
     }
