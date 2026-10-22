@@ -1773,7 +1773,21 @@ pub(super) fn render_modal(
     modal: &Modal,
     theme: &Theme,
 ) {
-    clear_overlay(frame, area, theme);
+    if matches!(
+        modal,
+        Modal::Text {
+            kind: ContentKind::Describe | ContentKind::Yaml | ContentKind::Events,
+            ..
+        }
+    ) {
+        // Full-screen views follow `skin.background` (transparent terminals
+        // keep their own background by default), unlike popups, which are
+        // always painted so they stand apart from the tree.
+        frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(theme.canvas()), area);
+    } else {
+        clear_overlay(frame, area, theme);
+    }
     match modal {
         Modal::Text {
             title,

@@ -62,6 +62,9 @@ pub struct UiConfig {
 pub struct SkinConfig {
     pub name: Option<String>,
     pub colors: HashMap<String, String>,
+    /// Paint the skin's background on the main screen and full-screen views.
+    /// Off by default so transparent terminals keep their own background.
+    pub background: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -222,6 +225,7 @@ pub fn persist_skin(path: &Path, name: &str) -> Result<()> {
     crate::theme::validate_skin(&SkinConfig {
         name: Some(name.to_owned()),
         colors: HashMap::new(),
+        background: false,
     })?;
     let source = if path.exists() {
         fs::read_to_string(path)

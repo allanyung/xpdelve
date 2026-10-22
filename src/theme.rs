@@ -162,6 +162,8 @@ pub struct Theme {
     pub configured_name: Option<String>,
     pub resolved_name: String,
     pub colors_enabled: bool,
+    /// Whether the main screen and full-screen views paint the skin background.
+    pub background: bool,
 }
 
 impl Theme {
@@ -206,6 +208,7 @@ impl Theme {
             configured_name: skin.name.clone(),
             resolved_name: resolved_name.to_owned(),
             colors_enabled,
+            background: skin.background,
         })
     }
 
@@ -230,9 +233,11 @@ impl Theme {
         self.fg(self.palette.peach)
     }
 
-    /// Background for the main screen, so it follows the theme like full-screen views.
+    /// Background for the main screen and full-screen views. Only painted when
+    /// `skin.background` is set, so transparent terminals keep their own
+    /// background by default.
     pub fn canvas(&self) -> Style {
-        if self.colors_enabled {
+        if self.colors_enabled && self.background {
             Style::default().fg(self.palette.text).bg(self.palette.base)
         } else {
             Style::default()
@@ -573,6 +578,7 @@ mod tests {
             &SkinConfig {
                 name: Some("catppuccin-mocha".into()),
                 colors: HashMap::new(),
+                background: false,
             },
             ColorMode::Always,
             false,
@@ -595,6 +601,7 @@ mod tests {
             &SkinConfig {
                 name: Some("catppuccin-mocha".into()),
                 colors,
+                background: false,
             },
             ColorMode::Always,
             false,

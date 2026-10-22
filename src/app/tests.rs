@@ -3618,34 +3618,64 @@ fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
 }
 
 #[test]
-fn modals_fill_their_whole_area_with_the_overlay_background() {
-    for (kind, content) in [
-        (ContentKind::Error, "Resource: Widget/example\n\nboom"),
-        (ContentKind::Yaml, "key: value\nlist:\n  - item"),
-    ] {
-        let modal = Modal::Text {
-            title: "Overlay".into(),
-            content: content.into(),
-            kind,
-            state: TextModalState::new(kind),
-            selection: None,
-        };
-        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
-        let theme = app().theme;
-        let area = content_modal_area(Rect::new(0, 0, 60, 20), kind);
-        terminal
-            .draw(|frame| render_modal(frame, area, &modal, &theme))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        for y in area.y..area.y + area.height {
-            for x in area.x..area.x + area.width {
-                assert_eq!(
-                    buffer.cell((x, y)).unwrap().bg,
-                    theme.palette.mantle,
-                    "{kind:?} cell ({x}, {y})"
-                );
-            }
+fn popups_always_fill_their_whole_area_with_the_overlay_background() {
+    let kind = ContentKind::Error;
+    let modal = Modal::Text {
+        title: "Overlay".into(),
+        content: "Resource: Widget/example\n\nboom".into(),
+        kind,
+        state: TextModalState::new(kind),
+        selection: None,
+    };
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let theme = app().theme;
+    assert!(!theme.background);
+    let area = content_modal_area(Rect::new(0, 0, 60, 20), kind);
+    terminal
+        .draw(|frame| render_modal(frame, area, &modal, &theme))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            assert_eq!(buffer.cell((x, y)).unwrap().bg, theme.palette.mantle);
         }
+    }
+}
+
+#[test]
+fn full_screen_views_and_main_screen_follow_skin_background() {
+    for background in [false, true] {
+        let mut app = app();
+        app.theme.background = background;
+        let expected = if background {
+            app.theme.palette.base
+        } else {
+            Color::Reset
+        };
+        for kind in [
+            ContentKind::Yaml,
+            ContentKind::Describe,
+            ContentKind::Events,
+        ] {
+            let modal = Modal::Text {
+                title: "View".into(),
+                content: "key: value".into(),
+                kind,
+                state: TextModalState::new(kind),
+                selection: None,
+            };
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            let area = Rect::new(0, 0, 60, 20);
+            terminal
+                .draw(|frame| render_modal(frame, area, &modal, &app.theme))
+                .unwrap();
+            let cell = terminal.backend().buffer().cell((30, 10)).unwrap();
+            assert_eq!(cell.bg, expected, "{kind:?} background={background}");
+        }
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let cell = terminal.backend().buffer().cell((59, 18)).unwrap();
+        assert_eq!(cell.bg, expected, "main screen background={background}");
     }
 }
 
