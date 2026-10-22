@@ -32,9 +32,9 @@ Type "L"
 Sleep 2s
 
 # Scroll the middle columns while OBJECT and STATUS remain pinned.
-Type "llllll"
+Type "llllllll"
 Sleep 2s
-Type "hhhhhh"
+Type "hhhhhhhh"
 Sleep 2s
 
 # Inspect the nested application XR as live YAML.
@@ -42,7 +42,17 @@ Down 4
 Sleep 1s
 Type "y"
 Sleep 3s
-Type "q"
+Type "/"
+Type "web"
+Sleep 2s
+Enter
+Type "n"
+Sleep 2s
+Type "n"
+Sleep 2s
+Type "n"
+Sleep 2s
+Escape
 Sleep 1s
 
 # Demonstrate tree filtering while retaining the ancestor path.
@@ -67,7 +77,11 @@ Enter
 Sleep 2s
 Down 2
 Ctrl+X
-Sleep 3s
+Sleep 2s
+Space
+Sleep 2s
+Enter
+Sleep 2s
 Enter
 
 # The cascade completes and xpdelve clears the deleted root trace.
