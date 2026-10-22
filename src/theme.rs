@@ -230,6 +230,15 @@ impl Theme {
         self.fg(self.palette.peach)
     }
 
+    /// Background for the main screen, so it follows the theme like full-screen views.
+    pub fn canvas(&self) -> Style {
+        if self.colors_enabled {
+            Style::default().fg(self.palette.text).bg(self.palette.base)
+        } else {
+            Style::default()
+        }
+    }
+
     /// Background for popups, menus, and modals, so they stand apart from the tree.
     pub fn overlay(&self) -> Style {
         if self.colors_enabled {

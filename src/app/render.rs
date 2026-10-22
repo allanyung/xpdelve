@@ -40,6 +40,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
             Constraint::Length(1),
         ])
         .split(area);
+    frame.render_widget(Block::default().style(app.theme.canvas()), area);
     render_header(frame, chunks[0], app);
     render_tree(frame, chunks[1], app);
     render_prompt(frame, chunks[2], app);
@@ -606,7 +607,21 @@ fn subtle_tree_guides(
             show_tree_prefix,
             app.collapsed.contains(&node.identity),
         );
-        let width = (checkbox + guides.width()).min(object_width);
+        let full = object_cell_with_tree_state(
+            snapshot,
+            node,
+            app.config.ui.ascii,
+            show_tree_prefix,
+            app.collapsed.contains(&node.identity),
+        );
+        let available = object_width.saturating_sub(checkbox);
+        // A compacted cell keeps only its first marker before the ellipsis.
+        let guides_width = if full.width() > available && available >= 4 {
+            1
+        } else {
+            guides.width()
+        };
+        let width = (checkbox + guides_width).min(object_width);
         let y = body.y + 1 + row as u16;
         for x in checkbox..width {
             if let Some(cell) = frame.buffer_mut().cell_mut((body.x + x as u16, y)) {
