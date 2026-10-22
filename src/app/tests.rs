@@ -6294,3 +6294,20 @@ fn upgrade_command_inside_the_view_keeps_marks_and_does_not_rediscover() {
     key(&mut app, KeyCode::Esc);
     assert!(!app.upgrade_view);
 }
+
+#[test]
+fn compact_object_keeps_guides_whole_and_shortens_the_label_middle() {
+    let guides = "   │  ├─── ";
+    let label =
+        "SubnetNetworkSecurityGroupAssociation/dbx-ws-aaip-1-1-private-subnet-nsg-association";
+    let cell = compact_object(guides, label, 50);
+    assert!(cell.starts_with(guides), "{cell}");
+    assert_eq!(cell.width(), 50);
+    assert!(cell[guides.len()..].contains('…'));
+    assert!(cell.ends_with("nsg-association"));
+    assert_eq!(
+        compact_object(guides, "Short/x", 50),
+        format!("{guides}Short/x")
+    );
+    assert!(compact_object("          ", label, 12).contains('…'));
+}
