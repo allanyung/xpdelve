@@ -40,6 +40,9 @@ show_management_policies = false
 [skin]
 # Omit name to detect a light/dark terminal and select Latte/Mocha.
 name = "catppuccin-mocha"
+# Paint the theme's background on the main screen and full-screen views
+# (YAML, Describe, Events). Off by default so transparent terminals keep theirs.
+# background = true
 
 [skin.colors]
 # Optional six-digit RGB overrides, with or without '#'.
@@ -70,6 +73,7 @@ name = "catppuccin-mocha"
 | `ui.show_external_name` | Show the external name column when `true`; hidden by default (`false`) |
 | `ui.show_management_policies` | Show the management policies column (`spec.managementPolicies`) when `true`; hidden by default (`false`). Toggle with `M` |
 | `skin.name` | Built-in theme name; omit it for terminal-background detection |
+| `skin.background` | Paint the theme's background on the main screen and full-screen views when `true`; default `false` keeps the terminal background. Popups are always painted |
 | `skin.colors` | Optional per-swatch RGB overrides |
 | `extra_columns` | Additional main-tree columns keyed by exact resource kind and API group |
 
@@ -180,6 +184,12 @@ applies it immediately and writes its name to `skin.name` in the active
 configuration file. The default is `~/.config/xpdelve/config.toml`; when
 `--config` is used, that file is updated instead. Existing settings, comments,
 and `skin.colors` overrides are retained.
+
+By default xpdelve leaves the terminal background alone, which suits transparent
+terminals; light themes such as `solarized-light` then only recolor the text.
+Set `skin.background = true` to paint the theme's own background on the main
+screen and the YAML, Describe, and Events views. Popups (help, command palette,
+confirmations) are always painted.
 
 `skin.colors` can override these palette swatches: `rosewater`, `flamingo`,
 `pink`, `mauve`, `red`, `maroon`, `peach`, `yellow`, `green`, `teal`, `sky`,
