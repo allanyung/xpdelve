@@ -3,6 +3,7 @@ use super::state::chosen_finalizers;
 use super::upgrade::upgrade_info;
 use super::*;
 use crate::columns::{self, ExtraColumn};
+use crate::model::Health;
 
 pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
     let area = frame.area();
@@ -152,14 +153,11 @@ pub(super) fn render_toast(
 }
 
 pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let activity = if app.loading { " [refreshing]" } else { "" };
-    let paused = if app.paused { " [paused]" } else { "" };
     let readonly = if app.config.read_only {
         " [read-only]"
     } else {
         ""
     };
-    let activity_style = app.theme.activity();
     let warning_style = if app.theme.colors_enabled {
         app.theme.warning()
     } else {
@@ -177,8 +175,6 @@ pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
             Span::raw(text::sanitize(&app.resource)),
-            Span::styled(activity, activity_style),
-            Span::styled(paused, warning_style),
             Span::styled(readonly, warning_style),
         ])),
         regions[0],
@@ -1744,6 +1740,15 @@ pub(super) fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         frame.render_widget(Paragraph::new(""), area);
         return;
     }
+    let indicator = sync_indicator(app);
+    let indicator_width = indicator
+        .as_ref()
+        .map_or(0, |(glyph, label, _)| glyph.width() + 1 + label.width() + 1);
+    let regions = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(u16::try_from(indicator_width).unwrap_or(u16::MAX)),
+    ])
+    .split(area);
     let selected = app
         .selected_node()
         .map(|node| node.identity.to_string())
@@ -1754,7 +1759,58 @@ pub(super) fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         format!(" {} | {}", selected, text::sanitize(&app.status))
     };
     let style = app.theme.subtle();
-    frame.render_widget(Paragraph::new(message).style(style), area);
+    frame.render_widget(Paragraph::new(message).style(style), regions[0]);
+    if let Some((glyph, label, style)) = indicator
+        && regions[1].width > 0
+    {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(glyph, style),
+                Span::raw(" "),
+                Span::styled(label, style),
+                Span::raw(" "),
+            ]))
+            .alignment(Alignment::Right),
+            regions[1],
+        );
+    }
+}
+
+const SPINNER_FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+const ASCII_SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+
+/// Glyph, label, and style for the bottom-right sync indicator. A running
+/// trace swaps the dot for a spinner frame; the label always describes whether
+/// the data on screen can be trusted.
+pub(super) fn sync_indicator(app: &App) -> Option<(&'static str, &'static str, Style)> {
+    if app.resource_missing {
+        return None;
+    }
+    let ascii = app.config.ui.ascii;
+    let glyph = if app.loading {
+        if ascii {
+            ASCII_SPINNER_FRAMES[app.spinner_frame % ASCII_SPINNER_FRAMES.len()]
+        } else {
+            SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()]
+        }
+    } else if ascii {
+        "*"
+    } else {
+        "●"
+    };
+    let theme = &app.theme;
+    let (label, style) = if app.trace_failed {
+        ("stale", theme.health(Health::Unhealthy))
+    } else if app.snapshot.is_none() {
+        ("syncing", theme.warning())
+    } else if app.paused {
+        ("paused", theme.subtle())
+    } else if app.no_watch {
+        ("static", theme.subtle())
+    } else {
+        ("live", theme.health(Health::Healthy))
+    };
+    Some((glyph, label, style))
 }
 
 pub(super) fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, scroll: u16, theme: &Theme) {

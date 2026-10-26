@@ -1,5 +1,6 @@
-use super::events::{FRAME_INTERVAL, InputView, WheelBatch, WheelInput};
+use super::events::{FRAME_INTERVAL, InputView, SPINNER_INTERVAL, WheelBatch, WheelInput};
 use super::render::render;
+use super::state::ACTION_IN_PROGRESS;
 use super::terminal::TerminalGuard;
 use super::*;
 
@@ -26,6 +27,7 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     let mut wheel_input = WheelInput::default();
     let mut input_view = InputView::of(&app);
     let mut next_frame = time::Instant::now();
+    let mut next_spinner = Instant::now();
     let mut dirty = true;
     connect_kubernetes(cli, &sender);
     request_refresh(&mut app, cli, &sender, &mut active, true);
@@ -56,6 +58,11 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                 if app.text_drag.is_some() {
                     let area = terminal.terminal.size()?;
                     dirty |= app.scroll_text_drag(area.into(), started);
+                }
+                if app.loading && started >= next_spinner {
+                    app.spinner_frame = app.spinner_frame.wrapping_add(1);
+                    next_spinner = started + SPINNER_INTERVAL;
+                    dirty = true;
                 }
                 if dirty {
                     terminal.terminal.draw(|frame| {
@@ -145,6 +152,9 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                             TraceResult::Failed(error) => {
                                 app.loading = false;
                                 app.status = error;
+                                if !refresh_pending {
+                                    app.trace_failed = true;
+                                }
                                 if !refresh_pending
                                     && !app.no_watch
                                     && !app.paused
@@ -186,10 +196,10 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                             start_revision_discovery(&mut app, &sender);
                         }
                         if refresh && (succeeded || batch) {
-                            request_refresh(&mut app, cli, &sender, &mut active, false);
                             if succeeded {
-                                app.status = format!("{label} succeeded; refreshing trace...");
+                                app.status = format!("{label} succeeded");
                             }
+                            request_refresh(&mut app, cli, &sender, &mut active, false);
                         }
                     }
                     AppEvent::Retry { generation }
@@ -302,7 +312,7 @@ fn start_action(app: &mut App, action: UiAction, sender: &mpsc::Sender<AppEvent>
     let context = cli.context.clone();
     let kubeconfig = cli.kubeconfig.clone();
     let sender = sender.clone();
-    app.status = "Kubernetes operation in progress...".into();
+    app.status = ACTION_IN_PROGRESS.into();
     tokio::spawn(async move {
         let mut failed = Vec::new();
         let (label, result, refresh) = match action {
@@ -666,7 +676,6 @@ fn request_refresh(
     }
     app.generation = app.generation.wrapping_add(1);
     app.loading = true;
-    app.status = "Refreshing trace...".into();
     let generation = app.generation;
     let token = CancellationToken::new();
     *active = Some(token.clone());

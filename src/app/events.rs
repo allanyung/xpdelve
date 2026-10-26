@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+pub(super) const SPINNER_INTERVAL: Duration = Duration::from_millis(100);
 const SCROLL_QUIET_PERIOD: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug)]

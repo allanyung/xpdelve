@@ -6311,3 +6311,108 @@ fn compact_object_keeps_guides_whole_and_shortens_the_label_middle() {
     );
     assert!(compact_object("          ", label, 12).contains('…'));
 }
+
+fn render_to_string(app: &App, width: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+    terminal.draw(|frame| render(frame, app)).unwrap();
+    terminal.backend().to_string()
+}
+
+#[test]
+fn sync_indicator_reflects_trace_state() {
+    let mut app = app();
+    assert_eq!(sync_indicator(&app).unwrap().0, "●");
+    assert_eq!(sync_indicator(&app).unwrap().1, "live");
+    assert!(render_to_string(&app, 100).contains("● live"));
+
+    app.loading = true;
+    app.spinner_frame = 1;
+    let (glyph, label, _) = sync_indicator(&app).unwrap();
+    assert_eq!((glyph, label), ("⣽", "live"));
+    app.spinner_frame = 2;
+    assert_eq!(sync_indicator(&app).unwrap().0, "⣻");
+    assert!(render_to_string(&app, 100).contains("⣻ live"));
+    app.loading = false;
+
+    app.paused = true;
+    assert_eq!(sync_indicator(&app).unwrap().1, "paused");
+    app.paused = false;
+    app.no_watch = true;
+    assert_eq!(sync_indicator(&app).unwrap().1, "static");
+    app.no_watch = false;
+
+    app.trace_failed = true;
+    assert_eq!(sync_indicator(&app).unwrap().1, "stale");
+    app.apply_snapshot(
+        Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}}}"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(sync_indicator(&app).unwrap().1, "live");
+}
+
+#[test]
+fn sync_indicator_shows_syncing_before_first_snapshot_and_hides_when_missing() {
+    let cli = Cli::parse_from(["xpdelve", "Root/root"]);
+    let config = Config::default();
+    let theme = Theme::resolve_for_mode(
+        &config.skin,
+        crate::config::ColorMode::Always,
+        false,
+        Some(terminal_colorsaurus::ThemeMode::Dark),
+    )
+    .unwrap();
+    let mut app = App::new("Root/root".into(), config, &cli, theme);
+    app.loading = true;
+    assert_eq!(sync_indicator(&app).unwrap().1, "syncing");
+    app.apply_resource_not_found();
+    assert!(sync_indicator(&app).is_none());
+}
+
+#[test]
+fn sync_indicator_uses_ascii_glyphs_when_configured() {
+    let mut app = app();
+    app.config.ui.ascii = true;
+    assert_eq!(sync_indicator(&app).unwrap().0, "*");
+    app.loading = true;
+    app.spinner_frame = 5;
+    assert_eq!(sync_indicator(&app).unwrap().0, "/");
+}
+
+#[test]
+fn header_no_longer_shows_activity_or_paused_and_status_survives_refresh() {
+    let mut app = app();
+    app.loading = true;
+    app.paused = true;
+    app.status = "Deleted Child/child succeeded".into();
+    let rendered = render_to_string(&app, 100);
+    assert!(!rendered.contains("[refreshing]"));
+    assert!(!rendered.contains("[paused]"));
+    assert!(rendered.contains("paused"));
+    assert!(rendered.contains("Deleted Child/child succeeded"));
+}
+
+#[test]
+fn status_is_empty_at_startup_and_after_the_first_snapshot() {
+    let cli = Cli::parse_from(["xpdelve", "Root/root"]);
+    let config = Config::default();
+    let theme = Theme::resolve_for_mode(
+        &config.skin,
+        crate::config::ColorMode::Always,
+        false,
+        Some(terminal_colorsaurus::ThemeMode::Dark),
+    )
+    .unwrap();
+    let app = App::new("Root/root".into(), config, &cli, theme);
+    assert!(app.status.is_empty());
+}
+
+#[test]
+fn viewing_content_clears_the_in_progress_status() {
+    let mut app = app();
+    app.status = super::state::ACTION_IN_PROGRESS.into();
+    assert!(app.finish_action("YAML: Root/root", None, Ok(Some("a: b\n".into()))));
+    assert!(app.status.is_empty());
+    assert!(app.modal.is_some());
+}

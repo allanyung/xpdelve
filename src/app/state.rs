@@ -1,6 +1,8 @@
 use super::render::{fuzzy_score, resource_kind_label};
 use super::*;
 
+pub(super) const ACTION_IN_PROGRESS: &str = "Kubernetes operation in progress...";
+
 fn maybe_add_command(
     entries: &mut Vec<(usize, PaletteEntry)>,
     query: &str,
@@ -103,10 +105,12 @@ impl App {
             find: String::new(),
             prompt_before: String::new(),
             loading: false,
+            trace_failed: false,
+            spinner_frame: 0,
             paused: false,
             generation: 0,
             last_refresh: None,
-            status: "Starting trace...".into(),
+            status: String::new(),
             quit: false,
             config,
             config_path: cli.config.clone().unwrap_or_else(config::default_path),
@@ -648,6 +652,9 @@ impl App {
         }
         match result {
             Ok(Some(content)) => {
+                if self.status == ACTION_IN_PROGRESS {
+                    self.status.clear();
+                }
                 let kind = match label {
                     label if label.starts_with("YAML:") => ContentKind::Yaml,
                     label if label.starts_with("Events:") => ContentKind::Events,
@@ -740,6 +747,7 @@ impl App {
     }
 
     pub(super) fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        self.trace_failed = false;
         if self
             .tree_selection
             .as_ref()
@@ -788,7 +796,6 @@ impl App {
         self.loading = false;
         self.resource_missing = false;
         self.last_refresh = Some(Instant::now());
-        self.status = format!("Trace updated: {} resources", snapshot.nodes.len());
         self.retry_delay = Duration::from_secs(1);
     }
 
@@ -826,6 +833,7 @@ impl App {
         }
         self.refresh_pending = false;
         self.loading = false;
+        self.trace_failed = false;
         self.resource_missing = true;
         self.status.clear();
         self.tree_selection = None;
