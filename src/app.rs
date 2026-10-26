@@ -579,6 +579,8 @@ struct App {
     find: String,
     prompt_before: String,
     loading: bool,
+    trace_failed: bool,
+    spinner_frame: usize,
     paused: bool,
     generation: u64,
     last_refresh: Option<Instant>,

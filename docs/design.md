@@ -183,3 +183,14 @@ precedence `CLI > config > defaults`. Runtime UI state is not persisted.
 Cargo compiles and tests the Rust project. `Taskfile.yml` is the supported
 workflow for contributors and CI. The project is Apache-2.0 licensed;
 materially adapted code is recorded in `NOTICE` and the affected source files.
+
+## Sync indicator
+
+The bottom-right corner shows whether the trace on screen can be trusted:
+`● live` (green), `● paused` or `● static` (`--no-watch`), `● stale` (red, the
+last trace failed and the previous snapshot is still shown), and `syncing`
+(yellow) before the first snapshot arrives. While a trace process runs the dot
+is replaced by an 8-dot braille spinner (`|/-\` with `ui.ascii`); the label is
+unchanged, so routine background refreshes do not flicker. Refreshes no longer
+write to the status line, so action results and errors stay visible until
+replaced.
