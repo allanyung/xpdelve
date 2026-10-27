@@ -3374,8 +3374,11 @@ fn main_footer_groups_logical_name_toggle_with_tree_controls() {
     let mut app = app();
     let mut terminal = Terminal::new(TestBackend::new(240, 16)).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
+    let key = terminal.backend().buffer().cell((1, 14)).unwrap();
+    assert_eq!(key.fg, app.theme.palette.sky);
+    assert!(key.modifier.contains(Modifier::BOLD));
     assert_eq!(
-        terminal.backend().buffer().cell((1, 14)).unwrap().fg,
+        terminal.backend().buffer().cell((12, 14)).unwrap().fg,
         app.theme.palette.overlay1
     );
     for visible in [true, false] {
@@ -6415,4 +6418,25 @@ fn viewing_content_clears_the_in_progress_status() {
     assert!(app.finish_action("YAML: Root/root", None, Ok(Some("a: b\n".into()))));
     assert!(app.status.is_empty());
     assert!(app.modal.is_some());
+}
+
+#[test]
+fn hint_line_styles_keys_bold_in_key_color() {
+    let app = app_with_theme("catppuccin-mocha", crate::config::ColorMode::Always);
+    let line = hint_line(" ::command  j/k or ↑/↓:scroll", &app.theme);
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(text, " ::command  j/k or ↑/↓:scroll");
+    let keys: Vec<_> = line
+        .spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert_eq!(keys, [":", "j/k or ↑/↓"]);
+    assert!(
+        line.spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .all(|s| s.style.fg == Some(app.theme.palette.sky))
+    );
 }
