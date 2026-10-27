@@ -1559,7 +1559,7 @@ pub(super) fn tree_prefix(snapshot: &Snapshot, node: &ProjectedNode, ascii: bool
 
 pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let line: Line<'static> = if app.resource_missing {
-        Line::from(" r:retry  q:quit")
+        hint_line(" r:retry  q:quit", &app.theme)
     } else {
         match app.mode {
             InputMode::Command => prompt_line(&app.theme, ":", app.theme.palette.mauve, &app.input),
@@ -1601,8 +1601,9 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                 }
                 Line::from(format!(" {}", active.join("  |  ")))
             }
-            InputMode::Normal | InputMode::Help if app.upgrade_view => Line::from(
+            InputMode::Normal | InputMode::Help if app.upgrade_view => hint_line(
                 " Space:mark  a:mark-available  Enter:review  Left/Right:collapse/expand  ::command  /:filter  r:refresh  ?:help  Esc:back",
+                &app.theme,
             ),
             InputMode::Normal | InputMode::Help => {
                 let details = if app
@@ -1613,9 +1614,12 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
                 } else {
                     ""
                 };
-                Line::from(format!(
-                    "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  M:policies  ::command  :upgrade  ?:help  /:filter  ctrl-d:delete  p:pause  f:reconcile  d:describe  y:YAML  e:edit  s:status  E:events"
-                ))
+                hint_line(
+                    &format!(
+                        "{details} Left/Right:collapse/expand  Space:mark  L:logical-name  X:external-name  M:policies  ::command  :upgrade  ?:help  /:filter  ctrl-d:delete  p:pause  f:reconcile  d:describe  y:YAML  e:edit  s:status  E:events"
+                    ),
+                    &app.theme,
+                )
             }
         }
     };
@@ -1631,7 +1635,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         let chunks = Layout::horizontal([Constraint::Min(0), Constraint::Length(12)]).split(area);
         frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), chunks[0]);
         frame.render_widget(
-            Paragraph::new(" h/l:scroll ")
+            Paragraph::new(hint_line(" h/l:scroll ", &app.theme))
                 .alignment(Alignment::Right)
                 .style(app.theme.subtle()),
             chunks[1],
@@ -1639,6 +1643,39 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
     } else {
         frame.render_widget(Paragraph::new(line).style(app.theme.subtle()), area);
     }
+}
+
+/// Render `key:label` hints separated by two spaces, with each key bold in the
+/// key color. A leading `:` is the key itself, as in `::command`.
+pub(super) fn hint_line(text: &str, theme: &Theme) -> Line<'static> {
+    let key_style = theme
+        .fg(theme.palette.sky)
+        .bold()
+        .remove_modifier(Modifier::DIM);
+    let mut spans = Vec::new();
+    for (index, entry) in text.split("  ").enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let trimmed = entry.trim_start_matches(' ');
+        let (indent, rest) = entry.split_at(entry.len() - trimmed.len());
+        if !indent.is_empty() {
+            spans.push(Span::raw(indent.to_owned()));
+        }
+        let split = if rest.starts_with(':') {
+            Some(1)
+        } else {
+            rest.find(':')
+        };
+        match split {
+            Some(at) => {
+                spans.push(Span::styled(rest[..at].to_owned(), key_style));
+                spans.push(Span::raw(rest[at..].to_owned()));
+            }
+            None => spans.push(Span::raw(rest.to_owned())),
+        }
+    }
+    Line::from(spans)
 }
 
 /// A sofka-style input prompt: a bold coloured sigil, the typed text, then a
@@ -1840,8 +1877,11 @@ pub(super) fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, scroll: u1
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), regions[0]);
     frame.render_widget(
-        Paragraph::new("j/k:scroll  PgUp/PgDn:page  g/G:top/bottom  Esc/q/?:close")
-            .style(theme.subtle()),
+        Paragraph::new(hint_line(
+            "j/k:scroll  PgUp/PgDn:page  g/G:top/bottom  Esc/q/?:close",
+            theme,
+        ))
+        .style(theme.subtle()),
         regions[1],
     );
 }
@@ -1932,7 +1972,7 @@ pub(super) fn render_modal(
                 );
             }
             let footer = state.search_input.as_ref().map_or_else(
-                || Line::from(content_modal_footer(*kind, state.wrapped)),
+                || hint_line(content_modal_footer(*kind, state.wrapped), theme),
                 |input| prompt_line(theme, "search /", theme.palette.teal, input),
             );
             frame.render_widget(Paragraph::new(footer).style(theme.subtle()), regions[1]);
@@ -2395,9 +2435,10 @@ pub(super) fn render_modal(
                 &mut state,
             );
             frame.render_widget(
-                Paragraph::new(
+                Paragraph::new(hint_line(
                     " Space:toggle  a:show all  x:hide all  o:show only  Enter:apply  Esc:cancel",
-                )
+                    theme,
+                ))
                 .style(theme.subtle()),
                 regions[1],
             );
