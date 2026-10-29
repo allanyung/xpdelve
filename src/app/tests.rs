@@ -3777,7 +3777,7 @@ fn help_mouse_wheel_scrolls_and_clamps_without_a_snapshot() {
     }
     assert_eq!(
         app.help_scroll,
-        (HELP_LINES.len() as u16) - (help_area.height - 3)
+        help_row_count(help_area) - (help_area.height - 3)
     );
     for _ in 0..30 {
         app.handle_mouse(
@@ -6439,4 +6439,22 @@ fn hint_line_styles_keys_bold_in_key_color() {
             .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
             .all(|s| s.style.fg == Some(app.theme.palette.sky))
     );
+}
+
+#[test]
+fn help_descriptions_wrap_instead_of_being_cut_off() {
+    let rows = help_rows(40);
+    assert!(rows.len() > HELP_LINES.len());
+    for (binding, text, _) in &rows {
+        if binding.is_some() {
+            assert!(text.chars().count() <= 20, "{text:?}");
+        }
+    }
+    let joined = rows
+        .iter()
+        .filter(|(binding, _, _)| binding.is_some())
+        .map(|(_, text, _)| text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(joined.contains("also Ctrl+K / Ctrl+J)"));
 }

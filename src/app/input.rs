@@ -87,8 +87,7 @@ impl App {
             if area.contains((mouse.column, mouse.row).into())
                 && let Some(delta) = vertical_wheel_delta(mouse, count)
             {
-                let max_scroll =
-                    (HELP_LINES.len() as u16).saturating_sub(area.height.saturating_sub(3));
+                let max_scroll = help_row_count(area).saturating_sub(area.height.saturating_sub(3));
                 self.help_scroll = scroll_vertical(self.help_scroll, delta, max_scroll);
             }
             return None;
@@ -881,7 +880,7 @@ impl App {
         if self.mode == InputMode::Help {
             let area = centered(terminal_area, 72, 20);
             let body_height = area.height.saturating_sub(3);
-            let max_scroll = (HELP_LINES.len() as u16).saturating_sub(body_height);
+            let max_scroll = help_row_count(area).saturating_sub(body_height);
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                     self.mode = InputMode::Normal;
