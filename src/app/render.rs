@@ -1850,29 +1850,91 @@ pub(super) fn sync_indicator(app: &App) -> Option<(&'static str, &'static str, S
     Some((glyph, label, style))
 }
 
+const HELP_DESCRIPTION_COLUMN: usize = 20;
+
+/// Wraps a help description to `width` columns, breaking on whitespace.
+fn wrap_help_description(description: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    for word in description.split_whitespace() {
+        let mut word = word;
+        loop {
+            let used = current.chars().count();
+            let len = word.chars().count();
+            let needed = if used == 0 { len } else { used + 1 + len };
+            if needed <= width {
+                if used > 0 {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                break;
+            }
+            if used > 0 {
+                rows.push(std::mem::take(&mut current));
+                continue;
+            }
+            let split = word
+                .char_indices()
+                .nth(width)
+                .map_or(word.len(), |(index, _)| index);
+            rows.push(word[..split].to_string());
+            word = &word[split..];
+        }
+    }
+    if !current.is_empty() || rows.is_empty() {
+        rows.push(current);
+    }
+    rows
+}
+
+/// Splits help lines into rows (binding, text) that fit `inner_width`.
+pub(super) fn help_rows(inner_width: u16) -> Vec<(Option<&'static str>, String, bool)> {
+    let wrap_width = (inner_width as usize).saturating_sub(HELP_DESCRIPTION_COLUMN);
+    let mut rows = Vec::new();
+    for line in HELP_LINES {
+        if line.is_empty() || !line.starts_with(' ') {
+            rows.push((None, (*line).to_string(), !line.is_empty()));
+            continue;
+        }
+        let (binding, description) = line.split_at(HELP_DESCRIPTION_COLUMN.min(line.len()));
+        let binding = binding.trim_end().trim_start();
+        for (index, text) in wrap_help_description(description, wrap_width)
+            .into_iter()
+            .enumerate()
+        {
+            rows.push((Some(if index == 0 { binding } else { "" }), text, false));
+        }
+    }
+    rows
+}
+
+pub(super) fn help_row_count(area: Rect) -> u16 {
+    help_rows(area.width.saturating_sub(2)).len() as u16
+}
+
 pub(super) fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect, scroll: u16, theme: &Theme) {
     clear_overlay(frame, area, theme);
     let block = bordered_block(" Help ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let regions = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-    let lines = HELP_LINES
-        .iter()
-        .map(|line| {
-            if line.is_empty() {
-                return Line::default();
+    let lines = help_rows(inner.width)
+        .into_iter()
+        .map(|(binding, text, header)| match binding {
+            None if text.is_empty() => Line::default(),
+            None => {
+                debug_assert!(header);
+                Line::from(Span::styled(format!("  {text}"), theme.title()))
             }
-            if !line.starts_with(' ') {
-                return Line::from(Span::styled(format!("  {line}"), theme.title()));
-            }
-            let (binding, description) = line.split_at(20);
-            let binding = binding.trim_end();
-            Line::from(vec![
+            Some(binding) => Line::from(vec![
                 Span::raw("  "),
-                Span::styled(binding.trim_start(), theme.warning()),
-                Span::raw(" ".repeat(20 - binding.len())),
-                Span::styled(description, theme.subtle()),
-            ])
+                Span::styled(binding, theme.warning()),
+                Span::raw(
+                    " ".repeat(HELP_DESCRIPTION_COLUMN.saturating_sub(2 + binding.chars().count())),
+                ),
+                Span::styled(text, theme.subtle()),
+            ]),
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), regions[0]);
