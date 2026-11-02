@@ -12,7 +12,8 @@ use clap::{Parser, Subcommand, ValueEnum};
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Configuration file. Defaults to ~/.config/xpdelve/config.toml.
+    /// Configuration file. Defaults to $XDG_CONFIG_HOME/xpdelve/config.toml,
+    /// or ~/.config/xpdelve/config.toml.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -35,6 +36,10 @@ pub struct Cli {
     /// Disable all mutating actions.
     #[arg(long, global = true)]
     pub readonly: bool,
+
+    /// Do not check GitHub for a newer xpdelve release.
+    #[arg(long, global = true)]
+    pub no_update_check: bool,
 
     /// Use the compact column set.
     #[arg(long, global = true)]

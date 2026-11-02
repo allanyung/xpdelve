@@ -152,6 +152,8 @@ pub(super) fn render_toast(
     );
 }
 
+const HEADER_MIN_RESOURCE_WIDTH: usize = 24;
+
 pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let readonly = if app.config.read_only {
         " [read-only]"
@@ -166,9 +168,22 @@ pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
     let title_style = app.theme.title();
     let version = concat!("v", env!("CARGO_PKG_VERSION"));
     let app_version_width = "xpdelve ".width() + version.width();
+    let update = app.available_update().map(|release| {
+        let separator = if app.config.ui.ascii { " | " } else { " · " };
+        (format!("v{} available", release.version), separator)
+    });
+    // The resource name keeps priority: drop the notice when it would squeeze
+    // the left side below a readable width.
+    let update = update.filter(|(notice, separator)| {
+        let width = notice.width() + separator.width();
+        usize::from(area.width) >= app_version_width + width + HEADER_MIN_RESOURCE_WIDTH
+    });
+    let update_width = update
+        .as_ref()
+        .map_or(0, |(notice, separator)| notice.width() + separator.width());
     let regions = Layout::horizontal([
         Constraint::Min(0),
-        Constraint::Length(app_version_width as u16),
+        Constraint::Length((app_version_width + update_width) as u16),
     ])
     .split(area);
     frame.render_widget(
@@ -179,12 +194,15 @@ pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
         ])),
         regions[0],
     );
+    let mut right = Vec::new();
+    if let Some((notice, separator)) = update {
+        right.push(Span::styled(notice, warning_style));
+        right.push(Span::styled(separator, app.theme.subtle()));
+    }
+    right.push(Span::styled("xpdelve ", title_style));
+    right.push(Span::styled(version, app.theme.subtle()));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("xpdelve ", title_style),
-            Span::styled(version, app.theme.subtle()),
-        ]))
-        .alignment(Alignment::Right),
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
         regions[1],
     );
 }

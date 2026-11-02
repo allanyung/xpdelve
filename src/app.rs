@@ -253,6 +253,7 @@ enum AppEvent {
     Retry {
         generation: u64,
     },
+    UpdateChecked(Result<crate::update::Release, String>),
 }
 
 enum TraceResult {
@@ -609,6 +610,7 @@ struct App {
     text_drag: Option<TextDrag>,
     deferred_snapshot: Option<Snapshot>,
     last_tree_click: Option<TreeClick>,
+    latest_release: Option<crate::update::Release>,
 }
 
 mod content;

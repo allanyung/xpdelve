@@ -6458,3 +6458,41 @@ fn help_descriptions_wrap_instead_of_being_cut_off() {
         .join(" ");
     assert!(joined.contains("also Ctrl+K / Ctrl+J)"));
 }
+
+fn header_text(app: &App, width: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+    terminal
+        .draw(|frame| render_header(frame, frame.area(), app))
+        .unwrap();
+    terminal.backend().to_string()
+}
+
+fn release(version: &str) -> crate::update::Release {
+    crate::update::Release {
+        version: version.into(),
+        url: format!("https://github.com/allanyung/xpdelve/releases/tag/v{version}"),
+    }
+}
+
+#[test]
+fn header_advertises_only_a_newer_release() {
+    let mut app = app();
+    assert!(!header_text(&app, 100).contains("available"));
+    app.latest_release = Some(release(env!("CARGO_PKG_VERSION")));
+    assert!(!header_text(&app, 100).contains("available"));
+    app.latest_release = Some(release("999.0.0"));
+    let header = header_text(&app, 100);
+    assert!(header.contains("v999.0.0 available · xpdelve v"));
+    app.config.ui.ascii = true;
+    assert!(header_text(&app, 100).contains("v999.0.0 available | xpdelve v"));
+}
+
+#[test]
+fn header_drops_the_update_notice_before_squeezing_the_resource() {
+    let mut app = app();
+    app.latest_release = Some(release("999.0.0"));
+    let header = header_text(&app, 40);
+    assert!(!header.contains("available"));
+    assert!(header.contains("Root/root"));
+    assert!(header.contains("xpdelve v"));
+}

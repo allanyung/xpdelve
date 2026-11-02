@@ -177,8 +177,13 @@ or automatic update checks.
 
 ## Configuration and build
 
-Configuration is `~/.config/xpdelve/config.toml`, schema version 1, with
-precedence `CLI > config > defaults`. Runtime UI state is not persisted.
+Configuration is `$XDG_CONFIG_HOME/xpdelve/config.toml` (default
+`~/.config/xpdelve/config.toml`), schema version 1, with precedence
+`CLI > config > defaults`. Runtime UI state is not persisted. The only other
+file xpdelve writes is the daily release-check cache,
+`$XDG_STATE_HOME/xpdelve/update-check.toml` (default
+`~/.local/state/xpdelve/`). The check runs in a spawned task, never on the
+input or render path, and its result only feeds the header.
 
 Cargo compiles and tests the Rust project. `Taskfile.yml` is the supported
 workflow for contributors and CI. The project is Apache-2.0 licensed;
