@@ -1,4 +1,5 @@
 pub mod app;
+pub mod atomicfile;
 pub mod cli;
 pub mod columns;
 pub mod config;
@@ -7,3 +8,4 @@ pub mod model;
 pub mod text;
 pub mod theme;
 pub mod trace;
+pub mod update;

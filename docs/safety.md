@@ -47,3 +47,14 @@ the cluster and external commands is sanitized to prevent terminal control
 sequences from executing. The trace command and kubectl still run with the
 user's normal environment and credentials; avoid placing credentials directly
 in custom command arguments.
+
+## Network and Files
+
+Besides the Kubernetes API and the Crossplane CLI, xpdelve makes one HTTPS GET to
+`api.github.com` at most once every 24 hours to look for a newer release. The
+request carries only a `User-Agent` of `xpdelve/<version>`; redirects are not
+followed, the response is capped at 1 MiB, and the request times out after
+10 seconds. Failures are ignored. Disable it with `--no-update-check` or
+`update_check = false`. The result is cached in `update-check.toml` under the
+state directory (`$XDG_STATE_HOME/xpdelve` or `~/.local/state/xpdelve`), which,
+with the optional theme write to the configuration file, is all xpdelve writes.

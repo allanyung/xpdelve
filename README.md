@@ -81,7 +81,8 @@ xpdelve --namespace default ObjectStorage example
 xpdelve --context development ObjectStorage/example
 ```
 
-By default, configuration is read from `~/.config/xpdelve/config.toml`; use
+By default, configuration is read from `$XDG_CONFIG_HOME/xpdelve/config.toml`, or
+`~/.config/xpdelve/config.toml` when `XDG_CONFIG_HOME` is unset; use
 `--config PATH` to select another file. See
 [`docs/configuration.md`](docs/configuration.md).
 
@@ -92,6 +93,7 @@ By default, configuration is read from `~/.config/xpdelve/config.toml`; use
 | `--config PATH` | Read configuration from a different file |
 | `--context NAME` | Use a specific Kubernetes context |
 | `-n`, `--namespace NAME` | Trace a resource in a specific namespace |
+| `--no-update-check` | Do not check GitHub for a newer release |
 | `--kubeconfig PATH` | Use a specific kubeconfig for trace and Kubernetes operations |
 | `--readonly` | Disable mutating actions |
 | `--short` | Hide condition transition-time columns |
@@ -150,8 +152,9 @@ context, resource, API group, and name through the variables in `args`.
 
 ### Extra tree columns
 
-Configure extra columns for any resource kind/API group in
-`~/.config/xpdelve/config.toml`:
+Configure extra columns for any resource kind/API group in the configuration
+file (`$XDG_CONFIG_HOME/xpdelve/config.toml`, default
+`~/.config/xpdelve/config.toml`):
 
 ```toml
 [[extra_columns."Bucket.s3.aws.upbound.io"]]
@@ -191,7 +194,7 @@ trace refreshes but are not written to configuration.
 Enter `:skin` to open the theme picker. Moving the selection with Up/Down
 previews each built-in theme live. Enter keeps the highlighted theme and saves it
 as `skin.name` in the active configuration file (normally
-`~/.config/xpdelve/config.toml`); Esc restores the previous theme and writes
+`$XDG_CONFIG_HOME/xpdelve/config.toml`, or `~/.config/xpdelve/config.toml`); Esc restores the previous theme and writes
 nothing.
 
 Enter `:quit` to close xpdelve from the command palette.
@@ -254,6 +257,12 @@ resourceVersion atomically. Secret payloads are redacted in YAML views, and
 untrusted cluster text is sanitized before terminal rendering. Non-Secret
 resources may still contain credential-like values. Use `--readonly` to disable
 mutations.
+
+xpdelve makes one outbound request, to the GitHub releases API, at most once a
+day to look for a newer release; it sends no cluster data. Disable it with
+`--no-update-check` or `update_check = false`. The cache is the only file
+written besides the configuration; see
+[`docs/configuration.md`](docs/configuration.md#update-check).
 
 ## Development
 

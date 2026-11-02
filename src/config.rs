@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +18,7 @@ const DEFAULT_STDERR_LIMIT: usize = 1024 * 1024;
 pub struct Config {
     pub schema_version: u32,
     pub read_only: bool,
+    pub update_check: bool,
     pub trace: TraceConfig,
     pub ui: UiConfig,
     pub skin: SkinConfig,
@@ -81,6 +83,7 @@ impl Default for Config {
         Self {
             schema_version: 1,
             read_only: false,
+            update_check: true,
             trace: TraceConfig::default(),
             ui: UiConfig::default(),
             skin: SkinConfig::default(),
@@ -164,6 +167,9 @@ impl Config {
         if cli.readonly {
             self.read_only = true;
         }
+        if cli.no_update_check {
+            self.update_check = false;
+        }
         if cli.short {
             self.ui.short = true;
         }
@@ -215,10 +221,34 @@ fn validate_placeholder(args: &[String], placeholder: &str, required: bool) -> R
     Ok(())
 }
 
+/// `$XDG_CONFIG_HOME/xpdelve/config.toml`, else `~/.config/xpdelve/config.toml`.
 pub fn default_path() -> PathBuf {
-    env::var_os("HOME")
+    config_path_from(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
+}
+
+/// `$XDG_STATE_HOME/xpdelve`, else `~/.local/state/xpdelve`.
+pub fn state_dir() -> PathBuf {
+    state_dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
+}
+
+fn config_path_from(xdg: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    xpdelve_dir(xdg, home, ".config").join("config.toml")
+}
+
+fn state_dir_from(xdg: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    xpdelve_dir(xdg, home, ".local/state")
+}
+
+// An empty variable counts as unset. Without `HOME` the path is relative to
+// the working directory.
+fn xpdelve_dir(xdg: Option<OsString>, home: Option<OsString>, home_relative: &str) -> PathBuf {
+    if let Some(xdg) = xdg.filter(|value| !value.is_empty()) {
+        return PathBuf::from(xdg).join("xpdelve");
+    }
+    home.filter(|value| !value.is_empty())
         .map_or_else(|| Path::new(".").to_path_buf(), PathBuf::from)
-        .join(".config/xpdelve/config.toml")
+        .join(home_relative)
+        .join("xpdelve")
 }
 
 pub fn persist_skin(path: &Path, name: &str) -> Result<()> {
@@ -237,25 +267,8 @@ pub fn persist_skin(path: &Path, name: &str) -> Result<()> {
     toml::from_str::<Config>(&updated)
         .with_context(|| format!("updated configuration {} is invalid", path.display()))?;
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create configuration directory {}",
-                parent.display()
-            )
-        })?;
-    }
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    let temporary = path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()));
-    fs::write(&temporary, updated)
-        .with_context(|| format!("failed to write configuration {}", temporary.display()))?;
-    fs::rename(&temporary, path).with_context(|| {
-        let _ = fs::remove_file(&temporary);
-        format!("failed to replace configuration {}", path.display())
-    })
+    crate::atomicfile::write(path, &updated)
+        .with_context(|| format!("failed to write configuration {}", path.display()))
 }
 
 fn update_skin_name(source: &str, name: &str) -> String {
@@ -333,6 +346,62 @@ fn finish_config(lines: Vec<String>, source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn os(value: &str) -> Option<OsString> {
+        Some(value.into())
+    }
+
+    #[test]
+    fn config_and_state_prefer_xdg_then_home_then_working_directory() {
+        assert_eq!(
+            config_path_from(os("/x/config"), os("/home/u")),
+            Path::new("/x/config/xpdelve/config.toml")
+        );
+        assert_eq!(
+            state_dir_from(os("/x/state"), os("/home/u")),
+            Path::new("/x/state/xpdelve")
+        );
+        assert_eq!(
+            config_path_from(None, os("/home/u")),
+            Path::new("/home/u/.config/xpdelve/config.toml")
+        );
+        assert_eq!(
+            state_dir_from(None, os("/home/u")),
+            Path::new("/home/u/.local/state/xpdelve")
+        );
+        assert_eq!(
+            config_path_from(os(""), os("/home/u")),
+            Path::new("/home/u/.config/xpdelve/config.toml")
+        );
+        assert_eq!(
+            state_dir_from(os(""), os("")),
+            Path::new("./.local/state/xpdelve")
+        );
+        assert_eq!(
+            config_path_from(None, None),
+            Path::new("./.config/xpdelve/config.toml")
+        );
+    }
+
+    #[test]
+    fn update_check_defaults_on_and_the_flag_turns_it_off() {
+        use clap::Parser;
+
+        assert!(Config::default().update_check);
+        let config: Config = toml::from_str("update_check = false").unwrap();
+        assert!(!config.update_check);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "update_check = true\n").unwrap();
+        let cli = Cli::parse_from([
+            "xpdelve",
+            "--config",
+            path.to_str().unwrap(),
+            "--no-update-check",
+            "Root/root",
+        ]);
+        assert!(!Config::load(&cli).unwrap().update_check);
+    }
 
     #[test]
     fn defaults_are_valid() {

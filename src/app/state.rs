@@ -135,7 +135,15 @@ impl App {
             text_drag: None,
             deferred_snapshot: None,
             last_tree_click: None,
+            latest_release: None,
         }
+    }
+
+    /// The newer release to advertise in the header, if any.
+    pub(super) fn available_update(&self) -> Option<&crate::update::Release> {
+        self.latest_release
+            .as_ref()
+            .filter(|release| release.is_newer())
     }
 
     pub(super) fn show_toast(&mut self, message: impl Into<String>) {

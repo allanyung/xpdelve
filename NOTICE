@@ -10,6 +10,11 @@ The built-in theme catalog and portions of the theme resolution and semantic
 styling in src/theme.rs are adapted from Sofka's src/theme.rs. The code was
 translated and modified for xpdelve in 2026.
 
+The release update check in src/update.rs and the atomic file replacement in
+src/atomicfile.rs are adapted from Sofka's src/update.rs, the GET helper in
+src/plugin_catalog.rs, and src/atomicfile.rs. The code was translated and
+modified for xpdelve in 2026.
+
 This product includes software adapted from xpdig:
 https://github.com/brunoluiz/xpdig
 Copyright 2025 Bruno Luiz da Silva

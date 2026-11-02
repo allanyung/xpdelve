@@ -1,6 +1,7 @@
 # Configuration
 
-By default, `xpdelve` reads `~/.config/xpdelve/config.toml`. Use `--config PATH`
+By default, `xpdelve` reads `$XDG_CONFIG_HOME/xpdelve/config.toml`, or
+`~/.config/xpdelve/config.toml` when `XDG_CONFIG_HOME` is unset or empty. Use `--config PATH`
 to select another file. Command-line arguments override configuration, which
 overrides built-in defaults. Unknown fields and invalid or unsupported schema
 versions are errors.
@@ -16,6 +17,7 @@ scroll the error and Esc or `q` to close it.
 ```toml
 schema_version = 1
 read_only = false
+update_check = true
 
 [trace]
 program = "crossplane"
@@ -181,7 +183,8 @@ Latte; dark or undetectable terminals select Catppuccin Mocha.
 
 The same themes can be selected interactively with `:skin`. Choosing a theme
 applies it immediately and writes its name to `skin.name` in the active
-configuration file. The default is `~/.config/xpdelve/config.toml`; when
+configuration file. The default is `$XDG_CONFIG_HOME/xpdelve/config.toml` or
+`~/.config/xpdelve/config.toml`; when
 `--config` is used, that file is updated instead. Existing settings, comments,
 and `skin.colors` overrides are retained.
 
@@ -200,3 +203,19 @@ Unknown theme names or swatches and malformed colors are configuration errors.
 `ui.color` controls whether the resolved palette is emitted. `auto` respects
 `NO_COLOR`, `always` overrides it, and `never` uses monochrome styles. Themes do
 not paint the terminal background.
+
+## Update check
+
+Unless `update_check = false` (or `--no-update-check` is passed), xpdelve asks
+the GitHub releases API for the latest release in the background at startup,
+and shows `vX.Y.Z available` in the header when it is newer than the running
+build. It never downloads or installs anything. The setting is read at startup;
+`:reload` does not start or stop the check.
+
+The result is cached in `$XDG_STATE_HOME/xpdelve/update-check.toml`, or
+`~/.local/state/xpdelve/update-check.toml` when `XDG_STATE_HOME` is unset or
+empty. At most one request is made per 24 hours, including after a failed
+attempt, and a failure is silent. The cached release is shown even when the check
+is disabled. If neither `XDG_STATE_HOME` nor `HOME` is set, the path is relative to
+the working directory, like the configuration path. `xpdelve info` prints the
+state directory and the latest known release.

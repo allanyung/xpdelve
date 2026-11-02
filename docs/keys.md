@@ -189,7 +189,7 @@ are cleared with the other filters by Esc from the main view.
 
 In the theme picker, Up/Down or `j`/`k` changes the selection, Enter applies and
 saves it, and Esc or `q` cancels. The active configuration file defaults to
-`~/.config/xpdelve/config.toml`.
+`$XDG_CONFIG_HOME/xpdelve/config.toml`, or `~/.config/xpdelve/config.toml`.
 
 ## Revision Upgrade View
 

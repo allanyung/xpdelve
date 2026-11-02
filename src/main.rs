@@ -60,6 +60,12 @@ fn print_info(cli: &Cli) -> Result<()> {
         trace::executable_available(&config.trace.program).unwrap_or(false)
     );
     println!("read only: {}", config.read_only);
+    println!("update check: {}", config.update_check);
+    println!("state directory: {}", config::state_dir().display());
+    match xpdelve::update::cached(&xpdelve::update::cache_path()) {
+        Some(release) => println!("latest known release: v{}", release.version),
+        None => println!("latest known release: unknown"),
+    }
     println!(
         "configured skin: {}",
         config.skin.name.as_deref().unwrap_or("auto")

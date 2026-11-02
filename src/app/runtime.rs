@@ -30,6 +30,10 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
     let mut next_spinner = Instant::now();
     let mut dirty = true;
     connect_kubernetes(cli, &sender);
+    app.latest_release = crate::update::cached(&crate::update::cache_path());
+    if app.config.update_check {
+        start_update_check(&sender);
+    }
     request_refresh(&mut app, cli, &sender, &mut active, true);
 
     while !app.quit {
@@ -211,6 +215,13 @@ pub async fn run(cli: &Cli, resource: String, config: Config) -> Result<()> {
                         request_refresh(&mut app, cli, &sender, &mut active, false);
                     }
                     AppEvent::Retry { .. } => {}
+                    // A failed check is not worth interrupting the user; the
+                    // cached release, if any, stays in the header.
+                    AppEvent::UpdateChecked(result) => {
+                        if let Ok(release) = result {
+                            app.latest_release = Some(release);
+                        }
+                    }
                 }
             }
             _ = refresh.tick(), if !app.no_watch && !app.paused && !app.loading && !app.resource_missing => {
@@ -256,6 +267,15 @@ fn connect_kubernetes(cli: &Cli, sender: &mpsc::Sender<AppEvent>) {
             .await
             .map_err(|error| error.to_string());
         let _ = sender.send(AppEvent::KubernetesReady(result)).await;
+    });
+}
+
+fn start_update_check(sender: &mpsc::Sender<AppEvent>) {
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let _ = sender
+            .send(AppEvent::UpdateChecked(crate::update::check().await))
+            .await;
     });
 }
 
