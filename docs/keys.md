@@ -6,8 +6,8 @@
 | --- | --- |
 | `j`, Down | Select next resource |
 | `k`, Up | Select previous resource |
-| `PageDown`, `Ctrl+J` | Move down one page |
-| `PageUp`, `Ctrl+K` | Move up one page |
+| `PageDown`, `Ctrl+J` | Move down one page (also pages text viewers, help, and pickers) |
+| `PageUp`, `Ctrl+K` | Move up one page (also pages text viewers, help, and pickers) |
 | `g`, Home | Select first resource |
 | `G`, End | Select last resource |
 | `Enter` | Show the selected resource's problem details, when available |

@@ -6221,6 +6221,47 @@ fn ctrl_j_and_ctrl_k_page_while_plain_j_and_k_move_one_row() {
 }
 
 #[test]
+fn ctrl_j_and_ctrl_k_page_text_viewer_and_help_like_page_keys() {
+    let mut app = app();
+    let message = "long diagnostic\n".repeat(80);
+    let trace = serde_json::json!({"object":{"apiVersion":"v1","kind":"Root","metadata":{"name":"root"}},"error":{"message":message}});
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&trace).unwrap()).unwrap());
+    let area = Rect::new(0, 0, 100, 20);
+    let press = |app: &mut App, code, modifiers| {
+        app.handle_key(KeyEvent::new(code, modifiers), area);
+    };
+    let scroll = |app: &App| match &app.modal {
+        Some(Modal::Text { state, .. }) => state.vertical_scroll,
+        _ => panic!("expected text modal"),
+    };
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(scroll(&app), 1);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(scroll(&app), 0);
+    press(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    let page = scroll(&app);
+    assert!(page > 1);
+    press(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(scroll(&app), 0);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert_eq!(scroll(&app), page);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+    assert_eq!(scroll(&app), 0);
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+    press(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    let help_page = app.help_scroll;
+    assert!(help_page > 1);
+    press(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert_eq!(app.help_scroll, help_page);
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+    assert_eq!(app.help_scroll, 0);
+}
+
+#[test]
 fn ctrl_j_and_ctrl_k_page_a_longer_tree_by_the_page_size() {
     let mut app = app();
     let children = (0..40)
