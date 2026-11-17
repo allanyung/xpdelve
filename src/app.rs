@@ -143,28 +143,22 @@ impl ListPicker {
             return ListPickerAction::None;
         }
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.cursor = (self.cursor + 1) % self.len;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.cursor = self.cursor.checked_sub(1).unwrap_or(self.len - 1);
-            }
-            KeyCode::PageDown => {
-                self.cursor = self.cursor.saturating_add(page_size).min(self.len - 1);
-            }
-            KeyCode::PageUp => {
-                self.cursor = self.cursor.saturating_sub(page_size);
-            }
-            KeyCode::Home | KeyCode::Char('g') => {
-                self.cursor = 0;
-            }
-            KeyCode::End | KeyCode::Char('G') => {
-                self.cursor = self.len - 1;
-            }
             KeyCode::Enter => {
                 return ListPickerAction::Select(self.cursor);
             }
-            _ => {}
+            _ => match nav::nav_key(key) {
+                Some(nav::Nav::Line(1)) => self.cursor = (self.cursor + 1) % self.len,
+                Some(nav::Nav::Line(_)) => {
+                    self.cursor = self.cursor.checked_sub(1).unwrap_or(self.len - 1);
+                }
+                Some(nav::Nav::Page(1)) => {
+                    self.cursor = self.cursor.saturating_add(page_size).min(self.len - 1);
+                }
+                Some(nav::Nav::Page(_)) => self.cursor = self.cursor.saturating_sub(page_size),
+                Some(nav::Nav::Top) => self.cursor = 0,
+                Some(nav::Nav::Bottom) => self.cursor = self.len - 1,
+                None => {}
+            },
         }
         ListPickerAction::None
     }
@@ -322,7 +316,6 @@ impl TextModalState {
         content: &content::TextContent,
         kind: ContentKind,
         body_size: (usize, usize),
-        page_size: usize,
     ) -> TextModalAction {
         let (body_width, body_height) = body_size;
         let (max_vertical, max_horizontal) =
@@ -349,35 +342,6 @@ impl TextModalState {
 
         match (key.code, key.modifiers) {
             (KeyCode::Esc | KeyCode::Char('q'), _) => TextModalAction::Close,
-            (KeyCode::Down | KeyCode::Char('j'), _) => {
-                self.vertical_scroll = self.vertical_scroll.saturating_add(1).min(max_vertical);
-                TextModalAction::None
-            }
-            (KeyCode::Up | KeyCode::Char('k'), _) => {
-                self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
-                TextModalAction::None
-            }
-            (KeyCode::PageDown, _) => {
-                self.vertical_scroll = self
-                    .vertical_scroll
-                    .saturating_add(body_height.try_into().unwrap_or(u16::MAX))
-                    .min(max_vertical);
-                TextModalAction::None
-            }
-            (KeyCode::PageUp, _) => {
-                self.vertical_scroll = self
-                    .vertical_scroll
-                    .saturating_sub(page_size.try_into().unwrap_or(u16::MAX));
-                TextModalAction::None
-            }
-            (KeyCode::Home | KeyCode::Char('g'), _) => {
-                self.vertical_scroll = 0;
-                TextModalAction::None
-            }
-            (KeyCode::End | KeyCode::Char('G'), _) => {
-                self.vertical_scroll = max_vertical;
-                TextModalAction::None
-            }
             (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
                 self.horizontal_scroll = self.horizontal_scroll.saturating_sub(4);
                 TextModalAction::None
@@ -400,7 +364,13 @@ impl TextModalState {
             (KeyCode::Char('c'), KeyModifiers::NONE) => TextModalAction::Copy,
             (KeyCode::Char('n'), _) => TextModalAction::FindNext,
             (KeyCode::Char('N'), _) => TextModalAction::FindPrevious,
-            _ => TextModalAction::None,
+            _ => {
+                if let Some(step) = nav::nav_key(key) {
+                    self.vertical_scroll =
+                        nav::apply_scroll(self.vertical_scroll, step, body_height, max_vertical);
+                }
+                TextModalAction::None
+            }
         }
     }
 }
@@ -616,6 +586,7 @@ struct App {
 mod content;
 mod events;
 mod input;
+mod nav;
 mod render;
 mod runtime;
 mod selection;

@@ -611,13 +611,7 @@ impl App {
                     let modal_area = content_modal_area(terminal_area, *kind);
                     let body_width = modal_area.width.saturating_sub(2) as usize;
                     let body_height = modal_area.height.saturating_sub(3) as usize;
-                    match state.handle_key(
-                        key,
-                        content,
-                        *kind,
-                        (body_width, body_height),
-                        page_size,
-                    ) {
+                    match state.handle_key(key, content, *kind, (body_width, body_height)) {
                         TextModalAction::Close => self.modal = None,
                         TextModalAction::FindFirst => {
                             move_modal_match(
@@ -739,21 +733,18 @@ impl App {
                                 cursor: *cursor,
                             });
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            *scroll = (usize::from(*scroll) + 1).min(last) as u16;
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                        KeyCode::PageDown => {
-                            *scroll = (usize::from(*scroll) + page).min(last) as u16;
-                        }
-                        KeyCode::PageUp => *scroll = scroll.saturating_sub(page as u16),
                         KeyCode::Enter => {
                             let action =
                                 UiAction::RemoveFinalizers(finalizer_removals(targets, &chosen));
                             self.modal = None;
                             return action;
                         }
-                        _ => {}
+                        _ => {
+                            if let Some(step) = nav::nav_key(key) {
+                                let max = u16::try_from(last).unwrap_or(u16::MAX);
+                                *scroll = nav::apply_scroll(*scroll, step, page, max);
+                            }
+                        }
                     }
                 }
                 Modal::ContextMenu { .. } => {
@@ -885,21 +876,16 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                     self.mode = InputMode::Normal;
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.help_scroll = self.help_scroll.saturating_add(1).min(max_scroll);
+                _ => {
+                    if let Some(step) = nav::nav_key(key) {
+                        self.help_scroll = nav::apply_scroll(
+                            self.help_scroll,
+                            step,
+                            usize::from(body_height),
+                            max_scroll,
+                        );
+                    }
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.help_scroll = self.help_scroll.saturating_sub(1);
-                }
-                KeyCode::PageDown => {
-                    self.help_scroll = self.help_scroll.saturating_add(body_height).min(max_scroll);
-                }
-                KeyCode::PageUp => {
-                    self.help_scroll = self.help_scroll.saturating_sub(body_height);
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.help_scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => self.help_scroll = max_scroll,
-                _ => {}
             }
             return UiAction::None;
         }
@@ -977,19 +963,6 @@ impl App {
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.request_delete(),
             (KeyCode::Char(' '), KeyModifiers::NONE) => self.toggle_mark(),
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => self.request_finalizers(),
-            // Page keys come first: the plain j/k arms below accept any modifiers.
-            (KeyCode::PageDown, _) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-                self.move_selection(page_size.cast_signed());
-            }
-            (KeyCode::PageUp, _) | (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
-                self.move_selection(-page_size.cast_signed());
-            }
-            (KeyCode::Down | KeyCode::Char('j'), _) => self.move_selection(1),
-            (KeyCode::Up | KeyCode::Char('k'), _) => self.move_selection(-1),
-            (KeyCode::Home | KeyCode::Char('g'), _) => self.set_selection(0),
-            (KeyCode::End | KeyCode::Char('G'), _) => {
-                self.set_selection(self.visible().len().saturating_sub(1));
-            }
             (KeyCode::Enter, _) => self.show_resource_details(),
             (KeyCode::Right, KeyModifiers::SHIFT) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
                 self.scroll_tree_horizontal(terminal_area, true, 1);
@@ -1091,7 +1064,15 @@ impl App {
             (KeyCode::Char('p'), _) => return self.request_pause_toggle(),
             (KeyCode::Char('f'), KeyModifiers::NONE) => return self.request_reconcile(),
             (KeyCode::Char('r'), _) => return UiAction::Refresh,
-            _ => {}
+            _ => match nav::nav_key(key) {
+                Some(nav::Nav::Line(step)) => self.move_selection(step),
+                Some(nav::Nav::Page(step)) => self.move_selection(step * page_size.cast_signed()),
+                Some(nav::Nav::Top) => self.set_selection(0),
+                Some(nav::Nav::Bottom) => {
+                    self.set_selection(self.visible().len().saturating_sub(1));
+                }
+                None => {}
+            },
         }
         self.ensure_selection_visible(page_size);
         UiAction::None
