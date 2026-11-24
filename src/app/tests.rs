@@ -140,7 +140,7 @@ fn enter_and_space_never_toggle_tree_expansion() {
     for collapsed in [false, true] {
         for key in [KeyCode::Enter, KeyCode::Char(' ')] {
             app.handle_key(KeyEvent::new(key, KeyModifiers::NONE), area);
-            assert_eq!(app.visible().len(), if collapsed { 1 } else { 2 });
+            assert_eq!(app.visible_shared().len(), if collapsed { 1 } else { 2 });
             assert!(app.modal.is_none());
         }
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
@@ -159,7 +159,7 @@ fn problematic_parent_opens_details_without_changing_expansion() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
         assert!(matches!(app.modal, Some(Modal::Text { .. })));
         assert_eq!(app.collapsed, before);
-        assert_eq!(app.visible().len(), if collapsed { 1 } else { 2 });
+        assert_eq!(app.visible_shared().len(), if collapsed { 1 } else { 2 });
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
     }
@@ -274,7 +274,7 @@ fn collapse_all_keeps_root_expanded() {
 
     assert!(!app.collapsed.contains(&root));
     assert!(app.collapsed.contains(&child));
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
     assert_eq!(app.selection.visible_index, 0);
 }
 
@@ -286,7 +286,7 @@ fn right_expands_a_collapsed_node() {
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
 
-    assert_eq!(app.visible().len(), 2);
+    assert_eq!(app.visible_shared().len(), 2);
     assert_eq!(app.selection.visible_index, 0);
 }
 
@@ -437,7 +437,7 @@ fn command_palette_qualifies_duplicate_kinds_by_group() {
         app.kind_filter,
         Some(resource_kind("beta.example.io", "Widget"))
     );
-    assert_eq!(app.visible(), vec![2]);
+    assert_eq!(*app.visible_shared(), vec![2]);
     assert_eq!(app.selected_node().unwrap().identity.name, "beta");
 }
 
@@ -454,7 +454,7 @@ fn typing_narrows_the_command_palette_and_enter_filters_by_kind() {
 
     assert_eq!(app.mode, InputMode::Normal);
     assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
-    assert_eq!(app.visible(), vec![1]);
+    assert_eq!(*app.visible_shared(), vec![1]);
     assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
 }
 
@@ -478,7 +478,7 @@ fn command_palette_navigation_executes_the_highlighted_action() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert_eq!(app.kind_filter, Some(resource_kind("", "Root")));
-    assert_eq!(app.visible(), vec![0]);
+    assert_eq!(*app.visible_shared(), vec![0]);
 }
 
 #[test]
@@ -496,7 +496,7 @@ fn clear_palette_command_removes_the_kind_filter() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert!(app.kind_filter.is_none());
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
 }
 
 #[test]
@@ -798,13 +798,13 @@ fn health_palette_command_filters_unhealthy_resources_with_ancestors() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert_eq!(app.health_filter, HealthFilter::Unhealthy);
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
     assert_eq!(app.selection.visible_index, 0);
     assert!(app.modal.is_none());
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     assert_eq!(app.health_filter, HealthFilter::All);
-    assert_eq!(app.visible(), vec![0, 1, 2]);
+    assert_eq!(*app.visible_shared(), vec![0, 1, 2]);
 }
 
 #[test]
@@ -863,9 +863,9 @@ fn exclude_palette_puts_usage_first_and_applies_hidden_kinds() {
         kind: "Usage".into(),
     }));
     assert_eq!(
-        app.visible()
-            .into_iter()
-            .map(|index| app.snapshot.as_ref().unwrap().nodes[index]
+        app.visible_shared()
+            .iter()
+            .map(|&index| app.snapshot.as_ref().unwrap().nodes[index]
                 .identity
                 .kind
                 .as_str())
@@ -879,7 +879,7 @@ fn exclude_palette_puts_usage_first_and_applies_hidden_kinds() {
             )
             .unwrap(),
         );
-    assert_eq!(app.visible(), vec![0, 2]);
+    assert_eq!(*app.visible_shared(), vec![0, 2]);
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     assert_eq!(app.excluded_kinds.len(), 1);
 
@@ -908,18 +908,18 @@ fn exclude_picker_can_cancel_show_all_hide_all_and_show_only() {
     app.open_exclude_picker();
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
-    assert!(app.visible().is_empty());
+    assert!(app.visible_shared().is_empty());
 
     app.open_exclude_picker();
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
 
     app.open_exclude_picker();
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
-    assert_eq!(app.visible(), vec![0]);
+    assert_eq!(*app.visible_shared(), vec![0]);
 }
 
 #[test]
@@ -1153,7 +1153,7 @@ fn escape_cancels_the_palette_then_clears_an_active_kind_filter() {
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     assert!(app.kind_filter.is_none());
-    assert_eq!(app.visible().len(), 2);
+    assert_eq!(app.visible_shared().len(), 2);
 }
 
 #[test]
@@ -1385,8 +1385,12 @@ fn extra_columns_union_is_aligned_before_status_in_both_table_modes() {
         assert_eq!(horizontal_slice(&rendered.lines[1], child, 10).trim(), "-");
         assert_eq!(horizontal_slice(&rendered.lines[2], flag, 4).trim(), "-");
         assert_eq!(header.contains("LAST"), !short);
-        let plan =
-            tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
+        let plan = tree_table_plan(
+            &app,
+            resource_tree_area(area).unwrap(),
+            &app.visible_shared(),
+        )
+        .unwrap();
         assert_eq!(
             plan.header().width() + 1,
             plan.horizontal_layout(0).pinned_width
@@ -1462,8 +1466,12 @@ fn extra_columns_work_in_package_tables() {
         assert!(header.contains("INSTALLED"));
         assert!(header.contains("HEALTHY"));
         assert!(!header.contains("GROUP"));
-        let plan =
-            tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
+        let plan = tree_table_plan(
+            &app,
+            resource_tree_area(area).unwrap(),
+            &app.visible_shared(),
+        )
+        .unwrap();
         assert_eq!(
             plan.header().width() + 1,
             plan.horizontal_layout(0).pinned_width
@@ -1593,7 +1601,7 @@ fn logical_name_is_the_first_scrollable_column_in_all_table_modes() {
                     horizontal_slice(&rendered.lines[2], start, logical_name.width()),
                     logical_name
                 );
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 assert_eq!(
                     plan.header().width() + 1,
                     rendered.horizontal.pinned_width
@@ -1700,7 +1708,7 @@ fn logical_name_toggle_removes_the_column_and_preserves_pinned_regions() {
                     before.horizontal.content_width - hidden.horizontal.content_width,
                     "logical-resource".len() + 2
                 );
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 assert_eq!(
                     plan.header().width() + 1,
                     hidden.horizontal.pinned_width
@@ -1816,7 +1824,7 @@ fn logical_name_annotation_is_sanitized_and_missing_or_non_string_values_use_das
 fn narrow_table_keeps_timestamp_columns_scrollable_unless_short_is_enabled() {
     let app = app();
     let snapshot = app.snapshot.as_ref().unwrap();
-    let visible = app.visible();
+    let visible = app.visible_shared();
     let plan = TablePlan::new(snapshot, &visible, 50, false, false, false);
     let header = plan.header();
     assert!(header.contains("SYNCED LAST"));
@@ -1892,7 +1900,7 @@ fn external_name_column_order_and_toggle_preserve_pinned_regions_in_all_modes() 
                 app.apply_snapshot(Snapshot::parse(&bytes).unwrap());
                 assert_eq!(rendered_tree(&app, tree).unwrap().lines, shown.lines);
                 app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 let header = plan.header();
                 assert!(
                     header.find("LOGICAL NAME").unwrap() < header.find("EXTERNAL NAME").unwrap()
@@ -2124,7 +2132,7 @@ fn filter_applies_as_you_type_and_escape_restores_the_previous_filter() {
     assert_eq!(app.mode, InputMode::Filter);
     let names = |app: &App| {
         let snapshot = app.snapshot.as_ref().unwrap();
-        app.visible()
+        app.visible_shared()
             .iter()
             .map(|index| snapshot.nodes[*index].identity.name.clone())
             .collect::<Vec<_>>()
@@ -2491,7 +2499,7 @@ fn long_unicode_statuses_are_capped_without_changing_model_text() {
     let middle_width = tree_table_plan(
         &app,
         resource_tree_area(Rect::new(0, 0, 100, 16)).unwrap(),
-        &app.visible(),
+        &app.visible_shared(),
     )
     .unwrap()
     .horizontal_layout(0)
@@ -2555,7 +2563,7 @@ fn status_rendering_is_single_line_and_zero_middle_space_cannot_scroll() {
     assert!(!rendered.lines[1].contains(['\n', '\t']));
     let plan = TablePlan::new(
         app.snapshot.as_ref().unwrap(),
-        &app.visible(),
+        &app.visible_shared(),
         4,
         false,
         false,
@@ -2699,7 +2707,7 @@ fn tree_pins_and_caps_long_unicode_objects_for_both_schemas() {
         );
         assert!(after.lines[0].trim_end().ends_with("STATUS"));
         assert!(after.lines.iter().all(|line| line.width() <= 48));
-        let plan = tree_table_plan(&app, area, &app.visible()).unwrap();
+        let plan = tree_table_plan(&app, area, &app.visible_shared()).unwrap();
         assert_eq!(
             plan.header().width() + 1
                 - after.horizontal.pinned_width
@@ -3077,7 +3085,7 @@ fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
             app.config.ui.short = short;
             for width in 32..160 {
                 let tree = resource_tree_area(Rect::new(0, 0, width, 16)).unwrap();
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 let layout = plan.horizontal_layout(usize::MAX);
                 assert!(layout.pinned_width - 2 <= usize::from(width - 2) * 3 / 5);
                 let header = plan.header();
@@ -3424,7 +3432,7 @@ fn tree_scroll_hint_is_right_aligned_and_only_shown_for_overflow() {
             })
             .collect::<String>();
         let tree = resource_tree_area(Rect::new(0, 0, width, 20)).unwrap();
-        let horizontal = tree_table_plan(&app, tree, &app.visible())
+        let horizontal = tree_table_plan(&app, tree, &app.visible_shared())
             .unwrap()
             .horizontal_layout(0);
         if horizontal.max_offset() > 0 {
@@ -6699,7 +6707,7 @@ fn draw_timing_on_large_snapshot() {
             "{label}: {:?}/draw avg, first {:?}, visible {}, h-scroll {}",
             total / 20,
             durations[0],
-            app.visible().len(),
+            app.visible_shared().len(),
             app.resource_horizontal_scroll
         );
     }

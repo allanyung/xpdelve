@@ -1045,7 +1045,7 @@ impl App {
                 Some(nav::Nav::Page(step)) => self.move_selection(step * page_size.cast_signed()),
                 Some(nav::Nav::Top) => self.set_selection(0),
                 Some(nav::Nav::Bottom) => {
-                    self.set_selection(self.visible().len().saturating_sub(1));
+                    self.set_selection(self.visible_shared().len().saturating_sub(1));
                 }
                 None => {}
             },

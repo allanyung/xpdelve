@@ -155,10 +155,6 @@ impl App {
         });
     }
 
-    pub(super) fn visible(&self) -> Vec<usize> {
-        self.visible_shared().as_ref().clone()
-    }
-
     pub(super) fn palette_entries(&self) -> Vec<PaletteEntry> {
         let mut seen = HashSet::new();
         let mut kinds = self
@@ -397,7 +393,7 @@ impl App {
     }
 
     pub(super) fn selected_node(&self) -> Option<&ProjectedNode> {
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let index = *visible.get(self.selection.visible_index)?;
         self.snapshot.as_ref()?.nodes.get(index)
     }
@@ -414,7 +410,7 @@ impl App {
     }
 
     pub(super) fn toggle_mark_at(&mut self, position: usize) {
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(node) = visible
             .get(position)
             .and_then(|index| self.snapshot.as_ref()?.nodes.get(*index))
@@ -778,7 +774,7 @@ impl App {
                     .is_some_and(|index| snapshot.nodes[*index].uid == *uid)
             });
         }
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let visible_index = selection_chain
             .iter()
             .find_map(|identity| snapshot.by_identity.get(identity))
@@ -851,7 +847,7 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return Vec::new();
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(mut index) = visible.get(self.selection.visible_index).copied() else {
             return Vec::new();
         };
@@ -872,7 +868,7 @@ impl App {
             self.selection = Selection::empty();
             return;
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         if visible.is_empty() {
             self.selection = Selection::empty();
             return;
@@ -890,7 +886,7 @@ impl App {
             self.selection = Selection::empty();
             return;
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let visible_index = index.min(visible.len().saturating_sub(1));
         self.selection = Selection::new(visible_index, &snapshot.nodes, &visible);
     }
@@ -911,7 +907,7 @@ impl App {
     }
 
     pub(super) fn expand_or_child(&mut self) {
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(snapshot) = &self.snapshot else {
             return;
         };
@@ -937,7 +933,7 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(index) = visible.get(self.selection.visible_index).copied() else {
             return;
         };
@@ -957,7 +953,7 @@ impl App {
         if self.find.is_empty() {
             return;
         }
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(snapshot) = &self.snapshot else {
             return;
         };
@@ -1019,7 +1015,7 @@ impl App {
 
     /// Keeps the selected resource when it survives the filter, else selects the first row.
     fn reselect_after_filter(&mut self) {
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let position = self.snapshot.as_ref().and_then(|snapshot| {
             let identity = self.selection.identity.as_ref()?;
             visible
