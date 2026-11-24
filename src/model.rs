@@ -122,19 +122,22 @@ pub struct ProjectedNode {
     pub version: Option<String>,
     pub state: Option<String>,
     pub object: Arc<Value>,
+    search_text: String,
+    status_offset: usize,
 }
 
 impl ProjectedNode {
     pub fn matches_text(&self, query: &str) -> bool {
-        format!(
-            "{} {} {}",
-            self.identity,
-            self.status,
-            self.status_details.as_deref().unwrap_or_default()
-        )
-        .to_lowercase()
-        .contains(&query.to_lowercase())
+        self.search_text.contains(&query.to_lowercase())
     }
+}
+
+fn search_text(identity: &Identity, status: &str, status_details: Option<&str>) -> (String, usize) {
+    let mut text = identity.to_string().to_lowercase();
+    text.push(' ');
+    let status_offset = text.len();
+    text.push_str(&format!("{status} {}", status_details.unwrap_or_default()).to_lowercase());
+    (text, status_offset)
 }
 
 #[derive(Clone, Debug)]
@@ -213,29 +216,32 @@ impl Snapshot {
         kind: Option<&ResourceKind>,
         health: HealthFilter,
     ) -> Vec<usize> {
-        let query = filter.map(str::trim).filter(|value| !value.is_empty());
+        let query = filter
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
+        let query = query.as_deref();
         let health_filtering = health != HealthFilter::All;
-        let direct_matches: HashSet<usize> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                let text_matches = query.is_none_or(|query| matches_query(node, query));
-                let kind_matches = kind.is_none_or(|kind| &node.resource_kind == kind);
-                (text_matches && kind_matches && health.matches(node.health)).then_some(index)
-            })
-            .collect();
-        let mut retained = if query.is_some() || health_filtering {
-            direct_matches.clone()
-        } else {
-            HashSet::new()
-        };
-        if query.is_some() || health_filtering {
-            for index in &direct_matches {
-                let mut parent = self.nodes[*index].parent;
-                while let Some(parent_index) = parent {
-                    retained.insert(parent_index);
-                    parent = self.nodes[parent_index].parent;
+        let filtering = query.is_some() || health_filtering;
+        let kind_matches =
+            |node: &ProjectedNode| kind.is_none_or(|kind| &node.resource_kind == kind);
+
+        let mut retained = Vec::new();
+        if filtering {
+            retained = vec![false; self.nodes.len()];
+            for (index, node) in self.nodes.iter().enumerate() {
+                let direct = query.is_none_or(|query| matches_lowered_query(node, query))
+                    && kind_matches(node)
+                    && health.matches(node.health);
+                if !direct {
+                    continue;
+                }
+                let mut current = Some(index);
+                while let Some(current_index) = current {
+                    if std::mem::replace(&mut retained[current_index], true) {
+                        break;
+                    }
+                    current = self.nodes[current_index].parent;
                 }
             }
         }
@@ -252,17 +258,16 @@ impl Snapshot {
                 hidden_depth = Some(node.depth);
                 continue;
             }
-            if query.is_none() && !health_filtering && collapsed.contains(&node.identity) {
+            if !filtering && collapsed.contains(&node.identity) {
                 hidden_depth = Some(node.depth);
             }
             if health_filtering {
-                if retained.contains(&index) {
+                if retained[index] {
                     visible.push(index);
                 }
                 continue;
             }
-            let matches_kind = kind.is_none_or(|kind| &node.resource_kind == kind);
-            if matches_kind && (query.is_none() || retained.contains(&index)) {
+            if kind_matches(node) && (query.is_none() || retained[index]) {
                 visible.push(index);
             }
         }
@@ -352,6 +357,7 @@ fn project_node(
     let child_count = node.children.len();
     let index = projected.len();
     let resource_kind = identity.resource_kind();
+    let (search_text, status_offset) = search_text(&identity, &status, status_details.as_deref());
     projected.push(ProjectedNode {
         identity,
         resource_kind,
@@ -373,6 +379,8 @@ fn project_node(
         version,
         state: pointer_string(&node.object, "/spec/desiredState"),
         object: Arc::new(node.object),
+        search_text,
+        status_offset,
     });
 
     let last = child_count.saturating_sub(1);
@@ -820,9 +828,13 @@ fn access_denied(error: &Value) -> Option<AccessDenied> {
     }
 }
 
+#[cfg(test)]
 fn matches_query(node: &ProjectedNode, query: &str) -> bool {
-    let query = query.to_lowercase();
-    let (field, needle) = query.split_once(':').unwrap_or(("", query.as_str()));
+    matches_lowered_query(node, &query.to_lowercase())
+}
+
+fn matches_lowered_query(node: &ProjectedNode, query: &str) -> bool {
+    let (field, needle) = query.split_once(':').unwrap_or(("", query));
     match field {
         "kind" => node.identity.kind.to_lowercase().contains(needle),
         "group" => node.identity.group.to_lowercase().contains(needle),
@@ -833,16 +845,10 @@ fn matches_query(node: &ProjectedNode, query: &str) -> bool {
             .unwrap_or_default()
             .to_lowercase()
             .contains(needle),
-        "status" => format!(
-            "{} {}",
-            node.status,
-            node.status_details.as_deref().unwrap_or_default()
-        )
-        .to_lowercase()
-        .contains(needle),
+        "status" => node.search_text[node.status_offset..].contains(needle),
         "ready" => bool_text(node.ready).contains(needle),
         "synced" => bool_text(node.synced).contains(needle),
-        _ => node.matches_text(&query),
+        _ => node.search_text.contains(query),
     }
 }
 
@@ -874,6 +880,70 @@ mod tests {
 
     fn healthy_object(kind: &str, name: &str) -> Value {
         condition_object(kind, name, "True", None)
+    }
+
+    fn synthetic_node(counter: &mut usize, depth: usize, max_depth: usize, fanout: usize) -> Value {
+        let id = *counter;
+        *counter += 1;
+        let name = if id.is_multiple_of(100) {
+            format!("hit-{id}")
+        } else {
+            format!("res-{id}")
+        };
+        let ready = if id.is_multiple_of(2) {
+            "False"
+        } else {
+            "True"
+        };
+        let children: Vec<Value> = if depth < max_depth {
+            (0..fanout)
+                .map(|_| synthetic_node(counter, depth + 1, max_depth, fanout))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        serde_json::json!({
+            "object": {
+                "apiVersion": format!("example.io/v{}", id % 3 + 1),
+                "kind": format!("Kind{}", id % 12),
+                "metadata": {"name": name, "namespace": format!("ns-{}", id % 50)},
+                "status": {"conditions": [
+                    {"type": "Ready", "status": ready, "reason": "Waiting"},
+                    {"type": "Synced", "status": "True"}
+                ]}
+            },
+            "children": children,
+        })
+    }
+
+    #[test]
+    #[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
+    fn visible_indices_timing_on_large_snapshot() {
+        let mut counter = 0;
+        let root = synthetic_node(&mut counter, 0, 5, 7);
+        let snapshot =
+            Snapshot::project(serde_json::from_value::<TraceNode>(root).unwrap()).unwrap();
+        println!("nodes: {}", snapshot.nodes.len());
+        let collapsed = HashSet::new();
+        let excluded = HashSet::new();
+        for (label, filter) in [
+            ("no filter", None),
+            ("~1% text", Some("hit-")),
+            ("~50% text", Some("unready")),
+        ] {
+            let started = std::time::Instant::now();
+            let mut total = 0;
+            for _ in 0..20 {
+                total += snapshot
+                    .visible_indices(&collapsed, &excluded, filter, None, HealthFilter::All)
+                    .len();
+            }
+            println!(
+                "{label}: {:?}/call (visible {})",
+                started.elapsed() / 20,
+                total / 20
+            );
+        }
     }
 
     #[test]
