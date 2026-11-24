@@ -829,11 +829,6 @@ fn access_denied(error: &Value) -> Option<AccessDenied> {
     }
 }
 
-#[cfg(test)]
-fn matches_query(node: &ProjectedNode, query: &str) -> bool {
-    matches_lowered_query(node, &query.to_lowercase())
-}
-
 fn matches_lowered_query(node: &ProjectedNode, query: &str) -> bool {
     let (field, needle) = query.split_once(':').unwrap_or(("", query));
     match field {
@@ -864,6 +859,10 @@ fn bool_text(value: Option<bool>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn matches_query(node: &ProjectedNode, query: &str) -> bool {
+        matches_lowered_query(node, &query.to_lowercase())
+    }
 
     const TRACE: &str = r#"{
       "object": {"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
