@@ -352,13 +352,11 @@ impl App {
             }
             Err(error) => {
                 self.status = "Could not reload configuration".into();
-                self.modal = Some(Modal::Text {
-                    title: "Configuration reload failed".into(),
-                    content: text::sanitize(&format!("{error:#}")).into(),
-                    kind: ContentKind::SmallError,
-                    state: TextModalState::new(),
-                    selection: None,
-                });
+                self.modal = Some(Modal::text(
+                    "Configuration reload failed",
+                    text::sanitize(&format!("{error:#}")),
+                    ContentKind::SmallError,
+                ));
             }
         }
     }
@@ -612,13 +610,7 @@ impl App {
                     })
             },
         );
-        self.modal = Some(Modal::Text {
-            title,
-            content: content.into(),
-            kind: ContentKind::Yaml,
-            state: TextModalState::new(),
-            selection: None,
-        });
+        self.modal = Some(Modal::text(title, content, ContentKind::Yaml));
     }
 
     pub(super) fn show_resource_details(&mut self) {
@@ -628,24 +620,15 @@ impl App {
         let Some(content) = &node.status_details else {
             return;
         };
-        self.modal = Some(Modal::Text {
-            title: format!("{} — details", node.identity),
-            content: content.clone().into(),
-            kind: ContentKind::Error,
-            state: TextModalState::new(),
-            selection: None,
-        });
+        self.modal = Some(Modal::error(
+            format!("{} — details", node.identity),
+            content.clone(),
+        ));
     }
 
     pub(super) fn show_error(&mut self, title: String, content: &str) {
         self.status.clone_from(&title);
-        self.modal = Some(Modal::Text {
-            title,
-            content: text::sanitize(content).into(),
-            kind: ContentKind::Error,
-            state: TextModalState::new(),
-            selection: None,
-        });
+        self.modal = Some(Modal::error(title, text::sanitize(content)));
     }
 
     pub(super) fn finish_action(
@@ -667,13 +650,7 @@ impl App {
                     label if label.starts_with("Events:") => ContentKind::Events,
                     _ => ContentKind::Describe,
                 };
-                self.modal = Some(Modal::Text {
-                    title: view_title(label),
-                    content: content.into(),
-                    kind,
-                    state: TextModalState::new(),
-                    selection: None,
-                });
+                self.modal = Some(Modal::text(view_title(label), content, kind));
                 true
             }
             Ok(None) => {
@@ -689,14 +666,10 @@ impl App {
                         self.revisions.clear_pending(&identity);
                     }
                     self.status = format!("{label} failed");
-                    self.modal = Some(Modal::Text {
-                        title: format!("{label} failed"),
-                        content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n"))
-                            .into(),
-                        kind: ContentKind::Error,
-                        state: TextModalState::new(),
-                        selection: None,
-                    });
+                    self.modal = Some(Modal::error(
+                        format!("{label} failed"),
+                        text::sanitize(&format!("Resource: {identity}\n\n{error}\n")),
+                    ));
                 } else if ["Describe:", "YAML:", "Events:"]
                     .iter()
                     .any(|prefix| label.starts_with(prefix))
@@ -741,13 +714,10 @@ impl App {
             }
             Err(error) => {
                 self.status = format!("{label} failed");
-                self.modal = Some(Modal::Text {
-                    title: format!("{label} failed"),
-                    content: text::sanitize(&format!("{error}\n")).into(),
-                    kind: ContentKind::Error,
-                    state: TextModalState::new(),
-                    selection: None,
-                });
+                self.modal = Some(Modal::error(
+                    format!("{label} failed"),
+                    text::sanitize(&format!("{error}\n")),
+                ));
                 false
             }
         }

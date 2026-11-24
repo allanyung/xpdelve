@@ -453,6 +453,26 @@ enum Modal {
     },
 }
 
+impl Modal {
+    fn text(
+        title: impl Into<String>,
+        content: impl Into<content::TextContent>,
+        kind: ContentKind,
+    ) -> Self {
+        Self::Text {
+            title: title.into(),
+            content: content.into(),
+            kind,
+            state: TextModalState::new(),
+            selection: None,
+        }
+    }
+
+    fn error(title: impl Into<String>, content: impl Into<content::TextContent>) -> Self {
+        Self::text(title, content, ContentKind::Error)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct FinalizerTarget {
     target: Target,
