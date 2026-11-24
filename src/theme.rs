@@ -2,7 +2,6 @@
 // Copyright 2026 Nikola Milojević. Licensed under Apache-2.0.
 // Translated and modified for xpdelve in 2026.
 // See NOTICE for full provenance.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
