@@ -1,3 +1,4 @@
+use super::cache::FrameCache;
 use super::render::{fuzzy_score, resource_kind_label};
 use super::*;
 
@@ -136,6 +137,7 @@ impl App {
             deferred_snapshot: None,
             last_tree_click: None,
             latest_release: None,
+            frame_cache: FrameCache::default(),
         }
     }
 
@@ -154,23 +156,18 @@ impl App {
     }
 
     pub(super) fn visible(&self) -> Vec<usize> {
-        self.snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
-            snapshot.visible_indices(
-                &self.collapsed,
-                &self.excluded_kinds,
-                (!self.filter.is_empty()).then_some(self.filter.as_str()),
-                self.kind_filter.as_ref(),
-                self.health_filter,
-            )
-        })
+        self.visible_shared().as_ref().clone()
     }
 
     pub(super) fn palette_entries(&self) -> Vec<PaletteEntry> {
+        let mut seen = HashSet::new();
         let mut kinds = self
             .snapshot
             .iter()
             .flat_map(|snapshot| snapshot.nodes.iter())
-            .map(|node| node.resource_kind.clone())
+            .map(|node| &node.resource_kind)
+            .filter(|kind| seen.insert(*kind))
+            .cloned()
             .collect::<Vec<_>>();
         kinds.sort_by(|left, right| {
             left.kind
@@ -442,18 +439,19 @@ impl App {
         }
     }
 
-    pub(super) fn hidden_marked_count(&self) -> usize {
+    /// `visible` is the sorted visible index list from `visible_shared`.
+    pub(super) fn hidden_marked_count(&self, visible: &[usize]) -> usize {
         let Some(snapshot) = &self.snapshot else {
             return 0;
         };
-        let visible: HashSet<_> = self
-            .visible()
-            .into_iter()
-            .map(|index| &snapshot.nodes[index].identity)
-            .collect();
         self.active_marks()
             .keys()
-            .filter(|identity| !visible.contains(identity))
+            .filter(|identity| {
+                !snapshot
+                    .by_identity
+                    .get(*identity)
+                    .is_some_and(|index| visible.binary_search(index).is_ok())
+            })
             .count()
     }
 
@@ -902,7 +900,10 @@ impl App {
     }
 
     pub(super) fn resource_view_start(&self, viewport: usize) -> usize {
-        let len = self.visible().len();
+        self.view_start(self.visible_shared().len(), viewport)
+    }
+
+    pub(super) fn view_start(&self, len: usize, viewport: usize) -> usize {
         let max = len.saturating_sub(viewport);
         Scroller::with_offset(self.resource_scroll, max)
             .ensure_visible(self.selection.visible_index, viewport)

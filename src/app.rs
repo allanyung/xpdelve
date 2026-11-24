@@ -581,8 +581,10 @@ struct App {
     deferred_snapshot: Option<Snapshot>,
     last_tree_click: Option<TreeClick>,
     latest_release: Option<crate::update::Release>,
+    frame_cache: cache::FrameCache,
 }
 
+mod cache;
 mod content;
 mod events;
 mod input;

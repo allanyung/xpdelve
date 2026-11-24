@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
@@ -27,6 +28,25 @@ impl RevisionIndex {
     }
 }
 
+static NEXT_STAMP: AtomicU64 = AtomicU64::new(1);
+
+/// Identifies one state of a `RevisionDiscovery`. Every new value and every mutation draws a
+/// fresh stamp, so equal stamps mean equal contents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Stamp(u64);
+
+impl Stamp {
+    fn next() -> Self {
+        Self(NEXT_STAMP.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for Stamp {
+    fn default() -> Self {
+        Self::next()
+    }
+}
+
 /// The session's CompositionRevision inventory. The last successful result is kept while a
 /// refresh runs or after one fails, so re-entering the upgrade view is instant.
 #[derive(Clone, Debug, Default)]
@@ -38,9 +58,14 @@ pub(super) struct RevisionDiscovery {
     /// Resources being upgraded, with the revision they were pointed at. They show as
     /// upgrading from the moment the action starts until a trace reflects the change.
     pending: HashMap<Identity, String>,
+    stamp: Stamp,
 }
 
 impl RevisionDiscovery {
+    pub(super) fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
     #[cfg(test)]
     pub(super) fn loaded(index: RevisionIndex) -> Self {
         Self {
@@ -67,10 +92,13 @@ impl RevisionDiscovery {
 
     pub(super) fn mark_pending(&mut self, identity: Identity, revision: String) {
         self.pending.insert(identity, revision);
+        self.stamp = Stamp::next();
     }
 
     pub(super) fn clear_pending(&mut self, identity: &Identity) {
-        self.pending.remove(identity);
+        if self.pending.remove(identity).is_some() {
+            self.stamp = Stamp::next();
+        }
     }
 
     #[cfg(test)]
@@ -96,6 +124,7 @@ impl RevisionDiscovery {
         self.refreshing = true;
         self.error = None;
         self.generation += 1;
+        self.stamp = Stamp::next();
         self.generation
     }
 
@@ -109,6 +138,7 @@ impl RevisionDiscovery {
             return false;
         }
         self.refreshing = false;
+        self.stamp = Stamp::next();
         match result {
             Ok(revisions) => {
                 self.index = Some(Arc::new(RevisionIndex::new(revisions)));
@@ -195,9 +225,9 @@ impl UpgradeInfo {
 
 /// `spec.<field>` or, for Crossplane v2 XRs, `spec.crossplane.<field>`.
 fn spec_field<'a>(object: &'a Value, field: &str) -> Option<&'a Value> {
-    object
-        .pointer(&format!("/spec/{field}"))
-        .or_else(|| object.pointer(&format!("/spec/crossplane/{field}")))
+    let spec = object.get("spec")?;
+    spec.get(field)
+        .or_else(|| spec.get("crossplane")?.get(field))
 }
 
 /// Pure projection of one resource against the discovered revisions. The only upgrade
@@ -278,6 +308,22 @@ fn projected_upgrade_info(node: &ProjectedNode, discovery: &RevisionDiscovery) -
     info
 }
 
+/// Upgrade projection of every snapshot node, indexed like `Snapshot::nodes`.
+pub(super) struct UpgradeInfos {
+    pub(super) by_node: Vec<UpgradeInfo>,
+    pub(super) available: usize,
+}
+
+pub(super) fn upgrade_infos(snapshot: &Snapshot, discovery: &RevisionDiscovery) -> UpgradeInfos {
+    let by_node: Vec<UpgradeInfo> = snapshot
+        .nodes
+        .iter()
+        .map(|node| upgrade_info(node, discovery))
+        .collect();
+    let available = by_node.iter().filter(|info| info.plan.is_some()).count();
+    UpgradeInfos { by_node, available }
+}
+
 impl App {
     pub(super) fn active_marks(&self) -> &HashMap<Identity, Option<String>> {
         if self.upgrade_view {
@@ -328,11 +374,7 @@ impl App {
     }
 
     pub(super) fn upgrade_available_count(&self) -> usize {
-        self.snapshot
-            .iter()
-            .flat_map(|snapshot| snapshot.nodes.iter())
-            .filter(|node| self.upgrade_info_for(node).plan.is_some())
-            .count()
+        self.upgrade_infos().map_or(0, |infos| infos.available)
     }
 
     pub(super) fn enter_upgrade_view(&mut self) -> UiAction {
@@ -392,7 +434,7 @@ impl App {
             return;
         };
         let mut added = 0;
-        for index in self.visible() {
+        for index in self.visible_shared().iter().copied() {
             let node = &snapshot.nodes[index];
             if self.upgrade_info_for(node).plan.is_some()
                 && self

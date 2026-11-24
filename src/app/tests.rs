@@ -6537,3 +6537,135 @@ fn header_drops_the_update_notice_before_squeezing_the_resource() {
     assert!(header.contains("Root/root"));
     assert!(header.contains("xpdelve v"));
 }
+
+fn synthetic_trace(
+    counter: &mut usize,
+    depth: usize,
+    max_depth: usize,
+    fanout: usize,
+) -> serde_json::Value {
+    let id = *counter;
+    *counter += 1;
+    let kind = id % 12;
+    let children: Vec<serde_json::Value> = if depth < max_depth {
+        (0..fanout)
+            .map(|_| synthetic_trace(counter, depth + 1, max_depth, fanout))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    serde_json::json!({
+        "object": {
+            "apiVersion": "example.io/v1",
+            "kind": format!("Kind{kind}"),
+            "metadata": {
+                "name": if id.is_multiple_of(100) { format!("hit-{id}") } else { format!("res-{id}") },
+                "namespace": format!("ns-{}", id % 50),
+                "uid": format!("uid-{id}"),
+                "annotations": {"crossplane.io/external-name": format!("external-{id}")},
+            },
+            "spec": {
+                "compositionRef": {"name": format!("comp-{kind}")},
+                "compositionUpdatePolicy": "Manual",
+                "compositionRevisionRef": {"name": format!("comp-{kind}-1")},
+            },
+            "status": {"conditions": [
+                {"type": "Ready", "status": if id.is_multiple_of(2) { "False" } else { "True" }, "reason": "Waiting"},
+                {"type": "Synced", "status": "True"}
+            ]}
+        },
+        "children": children,
+    })
+}
+
+#[test]
+#[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
+fn draw_timing_on_large_snapshot() {
+    fn time_draws(label: &str, app: &mut App, terminal: &mut Terminal<TestBackend>) {
+        let mut durations = Vec::new();
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            terminal
+                .draw(|frame| {
+                    app.clamp_tree_horizontal_scroll(frame.area());
+                    render(frame, app);
+                })
+                .unwrap();
+            durations.push(started.elapsed());
+        }
+        let total: std::time::Duration = durations.iter().sum();
+        println!(
+            "{label}: {:?}/draw avg, first {:?}, visible {}, h-scroll {}",
+            total / 20,
+            durations[0],
+            app.visible().len(),
+            app.resource_horizontal_scroll
+        );
+    }
+
+    let mut counter = 0;
+    let root = synthetic_trace(&mut counter, 0, 5, 7);
+    let mut app = app();
+    app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&root).unwrap()).unwrap());
+    println!("nodes: {}", app.snapshot.as_ref().unwrap().nodes.len());
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+
+    time_draws("no filter", &mut app, &mut terminal);
+
+    app.filter = "res-1".into();
+    app.set_selection(0);
+    time_draws("text filter", &mut app, &mut terminal);
+    app.filter.clear();
+    app.set_selection(0);
+
+    app.show_logical_name = true;
+    app.show_external_name = true;
+    app.show_management_policies = true;
+    app.config.extra_columns = (0..12)
+        .map(|kind| {
+            let columns = (0..4)
+                .map(|column| crate::config::ExtraColumnConfig {
+                    name: format!("EXTRA{column}"),
+                    path: "/metadata/annotations/crossplane.io~1external-name".into(),
+                    width: (column % 2 == 0).then_some(40),
+                })
+                .collect();
+            (format!("Kind{kind}.example.io"), columns)
+        })
+        .collect();
+    app.resource_horizontal_scroll = 60;
+    time_draws("horizontal scroll", &mut app, &mut terminal);
+    app.config.extra_columns.clear();
+    app.show_logical_name = false;
+    app.show_external_name = false;
+    app.show_management_policies = false;
+    app.resource_horizontal_scroll = 0;
+
+    app.upgrade_view = true;
+    app.revisions = RevisionDiscovery::loaded(upgrade::RevisionIndex::new(
+        (0..12)
+            .flat_map(|kind| {
+                let name = format!("Kind{kind}");
+                let composition = format!("comp-{kind}");
+                [
+                    revision(&format!("comp-{kind}-1"), &composition, 1, &name),
+                    revision(&format!("comp-{kind}-2"), &composition, 2, &name),
+                ]
+            })
+            .collect(),
+    ));
+    time_draws("upgrade view", &mut app, &mut terminal);
+}
+
+#[test]
+fn upgrade_projection_cache_follows_revision_and_snapshot_changes() {
+    let mut app = app_for_upgrades();
+    assert_eq!(app.upgrade_available_count(), 1);
+    let identity = app.snapshot.as_ref().unwrap().nodes[0].identity.clone();
+    app.revisions.mark_pending(identity.clone(), "db-3".into());
+    assert_eq!(app.upgrade_available_count(), 0);
+    app.revisions.clear_pending(&identity);
+    assert_eq!(app.upgrade_available_count(), 1);
+    app.revisions = RevisionDiscovery::loaded(upgrade::RevisionIndex::default());
+    assert_eq!(app.upgrade_available_count(), 0);
+}

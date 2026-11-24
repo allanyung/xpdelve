@@ -31,7 +31,7 @@ impl App {
         let offset = if self.resource_horizontal_scroll == 0 {
             0
         } else {
-            tree_table_plan(self, tree_area, &self.visible()).map_or(0, |plan| {
+            tree_table_plan(self, tree_area, &self.visible_shared()).map_or(0, |plan| {
                 plan.horizontal_layout(self.resource_horizontal_scroll)
                     .offset
             })
