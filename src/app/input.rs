@@ -124,14 +124,10 @@ impl App {
                     .is_some_and(|drag| drag.document == content.id())
                 {
                     if let Some(active) = modal_selection
-                        && let Some(point) = selection_point_at(
-                            content,
+                        && let Some(point) = content.selection_point_at(
                             body,
-                            mouse.column,
-                            mouse.row,
-                            state.vertical_scroll,
-                            state.horizontal_scroll,
-                            state.wrapped,
+                            (mouse.column, mouse.row),
+                            state.viewport(),
                             true,
                         )
                     {
@@ -150,32 +146,20 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                *modal_selection = selection_point_at(
-                    content,
-                    body,
-                    mouse.column,
-                    mouse.row,
-                    state.vertical_scroll,
-                    state.horizontal_scroll,
-                    state.wrapped,
-                    false,
-                )
-                .map(|point| TextSelection {
-                    anchor: point,
-                    focus: point,
-                    dragged: false,
-                });
+                *modal_selection = content
+                    .selection_point_at(body, (mouse.column, mouse.row), state.viewport(), false)
+                    .map(|point| TextSelection {
+                        anchor: point,
+                        focus: point,
+                        dragged: false,
+                    });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(active) = modal_selection
-                    && let Some(point) = selection_point_at(
-                        content,
+                    && let Some(point) = content.selection_point_at(
                         body,
-                        mouse.column,
-                        mouse.row,
-                        state.vertical_scroll,
-                        state.horizontal_scroll,
-                        state.wrapped,
+                        (mouse.column, mouse.row),
+                        state.viewport(),
                         true,
                     )
                 {
@@ -199,14 +183,10 @@ impl App {
                 if !active.dragged {
                     return None;
                 }
-                if let Some(point) = selection_point_at(
-                    content,
+                if let Some(point) = content.selection_point_at(
                     body,
-                    mouse.column,
-                    mouse.row,
-                    state.vertical_scroll,
-                    state.horizontal_scroll,
-                    state.wrapped,
+                    (mouse.column, mouse.row),
+                    state.viewport(),
                     true,
                 ) {
                     active.focus = point;
@@ -261,14 +241,10 @@ impl App {
             return false;
         }
         state.vertical_scroll = next;
-        if let Some(point) = selection_point_at(
-            content,
+        if let Some(point) = content.selection_point_at(
             body,
-            drag.mouse.column,
-            drag.mouse.row,
-            state.vertical_scroll,
-            state.horizontal_scroll,
-            state.wrapped,
+            (drag.mouse.column, drag.mouse.row),
+            state.viewport(),
             true,
         ) {
             active.focus = point;
@@ -619,7 +595,7 @@ impl App {
                                 &state.query,
                                 &mut state.vertical_scroll,
                                 (false, true),
-                                body_width,
+                                body_width as u16,
                                 state.wrapped,
                             );
                         }
@@ -629,7 +605,7 @@ impl App {
                                 &state.query,
                                 &mut state.vertical_scroll,
                                 (false, false),
-                                body_width,
+                                body_width as u16,
                                 state.wrapped,
                             );
                         }
@@ -639,7 +615,7 @@ impl App {
                                 &state.query,
                                 &mut state.vertical_scroll,
                                 (true, false),
-                                body_width,
+                                body_width as u16,
                                 state.wrapped,
                             );
                         }

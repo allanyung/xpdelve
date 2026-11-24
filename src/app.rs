@@ -300,6 +300,14 @@ impl TextModalState {
             .map_or(self.query.as_str(), str::trim)
     }
 
+    fn viewport(&self) -> selection::Viewport {
+        selection::Viewport {
+            vertical: self.vertical_scroll,
+            horizontal: self.horizontal_scroll,
+            wrapped: self.wrapped,
+        }
+    }
+
     fn new(kind: ContentKind) -> Self {
         Self {
             wrapped: kind.wraps_by_default(),

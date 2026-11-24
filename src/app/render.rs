@@ -408,9 +408,11 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             body,
             &rendered.content,
             selection.text,
-            0,
-            0,
-            false,
+            Viewport {
+                vertical: 0,
+                horizontal: 0,
+                wrapped: false,
+            },
             &app.theme,
         );
     }
@@ -2056,7 +2058,7 @@ pub(super) fn render_modal(
                         content,
                         query,
                         state.vertical_scroll,
-                        usize::from(area.width.saturating_sub(2)),
+                        area.width.saturating_sub(2),
                         state.wrapped,
                     ) {
                         spans.push(Span::styled(
@@ -2088,14 +2090,11 @@ pub(super) fn render_modal(
                 theme,
             );
             if let Some(text_selection) = selection {
-                render_text_selection(
+                content.render_selection(
                     frame,
                     regions[0],
-                    content,
                     *text_selection,
-                    state.vertical_scroll,
-                    state.horizontal_scroll,
-                    state.wrapped,
+                    state.viewport(),
                     theme,
                 );
             }
@@ -2891,38 +2890,16 @@ pub(super) fn highlighted_line<'a>(
     Line::from(spans)
 }
 
-fn matching_rows(
-    content: &str,
-    expression: &regex::Regex,
-    width: usize,
-    wrapped: bool,
-) -> Vec<usize> {
-    let mut rendered_row = 0;
-    content
-        .lines()
-        .filter_map(|line| {
-            let current_row = rendered_row;
-            rendered_row += if wrapped {
-                line.width().max(1).div_ceil(width.max(1))
-            } else {
-                1
-            };
-            expression.is_match(line).then_some(current_row)
-        })
-        .collect()
-}
-
 /// `(current, total)` matching lines for the title; `current` is 0 until the
 /// view is scrolled onto a match with `n`/`N`.
 pub(super) fn modal_match_position(
-    content: &str,
+    content: &content::TextContent,
     query: &str,
     scroll: u16,
-    width: usize,
+    width: u16,
     wrapped: bool,
 ) -> Option<(usize, usize)> {
-    let expression = case_insensitive_regex(query)?;
-    let matches = matching_rows(content, &expression, width, wrapped);
+    let matches = content.match_rows(query, width, wrapped)?;
     let current = matches
         .iter()
         .position(|row| *row == usize::from(scroll))
@@ -2932,21 +2909,17 @@ pub(super) fn modal_match_position(
 
 /// `direction` is `(reverse, include_current_row)`.
 pub(super) fn move_modal_match(
-    content: &str,
+    content: &content::TextContent,
     query: &str,
     scroll: &mut u16,
     direction: (bool, bool),
-    width: usize,
+    width: u16,
     wrapped: bool,
 ) {
     let (reverse, inclusive) = direction;
-    if query.is_empty() {
-        return;
-    }
-    let Some(expression) = case_insensitive_regex(query) else {
+    let Some(matches) = content.match_rows(query, width, wrapped) else {
         return;
     };
-    let matches = matching_rows(content, &expression, width, wrapped);
     if matches.is_empty() {
         return;
     }

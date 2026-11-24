@@ -1,9 +1,12 @@
 use std::cell::{OnceCell, RefCell};
 use std::ops::{Deref, Range};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::render::styled_content_line;
-use super::selection::visual_rows;
+use super::render::{case_insensitive_regex, styled_content_line};
+use super::selection::{
+    Viewport, VisualRow, body_offset, paint_row, point_in_row, visual_rows, visual_rows_from,
+};
 use super::*;
 
 static NEXT_DOCUMENT_ID: AtomicU64 = AtomicU64::new(0);
@@ -21,7 +24,17 @@ pub(super) struct TextContent {
 #[derive(Clone, Debug, Default)]
 struct TextCache {
     layout: Option<TextLayout>,
+    alt_layout: Option<TextLayout>,
+    matches: Option<TextMatches>,
     styling: Option<TextStyling>,
+}
+
+#[derive(Clone, Debug)]
+struct TextMatches {
+    query: String,
+    width: u16,
+    wrapped: bool,
+    rows: Arc<[usize]>,
 }
 
 #[derive(Clone, Debug)]
@@ -42,13 +55,34 @@ struct TextStyling {
     lines: Vec<Option<Line<'static>>>,
 }
 
+impl TextLayout {
+    fn is_for(&self, width: u16, wrapped: bool) -> bool {
+        self.width == width && self.wrapped == wrapped
+    }
+
+    fn line_at(&self, visual_row: usize) -> Option<usize> {
+        self.starts
+            .partition_point(|start| *start <= visual_row)
+            .checked_sub(1)
+    }
+}
+
 impl TextCache {
+    // Two slots: toggling wrap flips between them instead of rebuilding.
     fn layout(&mut self, text: &str, width: u16, wrapped: bool) -> &TextLayout {
         if self
             .layout
             .as_ref()
-            .is_none_or(|layout| layout.width != width || layout.wrapped != wrapped)
+            .is_none_or(|layout| !layout.is_for(width, wrapped))
         {
+            if self
+                .alt_layout
+                .as_ref()
+                .is_some_and(|layout| layout.is_for(width, wrapped))
+            {
+                std::mem::swap(&mut self.layout, &mut self.alt_layout);
+                return self.layout.as_ref().unwrap();
+            }
             let mut starts = Vec::new();
             let mut rows = 0;
             let mut max_line_width = 0;
@@ -61,6 +95,7 @@ impl TextCache {
                     1
                 };
             }
+            self.alt_layout = self.layout.take();
             self.layout = Some(TextLayout {
                 width,
                 wrapped,
@@ -120,6 +155,121 @@ impl TextContent {
             vertical.try_into().unwrap_or(u16::MAX),
             horizontal.try_into().unwrap_or(u16::MAX),
         )
+    }
+
+    fn line_rows(&self, line: usize, width: u16, wrapped: bool) -> Vec<VisualRow> {
+        let ranges = self.line_ranges();
+        let start = ranges[line].start;
+        let end = ranges
+            .get(line + 1)
+            .map_or(self.text.len(), |next| next.start);
+        visual_rows_from(&self.text[start..end], start, width, wrapped)
+    }
+
+    /// Visual rows that start a line containing a case-insensitive match of
+    /// `query`, in the same row space as `scroll_bounds` and `render`.
+    pub(super) fn match_rows(
+        &self,
+        query: &str,
+        width: u16,
+        wrapped: bool,
+    ) -> Option<Arc<[usize]>> {
+        if query.is_empty() {
+            return None;
+        }
+        let mut cache = self.cache.borrow_mut();
+        if let Some(cached) = &cache.matches
+            && cached.query == query
+            && cached.width == width
+            && cached.wrapped == wrapped
+        {
+            return Some(Arc::clone(&cached.rows));
+        }
+        let expression = case_insensitive_regex(query)?;
+        let starts = &cache.layout(&self.text, width, wrapped).starts;
+        let rows: Arc<[usize]> = self
+            .line_ranges()
+            .iter()
+            .enumerate()
+            .filter(|(_, range)| expression.is_match(&self.text[range.start..range.end]))
+            .map(|(line, _)| starts[line])
+            .collect();
+        cache.matches = Some(TextMatches {
+            query: query.into(),
+            width,
+            wrapped,
+            rows: Arc::clone(&rows),
+        });
+        Some(rows)
+    }
+
+    pub(super) fn selection_point_at(
+        &self,
+        body: Rect,
+        (column, row): (u16, u16),
+        viewport: Viewport,
+        clamp: bool,
+    ) -> Option<SelectionPoint> {
+        let (column_offset, row_offset) = body_offset(body, column, row, clamp)?;
+        let mut cache = self.cache.borrow_mut();
+        let layout = cache.layout(&self.text, body.width, viewport.wrapped);
+        let visual_row = (usize::from(viewport.vertical) + usize::from(row_offset))
+            .min(layout.rows.saturating_sub(1));
+        let line = layout.line_at(visual_row)?;
+        let rows = self.line_rows(line, body.width, viewport.wrapped);
+        point_in_row(
+            rows.get(visual_row - layout.starts[line])?,
+            viewport.horizontal.saturating_add(column_offset),
+            clamp,
+        )
+    }
+
+    pub(super) fn render_selection(
+        &self,
+        frame: &mut ratatui::Frame<'_>,
+        body: Rect,
+        selection: TextSelection,
+        viewport: Viewport,
+        theme: &Theme,
+    ) {
+        if body.is_empty() {
+            return;
+        }
+        let range = selection.range();
+        let mut cache = self.cache.borrow_mut();
+        let layout = cache.layout(&self.text, body.width, viewport.wrapped);
+        let top = usize::from(viewport.vertical);
+        let bottom = top + usize::from(body.height);
+        let first = layout.line_at(top).unwrap_or(0);
+        let ranges = self.line_ranges();
+        for (line, &first_row) in layout.starts.iter().enumerate().skip(first) {
+            if first_row >= bottom {
+                break;
+            }
+            let source = &ranges[line];
+            if source.end <= range.start || source.start >= range.end {
+                continue;
+            }
+            let rows = self.line_rows(line, body.width, viewport.wrapped);
+            for (index, row) in rows.iter().enumerate() {
+                let visual_row = first_row + index;
+                if visual_row < top {
+                    continue;
+                }
+                if visual_row >= bottom {
+                    break;
+                }
+                paint_row(
+                    frame,
+                    body,
+                    (visual_row - top) as u16,
+                    row,
+                    &range,
+                    viewport.horizontal,
+                    theme,
+                );
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

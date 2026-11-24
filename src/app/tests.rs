@@ -4665,35 +4665,136 @@ fn wrapped_yaml_selection_uses_original_newlines_only() {
 
 #[test]
 fn modal_find_moves_between_matching_lines() {
+    let content = content::TextContent::from("one\nmatch\nthree\nmatch");
     let mut scroll = 0;
     let forward = (false, false);
-    move_modal_match(
-        "one\nmatch\nthree\nmatch",
-        "MATCH",
-        &mut scroll,
-        forward,
-        80,
-        false,
-    );
+    move_modal_match(&content, "MATCH", &mut scroll, forward, 80, false);
     assert_eq!(scroll, 1);
-    move_modal_match(
-        "one\nmatch\nthree\nmatch",
-        "MATCH",
-        &mut scroll,
-        forward,
-        80,
-        false,
-    );
+    move_modal_match(&content, "MATCH", &mut scroll, forward, 80, false);
     assert_eq!(scroll, 3);
-    move_modal_match(
-        "one\nmatch\nthree\nmatch",
-        "MATCH",
-        &mut scroll,
-        forward,
-        80,
-        false,
-    );
+    move_modal_match(&content, "MATCH", &mut scroll, forward, 80, false);
     assert_eq!(scroll, 1);
+}
+
+#[test]
+fn modal_find_rows_follow_layout_for_wide_graphemes() {
+    let source = [
+        "界".repeat(7),
+        "plain needle".into(),
+        "界界 needle 界界界界 needle".into(),
+        "x".into(),
+        "needle".into(),
+    ]
+    .join("\n");
+    let content = content::TextContent::from(source.clone());
+    for width in [1_u16, 2, 3, 5, 8, 80] {
+        for wrapped in [false, true] {
+            let rows = content.match_rows("NEEDLE", width, wrapped).unwrap();
+            let mut expected = Vec::new();
+            let mut visual_row = 0;
+            for line in source.lines() {
+                if line.contains("needle") {
+                    expected.push(visual_row);
+                }
+                visual_row += if wrapped {
+                    visual_rows(line, width, true).len().max(1)
+                } else {
+                    1
+                };
+            }
+            assert_eq!(
+                &*rows,
+                expected.as_slice(),
+                "width={width} wrapped={wrapped}"
+            );
+        }
+    }
+}
+
+#[test]
+fn modal_find_rows_invalidate_for_query_width_and_wrap() {
+    let content = content::TextContent::from("alpha beta gamma\nbeta\ngamma beta");
+    let first = content.match_rows("beta", 80, true).unwrap();
+    assert_eq!(&*first, &[0, 1, 2]);
+    assert!(Arc::ptr_eq(
+        &first,
+        &content.match_rows("beta", 80, true).unwrap()
+    ));
+    assert_eq!(&*content.match_rows("gamma", 80, true).unwrap(), &[0, 2]);
+    assert_eq!(&*content.match_rows("gamma", 6, true).unwrap(), &[0, 4]);
+    assert_eq!(&*content.match_rows("gamma", 6, false).unwrap(), &[0, 2]);
+    assert!(content.match_rows("", 80, true).is_none());
+}
+
+#[test]
+fn text_content_selection_matches_str_selection_everywhere() {
+    let source = (0..12)
+        .map(|index| {
+            format!(
+                "{index:02}: 界e\u{301} 👩\u{200d}💻 {}\r",
+                "word ".repeat(index)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let content = content::TextContent::from(source.clone());
+    let theme = app().theme;
+    for width in [5_u16, 9, 40] {
+        let body = Rect::new(1, 1, width, 4);
+        for wrapped in [false, true] {
+            let max = content.scroll_bounds(width, body.height, wrapped);
+            for vertical in 0..=max.0 {
+                for horizontal in [0, 2] {
+                    let viewport = Viewport {
+                        vertical,
+                        horizontal,
+                        wrapped,
+                    };
+                    for row in 0..=body.bottom() {
+                        for column in 0..=body.right() {
+                            for clamp in [false, true] {
+                                assert_eq!(
+                                    content.selection_point_at(
+                                        body,
+                                        (column, row),
+                                        viewport,
+                                        clamp
+                                    ),
+                                    selection_point_at(
+                                        &source, body, column, row, vertical, horizontal, wrapped,
+                                        clamp
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    let selection = TextSelection {
+                        anchor: SelectionPoint { start: 30, end: 31 },
+                        focus: SelectionPoint {
+                            start: source.len() - 20,
+                            end: source.len() - 19,
+                        },
+                        dragged: true,
+                    };
+                    let mut cached = Terminal::new(TestBackend::new(60, 8)).unwrap();
+                    let mut reference = Terminal::new(TestBackend::new(60, 8)).unwrap();
+                    cached
+                        .draw(|frame| {
+                            content.render_selection(frame, body, selection, viewport, &theme)
+                        })
+                        .unwrap();
+                    reference
+                        .draw(|frame| {
+                            render_text_selection(
+                                frame, body, &source, selection, viewport, &theme,
+                            );
+                        })
+                        .unwrap();
+                    assert_eq!(cached.backend().buffer(), reference.backend().buffer());
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -6655,6 +6756,92 @@ fn draw_timing_on_large_snapshot() {
             .collect(),
     ));
     time_draws("upgrade view", &mut app, &mut terminal);
+}
+
+#[test]
+#[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
+fn text_modal_timing_on_large_document() {
+    let source = (0..200_000)
+        .map(|index| {
+            if index % 1_000 == 0 {
+                format!("long{index}: {}", "word ".repeat(1_000))
+            } else if index % 7 == 0 {
+                format!("wide{index}: {}", "界e\u{301}👩\u{200d}💻 ".repeat(8))
+            } else {
+                format!("key{index}: value {index} match")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let area = Rect::new(0, 0, 120, 40);
+    let body = content_modal_body(area, ContentKind::Yaml);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    let draws = |label: &str, app: &App, terminal: &mut Terminal<TestBackend>| {
+        let mut durations = Vec::new();
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            terminal.draw(|frame| render(frame, app)).unwrap();
+            durations.push(started.elapsed());
+        }
+        let total: std::time::Duration = durations.iter().sum();
+        println!(
+            "{label}: {:?}/draw avg, first {:?}",
+            total / 20,
+            durations[0]
+        );
+    };
+
+    for wrapped in [true, false] {
+        let mut app = app();
+        let mut state = TextModalState::new(ContentKind::Yaml);
+        state.wrapped = wrapped;
+        state.vertical_scroll = 1_000;
+        app.modal = Some(Modal::Text {
+            title: "Content".into(),
+            content: source.clone().into(),
+            kind: ContentKind::Yaml,
+            state,
+            selection: None,
+        });
+        println!("wrapped={wrapped}");
+        draws("  plain scroll", &app, &mut terminal);
+
+        let Some(Modal::Text { state, .. }) = &mut app.modal else {
+            unreachable!()
+        };
+        state.query = "match".into();
+        draws("  find query", &app, &mut terminal);
+
+        let Some(Modal::Text { selection, .. }) = &mut app.modal else {
+            unreachable!()
+        };
+        *selection = Some(TextSelection {
+            anchor: SelectionPoint { start: 0, end: 1 },
+            focus: SelectionPoint {
+                start: source.len() - 1,
+                end: source.len(),
+            },
+            dragged: true,
+        });
+        draws("  selection spanning document", &app, &mut terminal);
+
+        let Some(Modal::Text { content, state, .. }) = &app.modal else {
+            unreachable!()
+        };
+        let started = std::time::Instant::now();
+        for step in 0..20_u16 {
+            std::hint::black_box(content.selection_point_at(
+                body,
+                (body.x + step, body.y + step % body.height),
+                state.viewport(),
+                true,
+            ));
+        }
+        println!(
+            "  drag events (selection_point_at): {:?}/event avg",
+            started.elapsed() / 20
+        );
+    }
 }
 
 #[test]
