@@ -369,6 +369,8 @@ impl PartialEq for TextContent {
     }
 }
 
+impl Eq for TextContent {}
+
 impl PartialEq<str> for TextContent {
     fn eq(&self, other: &str) -> bool {
         self.text == other

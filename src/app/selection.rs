@@ -21,6 +21,12 @@ pub(super) struct Viewport {
     pub(super) wrapped: bool,
 }
 
+pub(super) const TREE_VIEWPORT: Viewport = Viewport {
+    vertical: 0,
+    horizontal: 0,
+    wrapped: false,
+};
+
 pub(super) fn visual_rows(content: &str, width: u16, wrapped: bool) -> Vec<VisualRow> {
     visual_rows_from(content, 0, width, wrapped)
 }
@@ -204,28 +210,6 @@ pub(super) fn point_in_row(
     None
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn selection_point_at(
-    content: &str,
-    body: Rect,
-    column: u16,
-    row: u16,
-    vertical_scroll: u16,
-    horizontal_scroll: u16,
-    wrapped: bool,
-    clamp: bool,
-) -> Option<SelectionPoint> {
-    let (column_offset, row_offset) = body_offset(body, column, row, clamp)?;
-    let rows = visual_rows(content, body.width, wrapped);
-    let visual_row =
-        (usize::from(vertical_scroll) + usize::from(row_offset)).min(rows.len().saturating_sub(1));
-    point_in_row(
-        rows.get(visual_row)?,
-        horizontal_scroll.saturating_add(column_offset),
-        clamp,
-    )
-}
-
 pub(super) fn paint_row(
     frame: &mut ratatui::Frame<'_>,
     body: Rect,
@@ -254,33 +238,5 @@ pub(super) fn paint_row(
             let cell = &mut frame.buffer_mut()[(body.x + screen_column, body.y + screen_row)];
             cell.set_style(theme.text_selection(cell.style()));
         }
-    }
-}
-
-pub(super) fn render_text_selection(
-    frame: &mut ratatui::Frame<'_>,
-    body: Rect,
-    content: &str,
-    selection: TextSelection,
-    viewport: Viewport,
-    theme: &Theme,
-) {
-    let range = selection.range();
-    let rows = visual_rows(content, body.width, viewport.wrapped);
-    for (screen_row, row) in rows
-        .iter()
-        .skip(usize::from(viewport.vertical))
-        .take(usize::from(body.height))
-        .enumerate()
-    {
-        paint_row(
-            frame,
-            body,
-            screen_row as u16,
-            row,
-            &range,
-            viewport.horizontal,
-            theme,
-        );
     }
 }

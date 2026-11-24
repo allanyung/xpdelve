@@ -482,7 +482,7 @@ struct TextSelection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSelection {
     text: TextSelection,
-    content: String,
+    content: content::TextContent,
     area: Rect,
     selecting: bool,
 }

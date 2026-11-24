@@ -403,18 +403,9 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         );
     }
     if let Some(selection) = &app.tree_selection {
-        render_text_selection(
-            frame,
-            body,
-            &rendered.content,
-            selection.text,
-            Viewport {
-                vertical: 0,
-                horizontal: 0,
-                wrapped: false,
-            },
-            &app.theme,
-        );
+        rendered
+            .content
+            .render_selection(frame, body, selection.text, TREE_VIEWPORT, &app.theme);
     }
 }
 
@@ -670,7 +661,7 @@ const OBJECT_HEADER: &str = "    OBJECT";
 pub(super) struct RenderedTree {
     pub(super) lines: Vec<String>,
     pub(super) guides: Vec<String>,
-    pub(super) content: String,
+    pub(super) content: content::TextContent,
     pub(super) start: usize,
     pub(super) row_count: usize,
     pub(super) horizontal: TreeHorizontalLayout,
@@ -850,11 +841,11 @@ fn build_rendered_tree(
         guides.push(row_guides);
     }
     let row_count = lines.len().saturating_sub(1);
-    let content = if with_content {
+    let content = content::TextContent::from(if with_content {
         lines.join("\n")
     } else {
         String::new()
-    };
+    });
     Some(RenderedTree {
         lines,
         guides,

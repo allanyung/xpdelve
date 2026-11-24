@@ -412,38 +412,27 @@ impl App {
                     self.last_tree_click = None;
                     return None;
                 }
-                self.tree_selection = selection_point_at(
-                    &rendered.content,
-                    body,
-                    mouse.column,
-                    mouse.row,
-                    0,
-                    0,
-                    false,
-                    false,
-                )
-                .map(|point| TreeSelection {
-                    text: TextSelection {
-                        anchor: point,
-                        focus: point,
-                        dragged: false,
-                    },
-                    content: rendered.content,
-                    area: tree_area,
-                    selecting: true,
-                });
+                self.tree_selection = rendered
+                    .content
+                    .selection_point_at(body, (mouse.column, mouse.row), TREE_VIEWPORT, false)
+                    .map(|point| TreeSelection {
+                        text: TextSelection {
+                            anchor: point,
+                            focus: point,
+                            dragged: false,
+                        },
+                        content: rendered.content,
+                        area: tree_area,
+                        selecting: true,
+                    });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.last_tree_click = None;
                 if let Some(active) = &mut self.tree_selection
-                    && let Some(point) = selection_point_at(
-                        &active.content,
+                    && let Some(point) = active.content.selection_point_at(
                         body,
-                        mouse.column,
-                        mouse.row,
-                        0,
-                        0,
-                        false,
+                        (mouse.column, mouse.row),
+                        TREE_VIEWPORT,
                         true,
                     )
                 {
@@ -480,14 +469,10 @@ impl App {
                     }
                     return None;
                 }
-                if let Some(point) = selection_point_at(
-                    &active.content,
+                if let Some(point) = active.content.selection_point_at(
                     body,
-                    mouse.column,
-                    mouse.row,
-                    0,
-                    0,
-                    false,
+                    (mouse.column, mouse.row),
+                    TREE_VIEWPORT,
                     true,
                 ) {
                     active.text.focus = point;

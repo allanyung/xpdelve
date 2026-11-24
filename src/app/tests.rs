@@ -4039,14 +4039,15 @@ fn content_drag_auto_scrolls_both_directions_and_copies_offscreen_text() {
                 };
                 assert_eq!(state.vertical_scroll, if upwards { 0 } else { max_scroll });
                 assert_eq!(active.anchor, anchor);
-                let expected_focus = selection_point_at(
+                let expected_focus = reference_selection_point(
                     &source,
                     body,
-                    body.x,
-                    edge,
-                    state.vertical_scroll,
-                    0,
-                    wrapped,
+                    (body.x, edge),
+                    Viewport {
+                        vertical: state.vertical_scroll,
+                        horizontal: 0,
+                        wrapped,
+                    },
                     true,
                 )
                 .unwrap();
@@ -4650,18 +4651,18 @@ fn wrapped_yaml_selection_uses_original_newlines_only() {
         .map(|grapheme| usize::from(grapheme.width.max(1)))
         .sum::<usize>()
         - 1;
-    let first = selection_point_at(content, body, 0, 0, 0, 0, true, false).unwrap();
-    let last = selection_point_at(
-        content,
-        body,
-        last_column as u16,
-        last_row as u16,
-        0,
-        0,
-        true,
-        false,
-    )
-    .unwrap();
+    let wrapped = Viewport {
+        vertical: 0,
+        horizontal: 0,
+        wrapped: true,
+    };
+    let text = content::TextContent::from(content);
+    let first = text
+        .selection_point_at(body, (0, 0), wrapped, false)
+        .unwrap();
+    let last = text
+        .selection_point_at(body, (last_column as u16, last_row as u16), wrapped, false)
+        .unwrap();
     let selection = TextSelection {
         anchor: first,
         focus: last,
@@ -4734,8 +4735,53 @@ fn modal_find_rows_invalidate_for_query_width_and_wrap() {
     assert!(content.match_rows("", 80, true).is_none());
 }
 
+fn reference_selection_point(
+    content: &str,
+    body: Rect,
+    (column, row): (u16, u16),
+    viewport: Viewport,
+    clamp: bool,
+) -> Option<SelectionPoint> {
+    let (column_offset, row_offset) = body_offset(body, column, row, clamp)?;
+    let rows = visual_rows(content, body.width, viewport.wrapped);
+    let visual_row = (usize::from(viewport.vertical) + usize::from(row_offset))
+        .min(rows.len().saturating_sub(1));
+    point_in_row(
+        rows.get(visual_row)?,
+        viewport.horizontal.saturating_add(column_offset),
+        clamp,
+    )
+}
+
+fn reference_render_selection(
+    frame: &mut ratatui::Frame<'_>,
+    body: Rect,
+    content: &str,
+    selection: TextSelection,
+    viewport: Viewport,
+    theme: &Theme,
+) {
+    let range = selection.range();
+    for (screen_row, row) in visual_rows(content, body.width, viewport.wrapped)
+        .iter()
+        .skip(usize::from(viewport.vertical))
+        .take(usize::from(body.height))
+        .enumerate()
+    {
+        paint_row(
+            frame,
+            body,
+            screen_row as u16,
+            row,
+            &range,
+            viewport.horizontal,
+            theme,
+        );
+    }
+}
+
 #[test]
-fn text_content_selection_matches_str_selection_everywhere() {
+fn text_content_selection_matches_visual_rows_reference_everywhere() {
     let source = (0..12)
         .map(|index| {
             format!(
@@ -4768,8 +4814,11 @@ fn text_content_selection_matches_str_selection_everywhere() {
                                         viewport,
                                         clamp
                                     ),
-                                    selection_point_at(
-                                        &source, body, column, row, vertical, horizontal, wrapped,
+                                    reference_selection_point(
+                                        &source,
+                                        body,
+                                        (column, row),
+                                        viewport,
                                         clamp
                                     ),
                                 );
@@ -4793,7 +4842,7 @@ fn text_content_selection_matches_str_selection_everywhere() {
                         .unwrap();
                     reference
                         .draw(|frame| {
-                            render_text_selection(
+                            reference_render_selection(
                                 frame, body, &source, selection, viewport, &theme,
                             );
                         })
