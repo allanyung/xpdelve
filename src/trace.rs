@@ -42,7 +42,7 @@ pub async fn execute(
     request: &TraceRequest,
     cancelled: CancellationToken,
 ) -> Result<TraceOutput, TraceError> {
-    let (program, args) = resolved_command(config, request)?;
+    let (program, args) = resolved_command(config, request);
     let mut command = Command::new(&program);
     command
         .args(&args)
@@ -151,10 +151,7 @@ enum WaitOutcome {
     OutputLimit,
 }
 
-pub fn resolved_command(
-    config: &TraceConfig,
-    request: &TraceRequest,
-) -> Result<(String, Vec<String>)> {
+fn resolved_command(config: &TraceConfig, request: &TraceRequest) -> (String, Vec<String>) {
     let mut args = config.args.clone();
     args.extend(replace(
         &config.resource_args,
@@ -167,7 +164,7 @@ pub fn resolved_command(
     if let Some(namespace) = &request.namespace {
         args.extend(replace(&config.namespace_args, "{namespace}", namespace));
     }
-    Ok((config.program.clone(), args))
+    (config.program.clone(), args)
 }
 
 fn replace(args: &[String], placeholder: &str, value: &str) -> Vec<String> {
@@ -278,7 +275,7 @@ mod tests {
             namespace: Some("default".into()),
             ..request()
         };
-        let (_, args) = resolved_command(&TraceConfig::default(), &request).unwrap();
+        let (_, args) = resolved_command(&TraceConfig::default(), &request);
         assert_eq!(
             args,
             [
