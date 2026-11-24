@@ -384,17 +384,16 @@ fn canonical_name(name: &str) -> Result<&'static str> {
         "rosepine" => "rose-pine",
         "rosepinedawn" => "rose-pine-dawn",
         "flexoki" => "flexoki-dark",
-        value if BUILTIN_NAMES.contains(&value) => {
-            return Ok(BUILTIN_NAMES
-                .iter()
-                .copied()
-                .find(|candidate| *candidate == value)
-                .expect("checked above"));
-        }
-        _ => bail!(
-            "unknown skin {name:?}; expected one of {}",
-            BUILTIN_NAMES.join(", ")
-        ),
+        value => BUILTIN_NAMES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == value)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown skin {name:?}; expected one of {}",
+                    BUILTIN_NAMES.join(", ")
+                )
+            })?,
     };
     Ok(canonical)
 }
