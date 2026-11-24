@@ -392,10 +392,14 @@ impl App {
         self.status = format!("Skin: {name}");
     }
 
+    pub(super) fn selected_index(&self) -> Option<usize> {
+        self.visible_shared()
+            .get(self.selection.visible_index)
+            .copied()
+    }
+
     pub(super) fn selected_node(&self) -> Option<&ProjectedNode> {
-        let visible = self.visible_shared();
-        let index = *visible.get(self.selection.visible_index)?;
-        self.snapshot.as_ref()?.nodes.get(index)
+        self.snapshot.as_ref()?.nodes.get(self.selected_index()?)
     }
 
     pub(super) fn selected_target(&self) -> Option<Target> {
@@ -411,15 +415,18 @@ impl App {
 
     pub(super) fn toggle_mark_at(&mut self, position: usize) {
         let visible = self.visible_shared();
-        let Some(node) = visible
+        let Some((index, node)) = visible
             .get(position)
-            .and_then(|index| self.snapshot.as_ref()?.nodes.get(*index))
+            .and_then(|index| Some((*index, self.snapshot.as_ref()?.nodes.get(*index)?)))
         else {
             return;
         };
         let identity = node.identity.clone();
         let uid = node.uid.clone();
-        let eligible = !self.upgrade_view || self.upgrade_info_for(node).plan.is_some();
+        let eligible = !self.upgrade_view
+            || self
+                .upgrade_info_at(index)
+                .is_some_and(|info| info.plan.is_some());
         let marks = if self.upgrade_view {
             &mut self.upgrade_marked
         } else {

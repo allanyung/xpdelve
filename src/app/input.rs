@@ -498,8 +498,9 @@ impl App {
                         let paused = self.selected_node().is_some_and(|node| node.paused);
                         let items = if self.upgrade_view {
                             let available = self
-                                .selected_node()
-                                .is_some_and(|node| self.upgrade_info_for(node).plan.is_some());
+                                .selected_index()
+                                .and_then(|index| self.upgrade_info_at(index))
+                                .is_some_and(|info| info.plan.is_some());
                             upgrade_context_menu_items(
                                 available,
                                 self.upgrade_marked.contains_key(&target.identity),

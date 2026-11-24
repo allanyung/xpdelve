@@ -6016,9 +6016,7 @@ fn an_open_review_is_not_changed_by_a_background_refresh() {
 }
 
 fn upgrade_plan_for_first(app: &App) -> upgrade::UpgradePlan {
-    app.upgrade_info_for(&app.snapshot.as_ref().unwrap().nodes[0])
-        .plan
-        .unwrap()
+    app.upgrade_info_at(0).unwrap().plan.unwrap()
 }
 
 #[test]
@@ -6030,7 +6028,7 @@ fn upgrading_shows_immediately_and_clears_when_a_trace_reflects_it() {
     app.begin_upgrades(std::slice::from_ref(&plan));
     assert_eq!(first_state(&app), UpgradeState::Upgrading);
     // Revision columns stay, and an in-flight resource cannot be marked again.
-    let info = app.upgrade_info_for(&app.snapshot.as_ref().unwrap().nodes[0]);
+    let info = app.upgrade_info_at(0).unwrap();
     assert_eq!((info.current, info.latest), (Some(1), Some(3)));
     assert!(info.plan.is_none());
     key(&mut app, KeyCode::Char(' '));
