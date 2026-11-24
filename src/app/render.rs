@@ -19,12 +19,8 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
         );
         return;
     }
-    if let Some(
-        modal @ Modal::Text {
-            kind: ContentKind::Describe | ContentKind::Yaml | ContentKind::Events,
-            ..
-        },
-    ) = &app.modal
+    if let Some(modal @ Modal::Text { kind, .. }) = &app.modal
+        && kind.is_full_screen()
     {
         // These views cover the terminal. Formatting the hidden resource tree
         // on every scroll frame is wasted work, especially for large traces.
@@ -2013,13 +2009,7 @@ pub(super) fn render_modal(
     modal: &Modal,
     theme: &Theme,
 ) {
-    if matches!(
-        modal,
-        Modal::Text {
-            kind: ContentKind::Describe | ContentKind::Yaml | ContentKind::Events,
-            ..
-        }
-    ) {
+    if matches!(modal, Modal::Text { kind, .. } if kind.is_full_screen()) {
         // Full-screen views follow `skin.background` (transparent terminals
         // keep their own background by default), unlike popups, which are
         // always painted so they stand apart from the tree.
@@ -2061,7 +2051,7 @@ pub(super) fn render_modal(
                 spans.push(Span::raw(" "));
                 Line::from(spans)
             };
-            let block = if matches!(kind, ContentKind::Error | ContentKind::SmallError) {
+            let block = if kind.is_error() {
                 destructive_block(title, theme)
             } else {
                 bordered_block(title, theme)

@@ -110,9 +110,6 @@ impl App {
         else {
             return None;
         };
-        if !kind.supports_mouse_selection() {
-            return None;
-        }
         let body = content_modal_body(terminal_area, *kind);
         if let Some(delta) = vertical_wheel_delta(mouse, count) {
             if content_modal_area(terminal_area, *kind).contains((mouse.column, mouse.row).into()) {
@@ -527,7 +524,7 @@ impl App {
 
     pub(super) fn captures_mouse(&self) -> bool {
         match &self.modal {
-            Some(Modal::Text { kind, .. }) => kind.supports_mouse_selection(),
+            Some(Modal::Text { .. }) => true,
             Some(Modal::ContextMenu { .. }) => true,
             Some(
                 Modal::Delete { .. }

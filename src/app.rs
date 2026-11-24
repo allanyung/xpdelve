@@ -308,9 +308,9 @@ impl TextModalState {
         }
     }
 
-    fn new(kind: ContentKind) -> Self {
+    fn new() -> Self {
         Self {
-            wrapped: kind.wraps_by_default(),
+            wrapped: true,
             vertical_scroll: 0,
             horizontal_scroll: 0,
             query: String::new(),
@@ -522,18 +522,12 @@ enum ContentKind {
 }
 
 impl ContentKind {
-    fn supports_mouse_selection(self) -> bool {
-        matches!(
-            self,
-            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
-        )
+    fn is_full_screen(self) -> bool {
+        matches!(self, Self::Describe | Self::Yaml | Self::Events)
     }
 
-    fn wraps_by_default(self) -> bool {
-        matches!(
-            self,
-            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
-        )
+    fn is_error(self) -> bool {
+        matches!(self, Self::Error | Self::SmallError)
     }
 }
 

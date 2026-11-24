@@ -1254,7 +1254,7 @@ fn resource_not_found_clears_stale_trace_state() {
         title: "YAML".into(),
         content: "kind: Root".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
 
@@ -2277,7 +2277,7 @@ fn filter_matches_are_highlighted_in_rows_and_field_filters_only_mark_their_fiel
 
 #[test]
 fn modal_find_highlights_while_typing() {
-    let mut state = TextModalState::new(ContentKind::Yaml);
+    let mut state = TextModalState::new();
     state.query = "old".into();
     assert_eq!(state.highlight_query(), "old");
     state.search_input = Some(" new ".into());
@@ -2321,7 +2321,7 @@ fn yaml_modal(app: &mut App, content: String) {
         title: "demo — YAML".into(),
         content: content.into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
 }
@@ -3545,7 +3545,7 @@ fn yaml_key_legend_uses_sofka_subtle_color() {
         title: "YAML: Widget/example".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     };
     let backend = TestBackend::new(100, 20);
@@ -3586,7 +3586,7 @@ fn yaml_modal_wraps_long_lines() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     };
     let backend = TestBackend::new(20, 8);
@@ -3608,7 +3608,7 @@ fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
             "Resource: Widget/example\n\nadmission webhook rejected abcdefghijklmnopqrstuvwxyz"
                 .into(),
         kind: ContentKind::Error,
-        state: TextModalState::new(ContentKind::Error),
+        state: TextModalState::new(),
         selection: None,
     };
     let backend = TestBackend::new(24, 16);
@@ -3635,7 +3635,7 @@ fn popups_always_fill_their_whole_area_with_the_overlay_background() {
         title: "Overlay".into(),
         content: "Resource: Widget/example\n\nboom".into(),
         kind,
-        state: TextModalState::new(kind),
+        state: TextModalState::new(),
         selection: None,
     };
     let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -3672,7 +3672,7 @@ fn full_screen_views_and_main_screen_follow_skin_background() {
                 title: "View".into(),
                 content: "key: value".into(),
                 kind,
-                state: TextModalState::new(kind),
+                state: TextModalState::new(),
                 selection: None,
             };
             let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -3704,7 +3704,7 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
 
@@ -3825,7 +3825,7 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 content: content.into(),
                 kind,
                 state: {
-                    let mut state = TextModalState::new(kind);
+                    let mut state = TextModalState::new();
                     state.wrapped = wrapped;
                     state
                 },
@@ -3916,7 +3916,7 @@ fn content_mouse_drag_copies_selected_source_text() {
             title: "Content".into(),
             content: "kind: Widget\nmetadata: {}".into(),
             kind: content_kind,
-            state: TextModalState::new(content_kind),
+            state: TextModalState::new(),
             selection: None,
         });
         let body = content_modal_body(area, content_kind);
@@ -3985,7 +3985,7 @@ fn content_drag_auto_scrolls_both_directions_and_copies_offscreen_text() {
                 let body = content_modal_body(area, kind);
                 let content = content::TextContent::from(source.clone());
                 let max_scroll = content.scroll_bounds(body.width, body.height, wrapped).0;
-                let mut state = TextModalState::new(kind);
+                let mut state = TextModalState::new();
                 state.wrapped = wrapped;
                 state.vertical_scroll = if upwards { max_scroll } else { 0 };
                 app.modal = Some(Modal::Text {
@@ -4077,7 +4077,7 @@ fn content_drag_stops_scrolling_inside_body_and_on_key_or_document_change() {
         title: "Content".into(),
         content: source.clone().into(),
         kind,
-        state: TextModalState::new(kind),
+        state: TextModalState::new(),
         selection: None,
     });
     let body = content_modal_body(area, kind);
@@ -4131,7 +4131,7 @@ fn content_wheel_preserves_drag_anchor_and_extends_copied_text() {
         title: "Content".into(),
         content: source.clone().into(),
         kind,
-        state: TextModalState::new(kind),
+        state: TextModalState::new(),
         selection: None,
     });
     let body = content_modal_body(area, kind);
@@ -4187,7 +4187,7 @@ fn content_mouse_click_does_not_copy_text() {
         title: "YAML".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
     let area = Rect::new(0, 0, 40, 10);
@@ -6848,7 +6848,7 @@ fn text_modal_timing_on_large_document() {
 
     for wrapped in [true, false] {
         let mut app = app();
-        let mut state = TextModalState::new(ContentKind::Yaml);
+        let mut state = TextModalState::new();
         state.wrapped = wrapped;
         state.vertical_scroll = 1_000;
         app.modal = Some(Modal::Text {

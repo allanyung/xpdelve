@@ -357,7 +357,7 @@ impl App {
                     title: "Configuration reload failed".into(),
                     content: text::sanitize(&format!("{error:#}")).into(),
                     kind: ContentKind::SmallError,
-                    state: TextModalState::new(ContentKind::SmallError),
+                    state: TextModalState::new(),
                     selection: None,
                 });
             }
@@ -459,7 +459,6 @@ impl App {
     }
 
     /// Marked resources in tree order, or the highlighted resource when none are marked.
-    /// Each entry carries whether the resource is currently paused.
     pub(super) fn action_nodes(&self) -> Vec<&ProjectedNode> {
         if self.marked.is_empty() {
             return self.selected_node().into_iter().collect();
@@ -618,7 +617,7 @@ impl App {
             title,
             content: content.into(),
             kind: ContentKind::Yaml,
-            state: TextModalState::new(ContentKind::Yaml),
+            state: TextModalState::new(),
             selection: None,
         });
     }
@@ -634,7 +633,7 @@ impl App {
             title: format!("{} — details", node.identity),
             content: content.clone().into(),
             kind: ContentKind::Error,
-            state: TextModalState::new(ContentKind::Error),
+            state: TextModalState::new(),
             selection: None,
         });
     }
@@ -645,7 +644,7 @@ impl App {
             title,
             content: text::sanitize(content).into(),
             kind: ContentKind::Error,
-            state: TextModalState::new(ContentKind::Error),
+            state: TextModalState::new(),
             selection: None,
         });
     }
@@ -673,7 +672,7 @@ impl App {
                     title: view_title(label),
                     content: content.into(),
                     kind,
-                    state: TextModalState::new(kind),
+                    state: TextModalState::new(),
                     selection: None,
                 });
                 true
@@ -696,7 +695,7 @@ impl App {
                         content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n"))
                             .into(),
                         kind: ContentKind::Error,
-                        state: TextModalState::new(ContentKind::Error),
+                        state: TextModalState::new(),
                         selection: None,
                     });
                 } else if ["Describe:", "YAML:", "Events:"]
@@ -747,7 +746,7 @@ impl App {
                     title: format!("{label} failed"),
                     content: text::sanitize(&format!("{error}\n")).into(),
                     kind: ContentKind::Error,
-                    state: TextModalState::new(ContentKind::Error),
+                    state: TextModalState::new(),
                     selection: None,
                 });
                 false
@@ -828,13 +827,7 @@ impl App {
         self.collapsed.clear();
         self.marked.clear();
         self.upgrade_marked.clear();
-        if !matches!(
-            self.modal,
-            Some(Modal::Text {
-                kind: ContentKind::Error | ContentKind::SmallError,
-                ..
-            })
-        ) {
+        if !matches!(&self.modal, Some(Modal::Text { kind, .. }) if kind.is_error()) {
             if let Some(Modal::SkinPicker { original, .. }) = self.modal.take() {
                 self.theme = original;
             }
