@@ -25,7 +25,7 @@ pub struct Config {
     pub extra_columns: BTreeMap<String, Vec<ExtraColumnConfig>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExtraColumnConfig {
     pub name: String,

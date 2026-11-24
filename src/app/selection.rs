@@ -14,12 +14,29 @@ pub(super) struct VisualRow {
     pub(super) source_start: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Viewport {
+    pub(super) vertical: u16,
+    pub(super) horizontal: u16,
+    pub(super) wrapped: bool,
+}
+
 pub(super) fn visual_rows(content: &str, width: u16, wrapped: bool) -> Vec<VisualRow> {
+    visual_rows_from(content, 0, width, wrapped)
+}
+
+/// Rows of `content`, whose first byte sits at `base` in the full document.
+pub(super) fn visual_rows_from(
+    content: &str,
+    base: usize,
+    width: u16,
+    wrapped: bool,
+) -> Vec<VisualRow> {
     if width == 0 {
         return Vec::new();
     }
     let mut rows = Vec::new();
-    let mut source_offset = 0;
+    let mut source_offset = base;
     for raw_line in content.split_inclusive('\n') {
         let without_newline = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line = without_newline
@@ -137,17 +154,8 @@ pub(super) fn wrap_visual_line(
     rows
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn selection_point_at(
-    content: &str,
-    body: Rect,
-    column: u16,
-    row: u16,
-    vertical_scroll: u16,
-    horizontal_scroll: u16,
-    wrapped: bool,
-    clamp: bool,
-) -> Option<SelectionPoint> {
+/// Clamps a pointer position into `body`, returning its offset from the body origin.
+pub(super) fn body_offset(body: Rect, column: u16, row: u16, clamp: bool) -> Option<(u16, u16)> {
     if body.is_empty() {
         return None;
     }
@@ -160,11 +168,14 @@ pub(super) fn selection_point_at(
     }
     let column = column.clamp(body.x, body.x.saturating_add(body.width).saturating_sub(1));
     let row = row.clamp(body.y, body.y.saturating_add(body.height).saturating_sub(1));
-    let visual_row = usize::from(vertical_scroll) + usize::from(row - body.y);
-    let rows = visual_rows(content, body.width, wrapped);
-    let visual_row = visual_row.min(rows.len().saturating_sub(1));
-    let row = rows.get(visual_row)?;
-    let target_column = horizontal_scroll.saturating_add(column - body.x);
+    Some((column - body.x, row - body.y))
+}
+
+pub(super) fn point_in_row(
+    row: &VisualRow,
+    target_column: u16,
+    clamp: bool,
+) -> Option<SelectionPoint> {
     let mut current_column = 0_u16;
     for grapheme in &row.graphemes {
         let end_column = current_column.saturating_add(grapheme.width.max(1));
@@ -194,44 +205,82 @@ pub(super) fn selection_point_at(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn selection_point_at(
+    content: &str,
+    body: Rect,
+    column: u16,
+    row: u16,
+    vertical_scroll: u16,
+    horizontal_scroll: u16,
+    wrapped: bool,
+    clamp: bool,
+) -> Option<SelectionPoint> {
+    let (column_offset, row_offset) = body_offset(body, column, row, clamp)?;
+    let rows = visual_rows(content, body.width, wrapped);
+    let visual_row =
+        (usize::from(vertical_scroll) + usize::from(row_offset)).min(rows.len().saturating_sub(1));
+    point_in_row(
+        rows.get(visual_row)?,
+        horizontal_scroll.saturating_add(column_offset),
+        clamp,
+    )
+}
+
+pub(super) fn paint_row(
+    frame: &mut ratatui::Frame<'_>,
+    body: Rect,
+    screen_row: u16,
+    row: &VisualRow,
+    range: &std::ops::Range<usize>,
+    horizontal_scroll: u16,
+    theme: &Theme,
+) {
+    let mut visual_column = 0_u16;
+    for grapheme in &row.graphemes {
+        let grapheme_column = visual_column;
+        visual_column = visual_column.saturating_add(grapheme.width.max(1));
+        if grapheme.start >= range.end || grapheme.end <= range.start {
+            continue;
+        }
+        for offset in 0..grapheme.width.max(1) {
+            let column = grapheme_column.saturating_add(offset);
+            if column < horizontal_scroll {
+                continue;
+            }
+            let screen_column = column - horizontal_scroll;
+            if screen_column >= body.width {
+                continue;
+            }
+            let cell = &mut frame.buffer_mut()[(body.x + screen_column, body.y + screen_row)];
+            cell.set_style(theme.text_selection(cell.style()));
+        }
+    }
+}
+
 pub(super) fn render_text_selection(
     frame: &mut ratatui::Frame<'_>,
     body: Rect,
     content: &str,
     selection: TextSelection,
-    vertical_scroll: u16,
-    horizontal_scroll: u16,
-    wrapped: bool,
+    viewport: Viewport,
     theme: &Theme,
 ) {
     let range = selection.range();
-    let rows = visual_rows(content, body.width, wrapped);
+    let rows = visual_rows(content, body.width, viewport.wrapped);
     for (screen_row, row) in rows
         .iter()
-        .skip(usize::from(vertical_scroll))
+        .skip(usize::from(viewport.vertical))
         .take(usize::from(body.height))
         .enumerate()
     {
-        let mut visual_column = 0_u16;
-        for grapheme in &row.graphemes {
-            let grapheme_column = visual_column;
-            visual_column = visual_column.saturating_add(grapheme.width.max(1));
-            if grapheme.start >= range.end || grapheme.end <= range.start {
-                continue;
-            }
-            for offset in 0..grapheme.width.max(1) {
-                let column = grapheme_column.saturating_add(offset);
-                if column < horizontal_scroll {
-                    continue;
-                }
-                let screen_column = column - horizontal_scroll;
-                if screen_column >= body.width {
-                    continue;
-                }
-                let cell =
-                    &mut frame.buffer_mut()[(body.x + screen_column, body.y + screen_row as u16)];
-                cell.set_style(theme.text_selection(cell.style()));
-            }
-        }
+        paint_row(
+            frame,
+            body,
+            screen_row as u16,
+            row,
+            &range,
+            viewport.horizontal,
+            theme,
+        );
     }
 }

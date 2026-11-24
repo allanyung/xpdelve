@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use json_patch::Patch as JsonPatch;
@@ -12,7 +13,7 @@ use kube::core::DynamicObject;
 use kube::discovery::{ApiCapabilities, ApiResource, Discovery, Scope};
 use kube::{Client, Config};
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::model::Identity;
 use crate::text;
@@ -105,15 +106,34 @@ fn crossplane_spec_pointer(object: &DynamicObject, field: &str) -> Option<String
         .find(|pointer| object.data.pointer(pointer).is_some())
 }
 
+/// The single live fetch behind one mutation: every decision and every
+/// precondition comes from this one object.
 struct PatchContext {
     api: Api<DynamicObject>,
+    current: DynamicObject,
     uid: String,
     resource_version: String,
 }
 
+impl PatchContext {
+    fn precondition_tests(&self) -> [Value; 2] {
+        precondition_tests(&self.uid, &self.resource_version)
+    }
+}
+
+fn precondition_tests(uid: &str, resource_version: &str) -> [Value; 2] {
+    [
+        json!({"op": "test", "path": "/metadata/uid", "value": uid}),
+        json!({"op": "test", "path": "/metadata/resourceVersion", "value": resource_version}),
+    ]
+}
+
+const MIN_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
 pub struct Kubernetes {
     client: Client,
     discovery: RwLock<Discovery>,
+    last_refresh: Mutex<Option<Instant>>,
 }
 
 impl Kubernetes {
@@ -123,18 +143,25 @@ impl Kubernetes {
             .as_deref()
             .context("trace object has no UID; refresh before mutating it")?;
         let (api, current) = self.api_and_current(target).await?;
-        let uid = current.metadata.uid.context("live object has no UID")?;
+        let uid = current
+            .metadata
+            .uid
+            .clone()
+            .context("live object has no UID")?;
         let resource_version = current
             .metadata
             .resource_version
+            .clone()
             .context("live object has no resourceVersion")?;
         ensure_uid(expected_uid, &uid, &target.identity)?;
         Ok(PatchContext {
             api,
+            current,
             uid,
             resource_version,
         })
     }
+
     pub async fn connect(kubeconfig: Option<&Path>, context: Option<&str>) -> Result<Arc<Self>> {
         let options = KubeConfigOptions {
             context: context.map(str::to_owned),
@@ -155,6 +182,7 @@ impl Kubernetes {
         Ok(Arc::new(Self {
             client,
             discovery: RwLock::new(discovery),
+            last_refresh: Mutex::new(Some(Instant::now())),
         }))
     }
 
@@ -177,11 +205,13 @@ impl Kubernetes {
             GroupVersionKind::gvk("events.k8s.io", "v1", "Event"),
             GroupVersionKind::gvk("", "v1", "Event"),
         ];
-        let discovery = self.discovery.read().await;
-        let (resource, capabilities) = candidates
-            .iter()
-            .find_map(|gvk| discovery.resolve_gvk(gvk))
-            .context("the cluster does not serve an Events API")?;
+        let (resource, capabilities) = {
+            let discovery = self.discovery.read().await;
+            candidates
+                .iter()
+                .find_map(|gvk| discovery.resolve_gvk(gvk))
+                .context("the cluster does not serve an Events API")?
+        };
         let events = match target.identity.namespace.as_deref() {
             Some(namespace) => {
                 Api::<DynamicObject>::namespaced_with(self.client.clone(), namespace, &resource)
@@ -269,12 +299,11 @@ impl Kubernetes {
     /// Sets `crossplane.io/reconcile-requested-at` to the current time, which makes
     /// Crossplane reconcile the resource immediately.
     pub async fn request_reconcile(&self, target: &Target) -> Result<()> {
-        let (_api, current) = self.api_and_current(target).await?;
         let context = self.verified_patch_context(target).await?;
         let operations = reconcile_patch_operations(
             &context.uid,
             &context.resource_version,
-            current.metadata.annotations.is_some(),
+            context.current.metadata.annotations.is_some(),
             &reconcile_timestamp(),
         );
         patch(&context.api, &target.identity.name, operations).await?;
@@ -283,8 +312,9 @@ impl Kubernetes {
 
     pub async fn set_paused(&self, target: &Target, paused: bool) -> Result<()> {
         const KEY: &str = "crossplane.io/paused";
-        let (_api, current) = self.api_and_current(target).await?;
-        let current_value = current
+        let context = self.verified_patch_context(target).await?;
+        let current_value = context
+            .current
             .metadata
             .annotations
             .as_ref()
@@ -295,22 +325,10 @@ impl Kubernetes {
             return Ok(());
         }
 
-        let context = self.verified_patch_context(target).await?;
-        let mut operations = vec![
-            json!({
-                "op": "test",
-                "path": "/metadata/uid",
-                "value": context.uid,
-            }),
-            json!({
-                "op": "test",
-                "path": "/metadata/resourceVersion",
-                "value": context.resource_version,
-            }),
-        ];
+        let mut operations = context.precondition_tests().to_vec();
         let path = "/metadata/annotations/crossplane.io~1paused";
         if paused {
-            if current.metadata.annotations.is_none() {
+            if context.current.metadata.annotations.is_none() {
                 operations.push(json!({"op": "add", "path": "/metadata/annotations", "value": {}}));
             }
             operations.push(json!({"op": "add", "path": path, "value": "true"}));
@@ -330,8 +348,13 @@ impl Kubernetes {
         expected: &[String],
         remove: &[String],
     ) -> Result<()> {
-        let (_api, current) = self.api_and_current(target).await?;
-        let current_finalizers = current.metadata.finalizers.clone().unwrap_or_default();
+        let context = self.verified_patch_context(target).await?;
+        let current_finalizers = context
+            .current
+            .metadata
+            .finalizers
+            .clone()
+            .unwrap_or_default();
         if current_finalizers != expected {
             bail!("finalizers changed since they were reviewed; review them again");
         }
@@ -343,17 +366,9 @@ impl Kubernetes {
         if finalizers.len() == current_finalizers.len() {
             return Ok(());
         }
-        let context = self.verified_patch_context(target).await?;
-        patch(
-            &context.api,
-            &target.identity.name,
-            vec![
-                json!({"op": "test", "path": "/metadata/uid", "value": context.uid}),
-                json!({"op": "test", "path": "/metadata/resourceVersion", "value": context.resource_version}),
-                json!({"op": "add", "path": "/metadata/finalizers", "value": finalizers}),
-            ],
-        )
-        .await?;
+        let mut operations = context.precondition_tests().to_vec();
+        operations.push(json!({"op": "add", "path": "/metadata/finalizers", "value": finalizers}));
+        patch(&context.api, &target.identity.name, operations).await?;
         Ok(())
     }
 
@@ -397,11 +412,12 @@ impl Kubernetes {
         from: &str,
         to: &str,
     ) -> Result<()> {
-        let (_api, current) = self.api_and_current(target).await?;
-        let reference = crossplane_spec_pointer(&current, "compositionRevisionRef")
+        let context = self.verified_patch_context(target).await?;
+        let current = &context.current;
+        let reference = crossplane_spec_pointer(current, "compositionRevisionRef")
             .context("the resource has no compositionRevisionRef")?;
         let live = |field: &str| {
-            crossplane_spec_pointer(&current, field)
+            crossplane_spec_pointer(current, field)
                 .and_then(|pointer| current.data.pointer(&pointer))
         };
         if live("compositionUpdatePolicy").and_then(Value::as_str) != Some("Manual") {
@@ -429,18 +445,10 @@ impl Kubernetes {
         if info.composition != composition || info.composite_kind != target.identity.kind {
             bail!("destination revision {to} does not belong to this Composition and type");
         }
-        let context = self.verified_patch_context(target).await?;
-        patch(
-            &context.api,
-            &target.identity.name,
-            vec![
-                json!({"op": "test", "path": "/metadata/uid", "value": context.uid}),
-                json!({"op": "test", "path": "/metadata/resourceVersion", "value": context.resource_version}),
-                json!({"op": "test", "path": name_path, "value": from}),
-                json!({"op": "replace", "path": name_path, "value": to}),
-            ],
-        )
-        .await?;
+        let mut operations = context.precondition_tests().to_vec();
+        operations.push(json!({"op": "test", "path": name_path, "value": from}));
+        operations.push(json!({"op": "replace", "path": name_path, "value": to}));
+        patch(&context.api, &target.identity.name, operations).await?;
         Ok(())
     }
 
@@ -472,6 +480,17 @@ impl Kubernetes {
         if let Some(resolved) = self.discovery.read().await.resolve_gvk(&gvk) {
             return Ok(resolved);
         }
+        let mut last_refresh = self.last_refresh.lock().await;
+        if let Some(resolved) = self.discovery.read().await.resolve_gvk(&gvk) {
+            return Ok(resolved);
+        }
+        if last_refresh.is_some_and(|at| at.elapsed() < MIN_DISCOVERY_REFRESH_INTERVAL) {
+            bail!(
+                "Kubernetes API discovery was refreshed recently and does not list {}; retry shortly",
+                identity
+            );
+        }
+        *last_refresh = Some(Instant::now());
         let refreshed = discover(&self.client).await?;
         let resolved = refreshed.resolve_gvk(&gvk);
         *self.discovery.write().await = refreshed;
@@ -533,10 +552,7 @@ fn reconcile_patch_operations(
     has_annotations: bool,
     timestamp: &str,
 ) -> Vec<Value> {
-    let mut operations = vec![
-        json!({"op": "test", "path": "/metadata/uid", "value": uid}),
-        json!({"op": "test", "path": "/metadata/resourceVersion", "value": resource_version}),
-    ];
+    let mut operations = precondition_tests(uid, resource_version).to_vec();
     if !has_annotations {
         operations.push(json!({"op": "add", "path": "/metadata/annotations", "value": {}}));
     }

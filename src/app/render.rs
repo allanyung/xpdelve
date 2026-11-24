@@ -1,8 +1,12 @@
+use std::collections::BTreeMap;
+
+use super::cache::lock;
 use super::selection::*;
 use super::state::chosen_finalizers;
-use super::upgrade::upgrade_info;
+use super::upgrade::UpgradeInfo;
 use super::*;
 use crate::columns::{self, ExtraColumn};
+use crate::config::ExtraColumnConfig;
 use crate::model::Health;
 
 pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
@@ -220,10 +224,12 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         );
         return;
     };
-    let visible = app.visible();
-    let Some(rendered) = rendered_tree(app, area) else {
+    let visible = app.visible_shared();
+    let Some(rendered) = build_rendered_tree(app, area, &visible, app.tree_selection.is_some())
+    else {
         return;
     };
+    let find = app.find.to_lowercase();
     let mut lines = Vec::with_capacity(rendered.row_count + 1);
     lines.push(Line::styled(
         rendered.lines[0].clone(),
@@ -246,10 +252,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         } else {
             app.theme.health(node.health)
         };
-        if !app.find.is_empty()
-            && content.to_lowercase().contains(&app.find.to_lowercase())
-            && !selected
-        {
+        if !find.is_empty() && !selected && content.to_lowercase().contains(&find) {
             style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
         }
         lines.push(Line::styled(content, style));
@@ -284,7 +287,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         " ".to_owned()
     };
     if !app.active_marks().is_empty() {
-        let hidden = app.hidden_marked_count();
+        let hidden = app.hidden_marked_count(&visible);
         suffix = format!(
             "{} · {} marked{} ",
             suffix.trim_end(),
@@ -336,7 +339,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             }
         }
     }
-    if let Some((start, width)) = rendered.upgrade_range {
+    if let Some(((start, width), infos)) = rendered.upgrade_range.zip(app.upgrade_infos()) {
         let middle = horizontal.pinned_width + horizontal.offset
             ..horizontal.pinned_width + horizontal.offset + horizontal.viewport_width;
         for (row, (position, index)) in visible
@@ -349,10 +352,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             if position == app.selection.visible_index {
                 continue;
             }
-            let style = app
-                .upgrade_info_for(&snapshot.nodes[*index])
-                .state
-                .style(&app.theme);
+            let style = infos.by_node[*index].state.style(&app.theme);
             for column in (start..start + width).filter(|column| middle.contains(column)) {
                 if let Some(cell) = frame.buffer_mut().cell_mut((
                     body.x + (column - horizontal.offset) as u16,
@@ -365,7 +365,7 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     }
     dim_placeholder_cells(frame, app, &rendered, body);
     subtle_tree_guides(frame, app, &rendered, &visible, body);
-    highlight_filter_matches(frame, app, &rendered, &visible, body);
+    highlight_filter_matches(frame, app, &rendered, body);
     if horizontal.max_offset() > 0 && horizontal.viewport_width > 0 {
         let scrollbar_area = Rect::new(
             area.x + horizontal.pinned_width as u16,
@@ -408,9 +408,11 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
             body,
             &rendered.content,
             selection.text,
-            0,
-            0,
-            false,
+            Viewport {
+                vertical: 0,
+                horizontal: 0,
+                wrapped: false,
+            },
             &app.theme,
         );
     }
@@ -466,12 +468,8 @@ fn highlight_filter_matches(
     frame: &mut ratatui::Frame<'_>,
     app: &App,
     rendered: &RenderedTree,
-    visible: &[usize],
     body: Rect,
 ) {
-    let Some(snapshot) = app.snapshot.as_ref() else {
-        return;
-    };
     let lowered = app.filter.trim().to_lowercase();
     let (field, needle) = match lowered.split_once(':') {
         Some((
@@ -506,7 +504,6 @@ fn highlight_filter_matches(
     if field.is_some_and(|field| field != "kind") && column_range.is_none() {
         return;
     }
-    let show_tree_prefix = app.kind_filter.is_none() || app.health_filter != HealthFilter::All;
     let checkbox = if app.active_marks().is_empty() {
         0
     } else {
@@ -518,21 +515,8 @@ fn highlight_filter_matches(
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     };
     let selected_style = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    for (row, index) in visible
-        .iter()
-        .skip(rendered.start)
-        .take(rendered.row_count)
-        .enumerate()
-    {
-        let node = &snapshot.nodes[*index];
-        let guides = tree_guides(
-            snapshot,
-            node,
-            app.config.ui.ascii,
-            show_tree_prefix,
-            app.collapsed.contains(&node.identity),
-        );
-        let guides_end = checkbox + guides.width();
+    for row in 0..rendered.row_count {
+        let guides_end = checkbox + rendered.guides[row].width();
         let mut cells = Vec::new();
         let mut column = 0;
         for character in rendered.lines[row + 1].chars() {
@@ -596,7 +580,6 @@ fn subtle_tree_guides(
     let Some(snapshot) = app.snapshot.as_ref() else {
         return;
     };
-    let show_tree_prefix = app.kind_filter.is_none() || app.health_filter != HealthFilter::All;
     let checkbox = if app.active_marks().is_empty() {
         0
     } else {
@@ -614,13 +597,7 @@ fn subtle_tree_guides(
             continue;
         }
         let node = &snapshot.nodes[*index];
-        let guides = tree_guides(
-            snapshot,
-            node,
-            app.config.ui.ascii,
-            show_tree_prefix,
-            app.collapsed.contains(&node.identity),
-        );
+        let guides = rendered.guides[row].as_str();
         let available = object_width.saturating_sub(checkbox);
         // When the guides leave no room for the label, the cell falls back to
         // keeping only its first marker before the ellipsis.
@@ -692,6 +669,7 @@ const OBJECT_HEADER: &str = "    OBJECT";
 
 pub(super) struct RenderedTree {
     pub(super) lines: Vec<String>,
+    pub(super) guides: Vec<String>,
     pub(super) content: String,
     pub(super) start: usize,
     pub(super) row_count: usize,
@@ -752,56 +730,134 @@ impl TreeHorizontalLayout {
     }
 }
 
-pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Option<TablePlan> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PlanFlags {
+    available: usize,
+    package: bool,
+    short: bool,
+    ascii: bool,
+    upgrade: bool,
+    checkboxes: bool,
+    logical_name: bool,
+    external_name: bool,
+    management_policies: bool,
+}
+
+/// A built `TablePlan` with every input it depends on, so it is reused until one changes.
+pub(super) struct PlanEntry {
+    snapshot: Arc<Snapshot>,
+    visible: Vec<usize>,
+    flags: PlanFlags,
+    extra_columns: BTreeMap<String, Vec<ExtraColumnConfig>>,
+    plan: Arc<TablePlan>,
+}
+
+pub(super) fn tree_table_plan(app: &App, area: Rect, visible: &[usize]) -> Option<Arc<TablePlan>> {
     let snapshot = app.snapshot.as_ref()?;
-    Some(
+    let flags = PlanFlags {
+        available: area.width.saturating_sub(2) as usize,
+        package: snapshot.nodes.first().is_some_and(|node| node.is_package) && !app.upgrade_view,
+        short: app.config.ui.short,
+        ascii: app.config.ui.ascii,
+        upgrade: app.upgrade_view,
+        checkboxes: !app.active_marks().is_empty(),
+        logical_name: app.show_logical_name,
+        external_name: app.show_external_name,
+        management_policies: app.show_management_policies,
+    };
+    let mut slot = lock(&app.frame_cache.plan);
+    if let Some(entry) = slot.as_ref()
+        && Arc::ptr_eq(&entry.snapshot, snapshot)
+        && entry.flags == flags
+        && entry.visible == visible
+        && entry.extra_columns == app.config.extra_columns
+    {
+        return Some(Arc::clone(&entry.plan));
+    }
+    let plan = Arc::new(
         TablePlan::new(
             snapshot,
             visible,
-            area.width.saturating_sub(2) as usize,
-            snapshot.nodes.first().is_some_and(|node| node.is_package) && !app.upgrade_view,
-            app.config.ui.short,
-            app.config.ui.ascii,
+            flags.available,
+            flags.package,
+            flags.short,
+            flags.ascii,
         )
-        .with_upgrade(app.upgrade_view.then(|| app.revisions.clone()))
-        .with_checkboxes(!app.active_marks().is_empty())
-        .with_logical_name(app.show_logical_name)
-        .with_external_name(app.show_external_name)
-        .with_management_policies(app.show_management_policies)
+        .with_upgrade(flags.upgrade)
+        .with_checkboxes(flags.checkboxes)
+        .with_logical_name(flags.logical_name)
+        .with_external_name(flags.external_name)
+        .with_management_policies(flags.management_policies)
         .with_extra_columns(columns::resolve(
             &app.config.extra_columns,
             snapshot,
             visible,
         )),
-    )
+    );
+    *slot = Some(PlanEntry {
+        snapshot: Arc::clone(snapshot),
+        visible: visible.to_vec(),
+        flags,
+        extra_columns: app.config.extra_columns.clone(),
+        plan: Arc::clone(&plan),
+    });
+    Some(plan)
 }
 
 pub(super) fn rendered_tree(app: &App, area: Rect) -> Option<RenderedTree> {
+    build_rendered_tree(app, area, &app.visible_shared(), true)
+}
+
+/// `with_content` joins the visible rows into one string, which only text selection needs.
+fn build_rendered_tree(
+    app: &App,
+    area: Rect,
+    visible: &[usize],
+    with_content: bool,
+) -> Option<RenderedTree> {
     let snapshot = app.snapshot.as_ref()?;
-    let visible = app.visible();
     let viewport = area.height.saturating_sub(3) as usize;
-    let start = app.resource_view_start(viewport);
-    let plan = tree_table_plan(app, area, &visible)?;
+    let start = app.view_start(visible.len(), viewport);
+    let plan = tree_table_plan(app, area, visible)?;
     let horizontal = plan.horizontal_layout(app.resource_horizontal_scroll);
+    let upgrades = if app.upgrade_view {
+        app.upgrade_infos()
+    } else {
+        None
+    };
+    let show_tree_prefix = app.kind_filter.is_none() || app.health_filter != HealthFilter::All;
+    let marks = app.active_marks();
+    let ascii = app.config.ui.ascii;
     let mut lines = Vec::with_capacity(viewport + 1);
-    lines.push(horizontal.slice(&plan.header(), app.config.ui.ascii));
-    lines.extend(visible.iter().skip(start).take(viewport).map(|index| {
+    let mut guides = Vec::with_capacity(viewport);
+    lines.push(horizontal.slice(&plan.header(), ascii));
+    for index in visible.iter().skip(start).take(viewport) {
         let node = &snapshot.nodes[*index];
-        horizontal.slice(
-            &plan.row(
-                snapshot,
-                node,
-                app.kind_filter.is_none() || app.health_filter != HealthFilter::All,
-                app.collapsed.contains(&node.identity),
-                app.active_marks().contains_key(&node.identity),
-            ),
-            app.config.ui.ascii,
-        )
-    }));
+        let row_guides = tree_guides(
+            snapshot,
+            node,
+            ascii,
+            show_tree_prefix,
+            app.collapsed.contains(&node.identity),
+        );
+        let row = plan.row(
+            node,
+            &row_guides,
+            marks.contains_key(&node.identity),
+            upgrades.as_ref().map(|infos| &infos.by_node[*index]),
+        );
+        lines.push(horizontal.slice(&row, ascii));
+        guides.push(row_guides);
+    }
     let row_count = lines.len().saturating_sub(1);
-    let content = lines.join("\n");
+    let content = if with_content {
+        lines.join("\n")
+    } else {
+        String::new()
+    };
     Some(RenderedTree {
         lines,
+        guides,
         content,
         start,
         row_count,
@@ -934,7 +990,7 @@ pub(super) struct TablePlan {
     state: usize,
     ascii: bool,
     checkboxes: bool,
-    upgrade: Option<RevisionDiscovery>,
+    upgrade: bool,
     extra_columns: Vec<ExtraColumn>,
 }
 
@@ -1024,20 +1080,22 @@ impl TablePlan {
             state,
             ascii,
             checkboxes: false,
-            upgrade: None,
+            upgrade: false,
             extra_columns: Vec::new(),
         }
     }
 
     /// Replaces the condition columns with the revision upgrade columns.
-    fn with_upgrade(mut self, discovery: Option<RevisionDiscovery>) -> Self {
-        self.upgrade = discovery;
+    fn with_upgrade(mut self, upgrade: bool) -> Self {
+        self.upgrade = upgrade;
         self
     }
 
     /// Start column and width of the UPGRADE cell within a full (unsliced) row.
     pub(super) fn upgrade_range(&self) -> Option<(usize, usize)> {
-        self.upgrade.as_ref()?;
+        if !self.upgrade {
+            return None;
+        }
         let optional = |width: usize| if width > 0 { width + 2 } else { 0 };
         let start = self.object
             + 2
@@ -1096,7 +1154,7 @@ impl TablePlan {
                 + usize::from(self.timestamps) * 2;
             let widths = 9 + 7 + if self.timestamps { 30 } else { 0 } + self.version + self.state;
             widths + displayed * 2
-        } else if self.upgrade.is_some() {
+        } else if self.upgrade {
             UPGRADE_FIXED_WIDTH
         } else if self.timestamps {
             53
@@ -1169,7 +1227,7 @@ impl TablePlan {
                 columns.push(("STATE", self.state));
             }
             columns
-        } else if self.upgrade.is_some() {
+        } else if self.upgrade {
             vec![
                 (object_header, self.object),
                 ("GROUP", self.group),
@@ -1214,22 +1272,20 @@ impl TablePlan {
 
     pub(super) fn row(
         &self,
-        snapshot: &Snapshot,
         node: &ProjectedNode,
-        show_tree_prefix: bool,
-        collapsed: bool,
+        guides: &str,
         marked: bool,
+        upgrade: Option<&UpgradeInfo>,
     ) -> String {
-        let guides = tree_guides(snapshot, node, self.ascii, show_tree_prefix, collapsed);
         let label = object_label(node);
         let object = if self.checkboxes {
             format!(
                 "{} {}",
                 if marked { "[x]" } else { "[ ]" },
-                compact_object(&guides, &label, self.object.saturating_sub(CHECKBOX_WIDTH))
+                compact_object(guides, &label, self.object.saturating_sub(CHECKBOX_WIDTH))
             )
         } else {
-            compact_object(&guides, &label, self.object)
+            compact_object(guides, &label, self.object)
         };
         let logical_name = logical_name_cell(node);
         let external_name = external_name_cell(node);
@@ -1238,16 +1294,10 @@ impl TablePlan {
         let version = text::sanitize(node.version.as_deref().unwrap_or("-"));
         let state = text::sanitize(node.state.as_deref().unwrap_or("-"));
         let status = status_cell(node);
-        let upgrade = self
-            .upgrade
-            .as_ref()
-            .map(|discovery| upgrade_info(node, discovery));
         let number = |value: Option<i64>| value.map_or_else(|| "-".to_owned(), |n| n.to_string());
-        let current = number(upgrade.as_ref().and_then(|info| info.current));
-        let latest = number(upgrade.as_ref().and_then(|info| info.latest));
-        let upgrade_label = upgrade
-            .as_ref()
-            .map_or("", |info| info.state.label(self.ascii));
+        let current = number(upgrade.and_then(|info| info.current));
+        let latest = number(upgrade.and_then(|info| info.latest));
+        let upgrade_label = upgrade.map_or("", |info| info.state.label(self.ascii));
         let extra_values: Vec<_> = self
             .extra_columns
             .iter()
@@ -1270,7 +1320,7 @@ impl TablePlan {
                 columns.push((state.as_str(), self.state));
             }
             columns
-        } else if self.upgrade.is_some() {
+        } else if self.upgrade {
             vec![
                 (object.as_str(), self.object),
                 (group.as_str(), self.group),
@@ -1644,7 +1694,7 @@ pub(super) fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
     let scrollable = !app.resource_missing
         && matches!(app.mode, InputMode::Normal | InputMode::Help)
         && resource_tree_area(frame.area())
-            .and_then(|tree| tree_table_plan(app, tree, &app.visible()))
+            .and_then(|tree| tree_table_plan(app, tree, &app.visible_shared()))
             .is_some_and(|plan| {
                 let horizontal = plan.horizontal_layout(app.resource_horizontal_scroll);
                 horizontal.max_offset() > 0 && horizontal.viewport_width > 0
@@ -2008,7 +2058,7 @@ pub(super) fn render_modal(
                         content,
                         query,
                         state.vertical_scroll,
-                        usize::from(area.width.saturating_sub(2)),
+                        area.width.saturating_sub(2),
                         state.wrapped,
                     ) {
                         spans.push(Span::styled(
@@ -2040,14 +2090,11 @@ pub(super) fn render_modal(
                 theme,
             );
             if let Some(text_selection) = selection {
-                render_text_selection(
+                content.render_selection(
                     frame,
                     regions[0],
-                    content,
                     *text_selection,
-                    state.vertical_scroll,
-                    state.horizontal_scroll,
-                    state.wrapped,
+                    state.viewport(),
                     theme,
                 );
             }
@@ -2843,38 +2890,16 @@ pub(super) fn highlighted_line<'a>(
     Line::from(spans)
 }
 
-fn matching_rows(
-    content: &str,
-    expression: &regex::Regex,
-    width: usize,
-    wrapped: bool,
-) -> Vec<usize> {
-    let mut rendered_row = 0;
-    content
-        .lines()
-        .filter_map(|line| {
-            let current_row = rendered_row;
-            rendered_row += if wrapped {
-                line.width().max(1).div_ceil(width.max(1))
-            } else {
-                1
-            };
-            expression.is_match(line).then_some(current_row)
-        })
-        .collect()
-}
-
 /// `(current, total)` matching lines for the title; `current` is 0 until the
 /// view is scrolled onto a match with `n`/`N`.
 pub(super) fn modal_match_position(
-    content: &str,
+    content: &content::TextContent,
     query: &str,
     scroll: u16,
-    width: usize,
+    width: u16,
     wrapped: bool,
 ) -> Option<(usize, usize)> {
-    let expression = case_insensitive_regex(query)?;
-    let matches = matching_rows(content, &expression, width, wrapped);
+    let matches = content.match_rows(query, width, wrapped)?;
     let current = matches
         .iter()
         .position(|row| *row == usize::from(scroll))
@@ -2884,21 +2909,17 @@ pub(super) fn modal_match_position(
 
 /// `direction` is `(reverse, include_current_row)`.
 pub(super) fn move_modal_match(
-    content: &str,
+    content: &content::TextContent,
     query: &str,
     scroll: &mut u16,
     direction: (bool, bool),
-    width: usize,
+    width: u16,
     wrapped: bool,
 ) {
     let (reverse, inclusive) = direction;
-    if query.is_empty() {
-        return;
-    }
-    let Some(expression) = case_insensitive_regex(query) else {
+    let Some(matches) = content.match_rows(query, width, wrapped) else {
         return;
     };
-    let matches = matching_rows(content, &expression, width, wrapped);
     if matches.is_empty() {
         return;
     }
