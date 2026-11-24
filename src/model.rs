@@ -127,8 +127,9 @@ pub struct ProjectedNode {
 }
 
 impl ProjectedNode {
-    pub fn matches_text(&self, query: &str) -> bool {
-        self.search_text.contains(&query.to_lowercase())
+    /// `lowered` must already be lowercase.
+    pub fn matches_text(&self, lowered: &str) -> bool {
+        self.search_text.contains(lowered)
     }
 }
 
@@ -848,7 +849,7 @@ fn matches_lowered_query(node: &ProjectedNode, query: &str) -> bool {
         "status" => node.search_text[node.status_offset..].contains(needle),
         "ready" => bool_text(node.ready).contains(needle),
         "synced" => bool_text(node.synced).contains(needle),
-        _ => node.search_text.contains(query),
+        _ => node.matches_text(query),
     }
 }
 
