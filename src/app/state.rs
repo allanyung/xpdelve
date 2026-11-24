@@ -482,9 +482,15 @@ impl App {
             .collect()
     }
 
-    pub(super) fn request_finalizers(&mut self) {
+    pub(super) fn ensure_writable(&mut self, action: &str) -> bool {
         if self.config.read_only {
-            self.status = "Finalizer removal is disabled in read-only mode".into();
+            self.status = format!("{action} is disabled in read-only mode");
+        }
+        !self.config.read_only
+    }
+
+    pub(super) fn request_finalizers(&mut self) {
+        if !self.ensure_writable("Finalizer removal") {
             return;
         }
         let targets: Vec<FinalizerTarget> = self
@@ -531,8 +537,7 @@ impl App {
     }
 
     pub(super) fn request_delete(&mut self) {
-        if self.config.read_only {
-            self.status = "Delete is disabled in read-only mode".into();
+        if !self.ensure_writable("Delete") {
             return;
         }
         let targets: Vec<_> = self
@@ -549,8 +554,7 @@ impl App {
     }
 
     pub(super) fn request_reconcile(&mut self) -> UiAction {
-        if self.config.read_only {
-            self.status = "Reconcile is disabled in read-only mode".into();
+        if !self.ensure_writable("Reconcile") {
             return UiAction::None;
         }
         let targets: Vec<_> = self
@@ -566,8 +570,7 @@ impl App {
     }
 
     pub(super) fn request_pause_toggle(&mut self) -> UiAction {
-        if self.config.read_only {
-            self.status = "Pause is disabled in read-only mode".into();
+        if !self.ensure_writable("Pause") {
             return UiAction::None;
         }
         let entries = self.action_targets();

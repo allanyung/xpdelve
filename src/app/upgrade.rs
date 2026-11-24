@@ -468,9 +468,10 @@ impl App {
 
     /// Context-menu review of exactly the clicked resource, ignoring other marks.
     pub(super) fn review_upgrade_for(&mut self, target: &Target) {
-        if self.config.read_only {
-            self.status = "Upgrades are disabled in read-only mode".into();
-        } else if let Some(plan) = self.upgrade_plan_for(target) {
+        if !self.ensure_writable("Upgrades") {
+            return;
+        }
+        if let Some(plan) = self.upgrade_plan_for(target) {
             self.modal = Some(Modal::UpgradeReview { plans: vec![plan] });
         } else {
             self.status = "No revision upgrade available for this resource".into();
@@ -478,8 +479,7 @@ impl App {
     }
 
     pub(super) fn request_upgrade_review(&mut self) {
-        if self.config.read_only {
-            self.status = "Upgrades are disabled in read-only mode".into();
+        if !self.ensure_writable("Upgrades") {
             return;
         }
         let indices = if self.upgrade_marked.is_empty() {

@@ -301,13 +301,13 @@ impl App {
             action,
             ContextAction::Edit | ContextAction::Pause | ContextAction::Reconcile
         );
-        if changes_resource && self.config.read_only {
-            self.status = match action {
-                ContextAction::Edit => "Edit is disabled in read-only mode",
-                ContextAction::Pause => "Pause is disabled in read-only mode",
-                _ => "Reconcile is disabled in read-only mode",
-            }
-            .into();
+        if changes_resource
+            && !self.ensure_writable(match action {
+                ContextAction::Edit => "Edit",
+                ContextAction::Pause => "Pause",
+                _ => "Reconcile",
+            })
+        {
             return None;
         }
         match action {
@@ -1007,9 +1007,9 @@ impl App {
                 }
             }
             (KeyCode::Char('e'), _) => {
-                if self.config.read_only {
-                    self.status = "Edit is disabled in read-only mode".into();
-                } else if let Some(target) = self.selected_target() {
+                if self.ensure_writable("Edit")
+                    && let Some(target) = self.selected_target()
+                {
                     return UiAction::Edit(target);
                 }
             }
