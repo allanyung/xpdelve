@@ -124,6 +124,9 @@ pub struct ProjectedNode {
     pub object: Arc<Value>,
     search_text: String,
     status_offset: usize,
+    kind_lower: String,
+    group_lower: String,
+    namespace_lower: String,
 }
 
 impl ProjectedNode {
@@ -221,7 +224,7 @@ impl Snapshot {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_lowercase);
-        let query = query.as_deref();
+        let query = query.as_deref().map(NodeQuery::parse);
         let health_filtering = health != HealthFilter::All;
         let filtering = query.is_some() || health_filtering;
         let kind_matches =
@@ -231,7 +234,7 @@ impl Snapshot {
         if filtering {
             retained = vec![false; self.nodes.len()];
             for (index, node) in self.nodes.iter().enumerate() {
-                let direct = query.is_none_or(|query| matches_lowered_query(node, query))
+                let direct = query.is_none_or(|query| query.matches(node))
                     && kind_matches(node)
                     && health.matches(node.health);
                 if !direct {
@@ -359,6 +362,13 @@ fn project_node(
     let index = projected.len();
     let resource_kind = identity.resource_kind();
     let (search_text, status_offset) = search_text(&identity, &status, status_details.as_deref());
+    let kind_lower = identity.kind.to_lowercase();
+    let group_lower = identity.group.to_lowercase();
+    let namespace_lower = identity
+        .namespace
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
     projected.push(ProjectedNode {
         identity,
         resource_kind,
@@ -382,6 +392,9 @@ fn project_node(
         object: Arc::new(node.object),
         search_text,
         status_offset,
+        kind_lower,
+        group_lower,
+        namespace_lower,
     });
 
     let last = child_count.saturating_sub(1);
@@ -829,22 +842,41 @@ fn access_denied(error: &Value) -> Option<AccessDenied> {
     }
 }
 
-fn matches_lowered_query(node: &ProjectedNode, query: &str) -> bool {
-    let (field, needle) = query.split_once(':').unwrap_or(("", query));
-    match field {
-        "kind" => node.identity.kind.to_lowercase().contains(needle),
-        "group" => node.identity.group.to_lowercase().contains(needle),
-        "namespace" => node
-            .identity
-            .namespace
-            .as_deref()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains(needle),
-        "status" => node.search_text[node.status_offset..].contains(needle),
-        "ready" => bool_text(node.ready).contains(needle),
-        "synced" => bool_text(node.synced).contains(needle),
-        _ => node.matches_text(query),
+#[derive(Clone, Copy)]
+enum NodeQuery<'a> {
+    Kind(&'a str),
+    Group(&'a str),
+    Namespace(&'a str),
+    Status(&'a str),
+    Ready(&'a str),
+    Synced(&'a str),
+    Text(&'a str),
+}
+
+impl<'a> NodeQuery<'a> {
+    /// `lowered` must already be lowercase.
+    fn parse(lowered: &'a str) -> Self {
+        match lowered.split_once(':') {
+            Some(("kind", needle)) => Self::Kind(needle),
+            Some(("group", needle)) => Self::Group(needle),
+            Some(("namespace", needle)) => Self::Namespace(needle),
+            Some(("status", needle)) => Self::Status(needle),
+            Some(("ready", needle)) => Self::Ready(needle),
+            Some(("synced", needle)) => Self::Synced(needle),
+            _ => Self::Text(lowered),
+        }
+    }
+
+    fn matches(&self, node: &ProjectedNode) -> bool {
+        match *self {
+            Self::Kind(needle) => node.kind_lower.contains(needle),
+            Self::Group(needle) => node.group_lower.contains(needle),
+            Self::Namespace(needle) => node.namespace_lower.contains(needle),
+            Self::Status(needle) => node.search_text[node.status_offset..].contains(needle),
+            Self::Ready(needle) => bool_text(node.ready).contains(needle),
+            Self::Synced(needle) => bool_text(node.synced).contains(needle),
+            Self::Text(needle) => node.matches_text(needle),
+        }
     }
 }
 
@@ -861,7 +893,7 @@ mod tests {
     use super::*;
 
     fn matches_query(node: &ProjectedNode, query: &str) -> bool {
-        matches_lowered_query(node, &query.to_lowercase())
+        NodeQuery::parse(&query.to_lowercase()).matches(node)
     }
 
     const TRACE: &str = r#"{
