@@ -22,10 +22,14 @@ fn scroll_vertical(scroll: u16, delta: isize, max_scroll: u16) -> u16 {
 }
 
 impl App {
+    pub(super) fn clear_tree_interaction(&mut self) {
+        self.tree_selection = None;
+        self.last_tree_click = None;
+    }
+
     pub(super) fn clamp_tree_horizontal_scroll(&mut self, terminal_area: Rect) {
         let Some(tree_area) = resource_tree_area(terminal_area) else {
-            self.tree_selection = None;
-            self.last_tree_click = None;
+            self.clear_tree_interaction();
             return;
         };
         let offset = if self.resource_horizontal_scroll == 0 {
@@ -42,8 +46,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|selection| selection.area != tree_area)
         {
-            self.tree_selection = None;
-            self.last_tree_click = None;
+            self.clear_tree_interaction();
         }
         self.resource_horizontal_scroll = offset;
     }
@@ -61,8 +64,7 @@ impl App {
                 .saturating_sub(count.saturating_mul(4))
         };
         self.clamp_tree_horizontal_scroll(terminal_area);
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
     }
 
     pub(super) fn handle_mouse(
@@ -371,8 +373,7 @@ impl App {
                 return None;
             }
             if let Some(delta) = vertical_wheel_delta(mouse, count) {
-                self.tree_selection = None;
-                self.last_tree_click = None;
+                self.clear_tree_interaction();
                 self.move_selection(delta);
                 self.ensure_selection_visible(usize::from(tree_area.height.saturating_sub(3)));
                 return None;
@@ -405,8 +406,7 @@ impl App {
                     )
                 {
                     self.toggle_mark_at(position);
-                    self.tree_selection = None;
-                    self.last_tree_click = None;
+                    self.clear_tree_interaction();
                     return None;
                 }
                 self.tree_selection = rendered
@@ -489,8 +489,7 @@ impl App {
                     rendered.row_count,
                 ) {
                     self.set_selection(position);
-                    self.tree_selection = None;
-                    self.last_tree_click = None;
+                    self.clear_tree_interaction();
                     if let Some(target) = self.selected_target() {
                         let paused = self.selected_node().is_some_and(|node| node.paused);
                         let items = if self.upgrade_view {
@@ -552,8 +551,7 @@ impl App {
         }
         self.text_drag = None;
         if self.modal.is_none() {
-            self.tree_selection = None;
-            self.last_tree_click = None;
+            self.clear_tree_interaction();
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
             self.quit = true;

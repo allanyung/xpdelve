@@ -380,8 +380,7 @@ impl App {
     pub(super) fn enter_upgrade_view(&mut self) -> UiAction {
         self.upgrade_view = true;
         self.upgrade_marked.clear();
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
         // Cached results stay visible while the refresh runs.
         self.status = if self.revisions.has_cache() {
             "Refreshing Composition revisions (showing cached results)...".into()
@@ -394,8 +393,7 @@ impl App {
     pub(super) fn leave_upgrade_view(&mut self) {
         self.upgrade_view = false;
         self.upgrade_marked.clear();
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
         self.resource_horizontal_scroll = 0;
         self.set_selection(self.selection.visible_index);
     }

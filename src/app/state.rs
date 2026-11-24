@@ -347,8 +347,7 @@ impl App {
                 self.retry_delay = self.retry_delay.min(Duration::from_secs(
                     self.config.trace.retry_backoff_max_seconds,
                 ));
-                self.tree_selection = None;
-                self.last_tree_click = None;
+                self.clear_tree_interaction();
                 self.status = "Configuration reloaded".into();
             }
             Err(error) => {
@@ -838,8 +837,7 @@ impl App {
         self.trace_failed = false;
         self.resource_missing = true;
         self.status.clear();
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
         self.retry_delay = Duration::from_secs(1);
     }
 
