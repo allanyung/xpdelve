@@ -2075,9 +2075,7 @@ pub(super) fn render_modal(
                 regions[0],
                 *kind,
                 state.highlight_query(),
-                state.wrapped,
-                state.vertical_scroll,
-                state.horizontal_scroll,
+                state.viewport(),
                 theme,
             );
             if let Some(text_selection) = selection {

@@ -272,18 +272,20 @@ impl TextContent {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn render(
         &self,
         frame: &mut ratatui::Frame<'_>,
         body: Rect,
         kind: ContentKind,
         query: &str,
-        wrapped: bool,
-        vertical_scroll: u16,
-        horizontal_scroll: u16,
+        viewport: Viewport,
         theme: &Theme,
     ) {
+        let Viewport {
+            vertical: vertical_scroll,
+            horizontal: horizontal_scroll,
+            wrapped,
+        } = viewport;
         let mut cache = self.cache.borrow_mut();
         let layout = cache.layout(&self.text, body.width, wrapped);
         let scroll = usize::from(vertical_scroll);
@@ -421,9 +423,11 @@ mod tests {
                                     frame.area(),
                                     ContentKind::Yaml,
                                     query,
-                                    wrapped,
-                                    scroll,
-                                    horizontal,
+                                    Viewport {
+                                        vertical: scroll,
+                                        horizontal,
+                                        wrapped,
+                                    },
                                     &theme,
                                 );
                             })
@@ -467,9 +471,11 @@ mod tests {
                     frame.area(),
                     ContentKind::Yaml,
                     "",
-                    true,
-                    0,
-                    0,
+                    Viewport {
+                        vertical: 0,
+                        horizontal: 0,
+                        wrapped: true,
+                    },
                     &theme,
                 );
             })
@@ -496,9 +502,11 @@ mod tests {
                     frame.area(),
                     ContentKind::Yaml,
                     "",
-                    true,
-                    1,
-                    0,
+                    Viewport {
+                        vertical: 1,
+                        horizontal: 0,
+                        wrapped: true,
+                    },
                     &theme,
                 );
             })
@@ -526,9 +534,11 @@ mod tests {
                     frame.area(),
                     ContentKind::Yaml,
                     "value",
-                    true,
-                    1,
-                    0,
+                    Viewport {
+                        vertical: 1,
+                        horizontal: 0,
+                        wrapped: true,
+                    },
                     &theme,
                 );
             })
@@ -563,7 +573,18 @@ mod tests {
             theme.palette.sky = sky;
             terminal
                 .draw(|frame| {
-                    content.render(frame, frame.area(), kind, "", true, 0, 0, &theme);
+                    content.render(
+                        frame,
+                        frame.area(),
+                        kind,
+                        "",
+                        Viewport {
+                            vertical: 0,
+                            horizontal: 0,
+                            wrapped: true,
+                        },
+                        &theme,
+                    );
                 })
                 .unwrap();
             let expected = if colors_enabled && kind == ContentKind::Yaml {
