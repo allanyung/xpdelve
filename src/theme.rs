@@ -407,7 +407,11 @@ fn apply_overrides(palette: &mut Palette, colors: &HashMap<String, String>) -> R
         }
         let color = parse_hex(value)
             .ok_or_else(|| anyhow::anyhow!("invalid color {value:?} for skin.colors.{name}"))?;
-        debug_assert!(palette.set(&name, color));
+        let applied = palette.set(&name, color);
+        debug_assert!(
+            applied,
+            "SWATCH_NAMES and Palette::set disagree on {name:?}"
+        );
     }
     Ok(())
 }
@@ -591,6 +595,16 @@ mod tests {
         assert_eq!(theme.palette.overlay1, Color::Rgb(127, 132, 156));
         assert_eq!(theme.palette.yellow, Color::Rgb(249, 226, 175));
         assert_eq!(theme.palette.base, Color::Rgb(30, 30, 46));
+    }
+
+    #[test]
+    fn apply_overrides_sets_palette_slots() {
+        let mut palette = builtin("catppuccin-mocha").unwrap();
+        let mut colors = HashMap::new();
+        colors.insert(" Red ".into(), "#010203".into());
+        apply_overrides(&mut palette, &colors).unwrap();
+        assert_eq!(palette.red, Color::Rgb(1, 2, 3));
+        assert_eq!(palette.green, builtin("catppuccin-mocha").unwrap().green);
     }
 
     #[test]
