@@ -115,12 +115,6 @@ struct PatchContext {
     resource_version: String,
 }
 
-impl PatchContext {
-    fn precondition_tests(&self) -> [Value; 2] {
-        precondition_tests(&self.uid, &self.resource_version)
-    }
-}
-
 fn precondition_tests(uid: &str, resource_version: &str) -> [Value; 2] {
     [
         json!({"op": "test", "path": "/metadata/uid", "value": uid}),
@@ -313,22 +307,18 @@ impl Kubernetes {
     pub async fn set_paused(&self, target: &Target, paused: bool) -> Result<()> {
         const KEY: &str = "crossplane.io/paused";
         let context = self.verified_patch_context(target).await?;
-        let current_value = context
-            .current
-            .metadata
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.get(KEY));
+        let annotations = context.current.metadata.annotations.as_ref();
+        let current_value = annotations.and_then(|annotations| annotations.get(KEY));
         if (paused && current_value.is_some_and(|value| value == "true"))
             || (!paused && current_value.is_none())
         {
             return Ok(());
         }
 
-        let mut operations = context.precondition_tests().to_vec();
+        let mut operations = precondition_tests(&context.uid, &context.resource_version).to_vec();
         let path = "/metadata/annotations/crossplane.io~1paused";
         if paused {
-            if context.current.metadata.annotations.is_none() {
+            if annotations.is_none() {
                 operations.push(json!({"op": "add", "path": "/metadata/annotations", "value": {}}));
             }
             operations.push(json!({"op": "add", "path": path, "value": "true"}));
@@ -366,7 +356,7 @@ impl Kubernetes {
         if finalizers.len() == current_finalizers.len() {
             return Ok(());
         }
-        let mut operations = context.precondition_tests().to_vec();
+        let mut operations = precondition_tests(&context.uid, &context.resource_version).to_vec();
         operations.push(json!({"op": "add", "path": "/metadata/finalizers", "value": finalizers}));
         patch(&context.api, &target.identity.name, operations).await?;
         Ok(())
@@ -445,7 +435,7 @@ impl Kubernetes {
         if info.composition != composition || info.composite_kind != target.identity.kind {
             bail!("destination revision {to} does not belong to this Composition and type");
         }
-        let mut operations = context.precondition_tests().to_vec();
+        let mut operations = precondition_tests(&context.uid, &context.resource_version).to_vec();
         operations.push(json!({"op": "test", "path": name_path, "value": from}));
         operations.push(json!({"op": "replace", "path": name_path, "value": to}));
         patch(&context.api, &target.identity.name, operations).await?;
