@@ -159,7 +159,6 @@ impl Palette {
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub palette: Palette,
-    pub configured_name: Option<String>,
     pub resolved_name: String,
     pub colors_enabled: bool,
     /// Whether the main screen and full-screen views paint the skin background.
@@ -205,7 +204,6 @@ impl Theme {
         apply_overrides(&mut palette, &skin.colors)?;
         Ok(Self {
             palette,
-            configured_name: skin.name.clone(),
             resolved_name: resolved_name.to_owned(),
             colors_enabled,
             background: skin.background,
