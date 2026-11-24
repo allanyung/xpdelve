@@ -6694,73 +6694,26 @@ fn header_drops_the_update_notice_before_squeezing_the_resource() {
     assert!(header.contains("xpdelve v"));
 }
 
-fn synthetic_trace(
-    counter: &mut usize,
-    depth: usize,
-    max_depth: usize,
-    fanout: usize,
-) -> serde_json::Value {
-    let id = *counter;
-    *counter += 1;
-    let kind = id % 12;
-    let children: Vec<serde_json::Value> = if depth < max_depth {
-        (0..fanout)
-            .map(|_| synthetic_trace(counter, depth + 1, max_depth, fanout))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    serde_json::json!({
-        "object": {
-            "apiVersion": "example.io/v1",
-            "kind": format!("Kind{kind}"),
-            "metadata": {
-                "name": if id.is_multiple_of(100) { format!("hit-{id}") } else { format!("res-{id}") },
-                "namespace": format!("ns-{}", id % 50),
-                "uid": format!("uid-{id}"),
-                "annotations": {"crossplane.io/external-name": format!("external-{id}")},
-            },
-            "spec": {
-                "compositionRef": {"name": format!("comp-{kind}")},
-                "compositionUpdatePolicy": "Manual",
-                "compositionRevisionRef": {"name": format!("comp-{kind}-1")},
-            },
-            "status": {"conditions": [
-                {"type": "Ready", "status": if id.is_multiple_of(2) { "False" } else { "True" }, "reason": "Waiting"},
-                {"type": "Synced", "status": "True"}
-            ]}
-        },
-        "children": children,
-    })
-}
-
 #[test]
 #[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
 fn draw_timing_on_large_snapshot() {
     fn time_draws(label: &str, app: &mut App, terminal: &mut Terminal<TestBackend>) {
-        let mut durations = Vec::new();
-        for _ in 0..20 {
-            let started = std::time::Instant::now();
+        crate::test_support::bench_avg(label, 20, || {
             terminal
                 .draw(|frame| {
                     app.clamp_tree_horizontal_scroll(frame.area());
                     render(frame, app);
                 })
                 .unwrap();
-            durations.push(started.elapsed());
-        }
-        let total: std::time::Duration = durations.iter().sum();
+        });
         println!(
-            "{label}: {:?}/draw avg, first {:?}, visible {}, h-scroll {}",
-            total / 20,
-            durations[0],
+            "  visible {}, h-scroll {}",
             app.visible_shared().len(),
             app.resource_horizontal_scroll
         );
     }
 
-    let mut counter = 0;
-    let root = synthetic_trace(&mut counter, 0, 5, 7);
+    let root = crate::test_support::synthetic_trace(5, 7, true);
     let mut app = app();
     app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&root).unwrap()).unwrap());
     println!("nodes: {}", app.snapshot.as_ref().unwrap().nodes.len());
@@ -6832,18 +6785,9 @@ fn text_modal_timing_on_large_document() {
     let body = content_modal_body(area, ContentKind::Yaml);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     let draws = |label: &str, app: &App, terminal: &mut Terminal<TestBackend>| {
-        let mut durations = Vec::new();
-        for _ in 0..20 {
-            let started = std::time::Instant::now();
+        crate::test_support::bench_avg(label, 20, || {
             terminal.draw(|frame| render(frame, app)).unwrap();
-            durations.push(started.elapsed());
-        }
-        let total: std::time::Duration = durations.iter().sum();
-        println!(
-            "{label}: {:?}/draw avg, first {:?}",
-            total / 20,
-            durations[0]
-        );
+        });
     };
 
     for wrapped in [true, false] {
@@ -6883,24 +6827,21 @@ fn text_modal_timing_on_large_document() {
         let Some(Modal::Text { content, state, .. }) = &app.modal else {
             unreachable!()
         };
-        let started = std::time::Instant::now();
-        for step in 0..20_u16 {
+        let mut step = 0_u16;
+        crate::test_support::bench_avg("  drag event (selection_point_at)", 20, || {
             std::hint::black_box(content.selection_point_at(
                 body,
                 (body.x + step, body.y + step % body.height),
                 state.viewport(),
                 true,
             ));
-        }
-        println!(
-            "  drag events (selection_point_at): {:?}/event avg",
-            started.elapsed() / 20
-        );
+            step += 1;
+        });
     }
 }
 
 #[test]
-fn upgrade_projection_cache_follows_revision_and_snapshot_changes() {
+fn upgrade_projection_cache_follows_revision_changes() {
     let mut app = app_for_upgrades();
     assert_eq!(app.upgrade_available_count(), 1);
     let identity = app.snapshot.as_ref().unwrap().nodes[0].identity.clone();
@@ -6909,5 +6850,18 @@ fn upgrade_projection_cache_follows_revision_and_snapshot_changes() {
     app.revisions.clear_pending(&identity);
     assert_eq!(app.upgrade_available_count(), 1);
     app.revisions = RevisionDiscovery::loaded(upgrade::RevisionIndex::default());
+    assert_eq!(app.upgrade_available_count(), 0);
+}
+
+#[test]
+fn upgrade_projection_cache_drops_a_replaced_snapshot() {
+    let mut app = app_for_upgrades();
+    assert_eq!(app.upgrade_available_count(), 1);
+    app.apply_snapshot(
+        Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"Plain","metadata":{"name":"plain"}}}"#,
+        )
+        .unwrap(),
+    );
     assert_eq!(app.upgrade_available_count(), 0);
 }

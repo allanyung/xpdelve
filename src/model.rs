@@ -914,45 +914,10 @@ mod tests {
         condition_object(kind, name, "True", None)
     }
 
-    fn synthetic_node(counter: &mut usize, depth: usize, max_depth: usize, fanout: usize) -> Value {
-        let id = *counter;
-        *counter += 1;
-        let name = if id.is_multiple_of(100) {
-            format!("hit-{id}")
-        } else {
-            format!("res-{id}")
-        };
-        let ready = if id.is_multiple_of(2) {
-            "False"
-        } else {
-            "True"
-        };
-        let children: Vec<Value> = if depth < max_depth {
-            (0..fanout)
-                .map(|_| synthetic_node(counter, depth + 1, max_depth, fanout))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        serde_json::json!({
-            "object": {
-                "apiVersion": format!("example.io/v{}", id % 3 + 1),
-                "kind": format!("Kind{}", id % 12),
-                "metadata": {"name": name, "namespace": format!("ns-{}", id % 50)},
-                "status": {"conditions": [
-                    {"type": "Ready", "status": ready, "reason": "Waiting"},
-                    {"type": "Synced", "status": "True"}
-                ]}
-            },
-            "children": children,
-        })
-    }
-
     #[test]
     #[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
     fn visible_indices_timing_on_large_snapshot() {
-        let mut counter = 0;
-        let root = synthetic_node(&mut counter, 0, 5, 7);
+        let root = crate::test_support::synthetic_trace(5, 7, false);
         let snapshot =
             Snapshot::project(serde_json::from_value::<TraceNode>(root).unwrap()).unwrap();
         println!("nodes: {}", snapshot.nodes.len());
@@ -963,18 +928,13 @@ mod tests {
             ("~1% text", Some("hit-")),
             ("~50% text", Some("unready")),
         ] {
-            let started = std::time::Instant::now();
-            let mut total = 0;
-            for _ in 0..20 {
-                total += snapshot
+            let mut visible = 0;
+            crate::test_support::bench_avg(label, 20, || {
+                visible = snapshot
                     .visible_indices(&collapsed, &excluded, filter, None, HealthFilter::All)
                     .len();
-            }
-            println!(
-                "{label}: {:?}/call (visible {})",
-                started.elapsed() / 20,
-                total / 20
-            );
+            });
+            println!("  visible {visible}");
         }
     }
 
