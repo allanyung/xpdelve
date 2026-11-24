@@ -87,7 +87,7 @@ pub async fn execute(
             match request.timeout {
                 Some(timeout) => time::timeout(timeout, child.wait())
                     .await
-                    .map_err(|_| anyhow!("trace command timed out after {}s", timeout.as_secs()))?
+                    .map_err(|_| anyhow!("trace command timed out after {timeout:?}"))?
                     .context("failed while waiting for trace command"),
                 None => child
                     .wait()
@@ -306,6 +306,24 @@ mod tests {
             .unwrap();
         assert_eq!(output.stdout, br#"{"object":{}}"#);
         assert_eq!(output.stderr, b"warning");
+    }
+
+    #[tokio::test]
+    async fn timeout_error_reports_sub_second_durations() {
+        let config = TraceConfig {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            resource_args: vec!["{resource}".into()],
+            ..TraceConfig::default()
+        };
+        let request = TraceRequest {
+            timeout: Some(Duration::from_millis(100)),
+            ..request()
+        };
+        let error = execute(&config, &request, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("after 100ms"), "{error}");
     }
 
     #[tokio::test]
