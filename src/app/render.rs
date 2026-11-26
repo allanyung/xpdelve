@@ -19,12 +19,8 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, app: &App) {
         );
         return;
     }
-    if let Some(
-        modal @ Modal::Text {
-            kind: ContentKind::Describe | ContentKind::Yaml | ContentKind::Events,
-            ..
-        },
-    ) = &app.modal
+    if let Some(modal @ Modal::Text { kind, .. }) = &app.modal
+        && kind.is_full_screen()
     {
         // These views cover the terminal. Formatting the hidden resource tree
         // on every scroll frame is wasted work, especially for large traces.
@@ -403,18 +399,9 @@ pub(super) fn render_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
         );
     }
     if let Some(selection) = &app.tree_selection {
-        render_text_selection(
-            frame,
-            body,
-            &rendered.content,
-            selection.text,
-            Viewport {
-                vertical: 0,
-                horizontal: 0,
-                wrapped: false,
-            },
-            &app.theme,
-        );
+        rendered
+            .content
+            .render_selection(frame, body, selection.text, TREE_VIEWPORT, &app.theme);
     }
 }
 
@@ -670,7 +657,7 @@ const OBJECT_HEADER: &str = "    OBJECT";
 pub(super) struct RenderedTree {
     pub(super) lines: Vec<String>,
     pub(super) guides: Vec<String>,
-    pub(super) content: String,
+    pub(super) content: content::TextContent,
     pub(super) start: usize,
     pub(super) row_count: usize,
     pub(super) horizontal: TreeHorizontalLayout,
@@ -850,11 +837,11 @@ fn build_rendered_tree(
         guides.push(row_guides);
     }
     let row_count = lines.len().saturating_sub(1);
-    let content = if with_content {
+    let content = content::TextContent::from(if with_content {
         lines.join("\n")
     } else {
         String::new()
-    };
+    });
     Some(RenderedTree {
         lines,
         guides,
@@ -2022,13 +2009,7 @@ pub(super) fn render_modal(
     modal: &Modal,
     theme: &Theme,
 ) {
-    if matches!(
-        modal,
-        Modal::Text {
-            kind: ContentKind::Describe | ContentKind::Yaml | ContentKind::Events,
-            ..
-        }
-    ) {
+    if matches!(modal, Modal::Text { kind, .. } if kind.is_full_screen()) {
         // Full-screen views follow `skin.background` (transparent terminals
         // keep their own background by default), unlike popups, which are
         // always painted so they stand apart from the tree.
@@ -2070,7 +2051,7 @@ pub(super) fn render_modal(
                 spans.push(Span::raw(" "));
                 Line::from(spans)
             };
-            let block = if matches!(kind, ContentKind::Error | ContentKind::SmallError) {
+            let block = if kind.is_error() {
                 destructive_block(title, theme)
             } else {
                 bordered_block(title, theme)
@@ -2084,9 +2065,7 @@ pub(super) fn render_modal(
                 regions[0],
                 *kind,
                 state.highlight_query(),
-                state.wrapped,
-                state.vertical_scroll,
-                state.horizontal_scroll,
+                state.viewport(),
                 theme,
             );
             if let Some(text_selection) = selection {

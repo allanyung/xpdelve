@@ -369,8 +369,8 @@ impl App {
         }
     }
 
-    pub(super) fn upgrade_info_for(&self, node: &ProjectedNode) -> UpgradeInfo {
-        upgrade_info(node, &self.revisions)
+    pub(super) fn upgrade_info_at(&self, index: usize) -> Option<UpgradeInfo> {
+        self.upgrade_infos()?.by_node.get(index).cloned()
     }
 
     pub(super) fn upgrade_available_count(&self) -> usize {
@@ -380,8 +380,7 @@ impl App {
     pub(super) fn enter_upgrade_view(&mut self) -> UiAction {
         self.upgrade_view = true;
         self.upgrade_marked.clear();
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
         // Cached results stay visible while the refresh runs.
         self.status = if self.revisions.has_cache() {
             "Refreshing Composition revisions (showing cached results)...".into()
@@ -394,8 +393,7 @@ impl App {
     pub(super) fn leave_upgrade_view(&mut self) {
         self.upgrade_view = false;
         self.upgrade_marked.clear();
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
         self.resource_horizontal_scroll = 0;
         self.set_selection(self.selection.visible_index);
     }
@@ -433,10 +431,13 @@ impl App {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
         };
+        let Some(infos) = self.upgrade_infos() else {
+            return;
+        };
         let mut added = 0;
         for index in self.visible_shared().iter().copied() {
             let node = &snapshot.nodes[index];
-            if self.upgrade_info_for(node).plan.is_some()
+            if infos.by_node[index].plan.is_some()
                 && self
                     .upgrade_marked
                     .insert(node.identity.clone(), node.uid.clone())
@@ -449,11 +450,8 @@ impl App {
     }
 
     fn upgrade_plan_for(&self, target: &Target) -> Option<UpgradePlan> {
-        let snapshot = self.snapshot.as_ref()?;
-        let node = snapshot
-            .nodes
-            .get(*snapshot.by_identity.get(&target.identity)?)?;
-        self.upgrade_info_for(node).plan
+        let index = *self.snapshot.as_ref()?.by_identity.get(&target.identity)?;
+        self.upgrade_info_at(index)?.plan
     }
 
     /// Context-menu mark/unmark of one resource.
@@ -470,9 +468,10 @@ impl App {
 
     /// Context-menu review of exactly the clicked resource, ignoring other marks.
     pub(super) fn review_upgrade_for(&mut self, target: &Target) {
-        if self.config.read_only {
-            self.status = "Upgrades are disabled in read-only mode".into();
-        } else if let Some(plan) = self.upgrade_plan_for(target) {
+        if !self.ensure_writable("Upgrades") {
+            return;
+        }
+        if let Some(plan) = self.upgrade_plan_for(target) {
             self.modal = Some(Modal::UpgradeReview { plans: vec![plan] });
         } else {
             self.status = "No revision upgrade available for this resource".into();
@@ -480,22 +479,22 @@ impl App {
     }
 
     pub(super) fn request_upgrade_review(&mut self) {
-        if self.config.read_only {
-            self.status = "Upgrades are disabled in read-only mode".into();
+        if !self.ensure_writable("Upgrades") {
             return;
         }
-        let nodes = if self.upgrade_marked.is_empty() {
-            self.selected_node().into_iter().collect()
+        let indices = if self.upgrade_marked.is_empty() {
+            self.selected_index().into_iter().collect()
         } else {
             self.snapshot
                 .iter()
-                .flat_map(|snapshot| snapshot.nodes.iter())
-                .filter(|node| self.upgrade_marked.contains_key(&node.identity))
+                .flat_map(|snapshot| snapshot.nodes.iter().enumerate())
+                .filter(|(_, node)| self.upgrade_marked.contains_key(&node.identity))
+                .map(|(index, _)| index)
                 .collect::<Vec<_>>()
         };
-        let plans: Vec<_> = nodes
+        let plans: Vec<_> = indices
             .into_iter()
-            .filter_map(|node| self.upgrade_info_for(node).plan)
+            .filter_map(|index| self.upgrade_info_at(index)?.plan)
             .collect();
         if plans.is_empty() {
             self.status = "No revision upgrades available for the selected resources".into();

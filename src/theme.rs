@@ -2,7 +2,6 @@
 // Copyright 2026 Nikola Milojević. Licensed under Apache-2.0.
 // Translated and modified for xpdelve in 2026.
 // See NOTICE for full provenance.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -159,7 +158,6 @@ impl Palette {
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub palette: Palette,
-    pub configured_name: Option<String>,
     pub resolved_name: String,
     pub colors_enabled: bool,
     /// Whether the main screen and full-screen views paint the skin background.
@@ -205,7 +203,6 @@ impl Theme {
         apply_overrides(&mut palette, &skin.colors)?;
         Ok(Self {
             palette,
-            configured_name: skin.name.clone(),
             resolved_name: resolved_name.to_owned(),
             colors_enabled,
             background: skin.background,
@@ -384,17 +381,16 @@ fn canonical_name(name: &str) -> Result<&'static str> {
         "rosepine" => "rose-pine",
         "rosepinedawn" => "rose-pine-dawn",
         "flexoki" => "flexoki-dark",
-        value if BUILTIN_NAMES.contains(&value) => {
-            return Ok(BUILTIN_NAMES
-                .iter()
-                .copied()
-                .find(|candidate| *candidate == value)
-                .expect("checked above"));
-        }
-        _ => bail!(
-            "unknown skin {name:?}; expected one of {}",
-            BUILTIN_NAMES.join(", ")
-        ),
+        value => BUILTIN_NAMES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == value)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown skin {name:?}; expected one of {}",
+                    BUILTIN_NAMES.join(", ")
+                )
+            })?,
     };
     Ok(canonical)
 }
@@ -407,7 +403,11 @@ fn apply_overrides(palette: &mut Palette, colors: &HashMap<String, String>) -> R
         }
         let color = parse_hex(value)
             .ok_or_else(|| anyhow::anyhow!("invalid color {value:?} for skin.colors.{name}"))?;
-        debug_assert!(palette.set(&name, color));
+        let applied = palette.set(&name, color);
+        debug_assert!(
+            applied,
+            "SWATCH_NAMES and Palette::set disagree on {name:?}"
+        );
     }
     Ok(())
 }
@@ -591,6 +591,16 @@ mod tests {
         assert_eq!(theme.palette.overlay1, Color::Rgb(127, 132, 156));
         assert_eq!(theme.palette.yellow, Color::Rgb(249, 226, 175));
         assert_eq!(theme.palette.base, Color::Rgb(30, 30, 46));
+    }
+
+    #[test]
+    fn apply_overrides_sets_palette_slots() {
+        let mut palette = builtin("catppuccin-mocha").unwrap();
+        let mut colors = HashMap::new();
+        colors.insert(" Red ".into(), "#010203".into());
+        apply_overrides(&mut palette, &colors).unwrap();
+        assert_eq!(palette.red, Color::Rgb(1, 2, 3));
+        assert_eq!(palette.green, builtin("catppuccin-mocha").unwrap().green);
     }
 
     #[test]

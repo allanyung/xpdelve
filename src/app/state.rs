@@ -155,10 +155,6 @@ impl App {
         });
     }
 
-    pub(super) fn visible(&self) -> Vec<usize> {
-        self.visible_shared().as_ref().clone()
-    }
-
     pub(super) fn palette_entries(&self) -> Vec<PaletteEntry> {
         let mut seen = HashSet::new();
         let mut kinds = self
@@ -351,19 +347,16 @@ impl App {
                 self.retry_delay = self.retry_delay.min(Duration::from_secs(
                     self.config.trace.retry_backoff_max_seconds,
                 ));
-                self.tree_selection = None;
-                self.last_tree_click = None;
+                self.clear_tree_interaction();
                 self.status = "Configuration reloaded".into();
             }
             Err(error) => {
                 self.status = "Could not reload configuration".into();
-                self.modal = Some(Modal::Text {
-                    title: "Configuration reload failed".into(),
-                    content: text::sanitize(&format!("{error:#}")).into(),
-                    kind: ContentKind::SmallError,
-                    state: TextModalState::new(ContentKind::SmallError),
-                    selection: None,
-                });
+                self.modal = Some(Modal::text(
+                    "Configuration reload failed",
+                    text::sanitize(&format!("{error:#}")),
+                    ContentKind::SmallError,
+                ));
             }
         }
     }
@@ -396,10 +389,14 @@ impl App {
         self.status = format!("Skin: {name}");
     }
 
+    pub(super) fn selected_index(&self) -> Option<usize> {
+        self.visible_shared()
+            .get(self.selection.visible_index)
+            .copied()
+    }
+
     pub(super) fn selected_node(&self) -> Option<&ProjectedNode> {
-        let visible = self.visible();
-        let index = *visible.get(self.selection.visible_index)?;
-        self.snapshot.as_ref()?.nodes.get(index)
+        self.snapshot.as_ref()?.nodes.get(self.selected_index()?)
     }
 
     pub(super) fn selected_target(&self) -> Option<Target> {
@@ -414,16 +411,19 @@ impl App {
     }
 
     pub(super) fn toggle_mark_at(&mut self, position: usize) {
-        let visible = self.visible();
-        let Some(node) = visible
+        let visible = self.visible_shared();
+        let Some((index, node)) = visible
             .get(position)
-            .and_then(|index| self.snapshot.as_ref()?.nodes.get(*index))
+            .and_then(|index| Some((*index, self.snapshot.as_ref()?.nodes.get(*index)?)))
         else {
             return;
         };
         let identity = node.identity.clone();
         let uid = node.uid.clone();
-        let eligible = !self.upgrade_view || self.upgrade_info_for(node).plan.is_some();
+        let eligible = !self.upgrade_view
+            || self
+                .upgrade_info_at(index)
+                .is_some_and(|info| info.plan.is_some());
         let marks = if self.upgrade_view {
             &mut self.upgrade_marked
         } else {
@@ -456,7 +456,6 @@ impl App {
     }
 
     /// Marked resources in tree order, or the highlighted resource when none are marked.
-    /// Each entry carries whether the resource is currently paused.
     pub(super) fn action_nodes(&self) -> Vec<&ProjectedNode> {
         if self.marked.is_empty() {
             return self.selected_node().into_iter().collect();
@@ -483,9 +482,15 @@ impl App {
             .collect()
     }
 
-    pub(super) fn request_finalizers(&mut self) {
+    pub(super) fn ensure_writable(&mut self, action: &str) -> bool {
         if self.config.read_only {
-            self.status = "Finalizer removal is disabled in read-only mode".into();
+            self.status = format!("{action} is disabled in read-only mode");
+        }
+        !self.config.read_only
+    }
+
+    pub(super) fn request_finalizers(&mut self) {
+        if !self.ensure_writable("Finalizer removal") {
             return;
         }
         let targets: Vec<FinalizerTarget> = self
@@ -532,8 +537,7 @@ impl App {
     }
 
     pub(super) fn request_delete(&mut self) {
-        if self.config.read_only {
-            self.status = "Delete is disabled in read-only mode".into();
+        if !self.ensure_writable("Delete") {
             return;
         }
         let targets: Vec<_> = self
@@ -550,8 +554,7 @@ impl App {
     }
 
     pub(super) fn request_reconcile(&mut self) -> UiAction {
-        if self.config.read_only {
-            self.status = "Reconcile is disabled in read-only mode".into();
+        if !self.ensure_writable("Reconcile") {
             return UiAction::None;
         }
         let targets: Vec<_> = self
@@ -567,8 +570,7 @@ impl App {
     }
 
     pub(super) fn request_pause_toggle(&mut self) -> UiAction {
-        if self.config.read_only {
-            self.status = "Pause is disabled in read-only mode".into();
+        if !self.ensure_writable("Pause") {
             return UiAction::None;
         }
         let entries = self.action_targets();
@@ -611,13 +613,7 @@ impl App {
                     })
             },
         );
-        self.modal = Some(Modal::Text {
-            title,
-            content: content.into(),
-            kind: ContentKind::Yaml,
-            state: TextModalState::new(ContentKind::Yaml),
-            selection: None,
-        });
+        self.modal = Some(Modal::text(title, content, ContentKind::Yaml));
     }
 
     pub(super) fn show_resource_details(&mut self) {
@@ -627,24 +623,15 @@ impl App {
         let Some(content) = &node.status_details else {
             return;
         };
-        self.modal = Some(Modal::Text {
-            title: format!("{} — details", node.identity),
-            content: content.clone().into(),
-            kind: ContentKind::Error,
-            state: TextModalState::new(ContentKind::Error),
-            selection: None,
-        });
+        self.modal = Some(Modal::error(
+            format!("{} — details", node.identity),
+            content.clone(),
+        ));
     }
 
     pub(super) fn show_error(&mut self, title: String, content: &str) {
         self.status.clone_from(&title);
-        self.modal = Some(Modal::Text {
-            title,
-            content: text::sanitize(content).into(),
-            kind: ContentKind::Error,
-            state: TextModalState::new(ContentKind::Error),
-            selection: None,
-        });
+        self.modal = Some(Modal::error(title, text::sanitize(content)));
     }
 
     pub(super) fn finish_action(
@@ -666,13 +653,7 @@ impl App {
                     label if label.starts_with("Events:") => ContentKind::Events,
                     _ => ContentKind::Describe,
                 };
-                self.modal = Some(Modal::Text {
-                    title: view_title(label),
-                    content: content.into(),
-                    kind,
-                    state: TextModalState::new(kind),
-                    selection: None,
-                });
+                self.modal = Some(Modal::text(view_title(label), content, kind));
                 true
             }
             Ok(None) => {
@@ -688,14 +669,10 @@ impl App {
                         self.revisions.clear_pending(&identity);
                     }
                     self.status = format!("{label} failed");
-                    self.modal = Some(Modal::Text {
-                        title: format!("{label} failed"),
-                        content: text::sanitize(&format!("Resource: {identity}\n\n{error}\n"))
-                            .into(),
-                        kind: ContentKind::Error,
-                        state: TextModalState::new(ContentKind::Error),
-                        selection: None,
-                    });
+                    self.modal = Some(Modal::error(
+                        format!("{label} failed"),
+                        text::sanitize(&format!("Resource: {identity}\n\n{error}\n")),
+                    ));
                 } else if ["Describe:", "YAML:", "Events:"]
                     .iter()
                     .any(|prefix| label.starts_with(prefix))
@@ -740,13 +717,10 @@ impl App {
             }
             Err(error) => {
                 self.status = format!("{label} failed");
-                self.modal = Some(Modal::Text {
-                    title: format!("{label} failed"),
-                    content: text::sanitize(&format!("{error}\n")).into(),
-                    kind: ContentKind::Error,
-                    state: TextModalState::new(ContentKind::Error),
-                    selection: None,
-                });
+                self.modal = Some(Modal::error(
+                    format!("{label} failed"),
+                    text::sanitize(&format!("{error}\n")),
+                ));
                 false
             }
         }
@@ -778,7 +752,7 @@ impl App {
                     .is_some_and(|index| snapshot.nodes[*index].uid == *uid)
             });
         }
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let visible_index = selection_chain
             .iter()
             .find_map(|identity| snapshot.by_identity.get(identity))
@@ -825,13 +799,7 @@ impl App {
         self.collapsed.clear();
         self.marked.clear();
         self.upgrade_marked.clear();
-        if !matches!(
-            self.modal,
-            Some(Modal::Text {
-                kind: ContentKind::Error | ContentKind::SmallError,
-                ..
-            })
-        ) {
+        if !matches!(&self.modal, Some(Modal::Text { kind, .. }) if kind.is_error()) {
             if let Some(Modal::SkinPicker { original, .. }) = self.modal.take() {
                 self.theme = original;
             }
@@ -842,8 +810,7 @@ impl App {
         self.trace_failed = false;
         self.resource_missing = true;
         self.status.clear();
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
         self.retry_delay = Duration::from_secs(1);
     }
 
@@ -851,7 +818,7 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return Vec::new();
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(mut index) = visible.get(self.selection.visible_index).copied() else {
             return Vec::new();
         };
@@ -872,7 +839,7 @@ impl App {
             self.selection = Selection::empty();
             return;
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         if visible.is_empty() {
             self.selection = Selection::empty();
             return;
@@ -890,7 +857,7 @@ impl App {
             self.selection = Selection::empty();
             return;
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let visible_index = index.min(visible.len().saturating_sub(1));
         self.selection = Selection::new(visible_index, &snapshot.nodes, &visible);
     }
@@ -911,7 +878,7 @@ impl App {
     }
 
     pub(super) fn expand_or_child(&mut self) {
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(snapshot) = &self.snapshot else {
             return;
         };
@@ -937,7 +904,7 @@ impl App {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(index) = visible.get(self.selection.visible_index).copied() else {
             return;
         };
@@ -957,7 +924,7 @@ impl App {
         if self.find.is_empty() {
             return;
         }
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let Some(snapshot) = &self.snapshot else {
             return;
         };
@@ -1019,7 +986,7 @@ impl App {
 
     /// Keeps the selected resource when it survives the filter, else selects the first row.
     fn reselect_after_filter(&mut self) {
-        let visible = self.visible();
+        let visible = self.visible_shared();
         let position = self.snapshot.as_ref().and_then(|snapshot| {
             let identity = self.selection.identity.as_ref()?;
             visible

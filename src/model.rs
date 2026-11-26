@@ -124,11 +124,15 @@ pub struct ProjectedNode {
     pub object: Arc<Value>,
     search_text: String,
     status_offset: usize,
+    kind_lower: String,
+    group_lower: String,
+    namespace_lower: String,
 }
 
 impl ProjectedNode {
-    pub fn matches_text(&self, query: &str) -> bool {
-        self.search_text.contains(&query.to_lowercase())
+    /// `lowered` must already be lowercase.
+    pub fn matches_text(&self, lowered: &str) -> bool {
+        self.search_text.contains(lowered)
     }
 }
 
@@ -220,7 +224,7 @@ impl Snapshot {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_lowercase);
-        let query = query.as_deref();
+        let query = query.as_deref().map(NodeQuery::parse);
         let health_filtering = health != HealthFilter::All;
         let filtering = query.is_some() || health_filtering;
         let kind_matches =
@@ -230,7 +234,7 @@ impl Snapshot {
         if filtering {
             retained = vec![false; self.nodes.len()];
             for (index, node) in self.nodes.iter().enumerate() {
-                let direct = query.is_none_or(|query| matches_lowered_query(node, query))
+                let direct = query.is_none_or(|query| query.matches(node))
                     && kind_matches(node)
                     && health.matches(node.health);
                 if !direct {
@@ -358,6 +362,13 @@ fn project_node(
     let index = projected.len();
     let resource_kind = identity.resource_kind();
     let (search_text, status_offset) = search_text(&identity, &status, status_details.as_deref());
+    let kind_lower = identity.kind.to_lowercase();
+    let group_lower = identity.group.to_lowercase();
+    let namespace_lower = identity
+        .namespace
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
     projected.push(ProjectedNode {
         identity,
         resource_kind,
@@ -381,6 +392,9 @@ fn project_node(
         object: Arc::new(node.object),
         search_text,
         status_offset,
+        kind_lower,
+        group_lower,
+        namespace_lower,
     });
 
     let last = child_count.saturating_sub(1);
@@ -828,27 +842,41 @@ fn access_denied(error: &Value) -> Option<AccessDenied> {
     }
 }
 
-#[cfg(test)]
-fn matches_query(node: &ProjectedNode, query: &str) -> bool {
-    matches_lowered_query(node, &query.to_lowercase())
+#[derive(Clone, Copy)]
+enum NodeQuery<'a> {
+    Kind(&'a str),
+    Group(&'a str),
+    Namespace(&'a str),
+    Status(&'a str),
+    Ready(&'a str),
+    Synced(&'a str),
+    Text(&'a str),
 }
 
-fn matches_lowered_query(node: &ProjectedNode, query: &str) -> bool {
-    let (field, needle) = query.split_once(':').unwrap_or(("", query));
-    match field {
-        "kind" => node.identity.kind.to_lowercase().contains(needle),
-        "group" => node.identity.group.to_lowercase().contains(needle),
-        "namespace" => node
-            .identity
-            .namespace
-            .as_deref()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains(needle),
-        "status" => node.search_text[node.status_offset..].contains(needle),
-        "ready" => bool_text(node.ready).contains(needle),
-        "synced" => bool_text(node.synced).contains(needle),
-        _ => node.search_text.contains(query),
+impl<'a> NodeQuery<'a> {
+    /// `lowered` must already be lowercase.
+    fn parse(lowered: &'a str) -> Self {
+        match lowered.split_once(':') {
+            Some(("kind", needle)) => Self::Kind(needle),
+            Some(("group", needle)) => Self::Group(needle),
+            Some(("namespace", needle)) => Self::Namespace(needle),
+            Some(("status", needle)) => Self::Status(needle),
+            Some(("ready", needle)) => Self::Ready(needle),
+            Some(("synced", needle)) => Self::Synced(needle),
+            _ => Self::Text(lowered),
+        }
+    }
+
+    fn matches(&self, node: &ProjectedNode) -> bool {
+        match *self {
+            Self::Kind(needle) => node.kind_lower.contains(needle),
+            Self::Group(needle) => node.group_lower.contains(needle),
+            Self::Namespace(needle) => node.namespace_lower.contains(needle),
+            Self::Status(needle) => node.search_text[node.status_offset..].contains(needle),
+            Self::Ready(needle) => bool_text(node.ready).contains(needle),
+            Self::Synced(needle) => bool_text(node.synced).contains(needle),
+            Self::Text(needle) => node.matches_text(needle),
+        }
     }
 }
 
@@ -863,6 +891,10 @@ fn bool_text(value: Option<bool>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn matches_query(node: &ProjectedNode, query: &str) -> bool {
+        NodeQuery::parse(&query.to_lowercase()).matches(node)
+    }
 
     const TRACE: &str = r#"{
       "object": {"apiVersion":"example.io/v1","kind":"Root","metadata":{"name":"root"}},
@@ -882,45 +914,10 @@ mod tests {
         condition_object(kind, name, "True", None)
     }
 
-    fn synthetic_node(counter: &mut usize, depth: usize, max_depth: usize, fanout: usize) -> Value {
-        let id = *counter;
-        *counter += 1;
-        let name = if id.is_multiple_of(100) {
-            format!("hit-{id}")
-        } else {
-            format!("res-{id}")
-        };
-        let ready = if id.is_multiple_of(2) {
-            "False"
-        } else {
-            "True"
-        };
-        let children: Vec<Value> = if depth < max_depth {
-            (0..fanout)
-                .map(|_| synthetic_node(counter, depth + 1, max_depth, fanout))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        serde_json::json!({
-            "object": {
-                "apiVersion": format!("example.io/v{}", id % 3 + 1),
-                "kind": format!("Kind{}", id % 12),
-                "metadata": {"name": name, "namespace": format!("ns-{}", id % 50)},
-                "status": {"conditions": [
-                    {"type": "Ready", "status": ready, "reason": "Waiting"},
-                    {"type": "Synced", "status": "True"}
-                ]}
-            },
-            "children": children,
-        })
-    }
-
     #[test]
     #[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
     fn visible_indices_timing_on_large_snapshot() {
-        let mut counter = 0;
-        let root = synthetic_node(&mut counter, 0, 5, 7);
+        let root = crate::test_support::synthetic_trace(5, 7, false);
         let snapshot =
             Snapshot::project(serde_json::from_value::<TraceNode>(root).unwrap()).unwrap();
         println!("nodes: {}", snapshot.nodes.len());
@@ -931,18 +928,13 @@ mod tests {
             ("~1% text", Some("hit-")),
             ("~50% text", Some("unready")),
         ] {
-            let started = std::time::Instant::now();
-            let mut total = 0;
-            for _ in 0..20 {
-                total += snapshot
+            let mut visible = 0;
+            crate::test_support::bench_avg(label, 20, || {
+                visible = snapshot
                     .visible_indices(&collapsed, &excluded, filter, None, HealthFilter::All)
                     .len();
-            }
-            println!(
-                "{label}: {:?}/call (visible {})",
-                started.elapsed() / 20,
-                total / 20
-            );
+            });
+            println!("  visible {visible}");
         }
     }
 

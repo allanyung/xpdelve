@@ -308,9 +308,9 @@ impl TextModalState {
         }
     }
 
-    fn new(kind: ContentKind) -> Self {
+    fn new() -> Self {
         Self {
-            wrapped: kind.wraps_by_default(),
+            wrapped: true,
             vertical_scroll: 0,
             horizontal_scroll: 0,
             query: String::new(),
@@ -453,6 +453,26 @@ enum Modal {
     },
 }
 
+impl Modal {
+    fn text(
+        title: impl Into<String>,
+        content: impl Into<content::TextContent>,
+        kind: ContentKind,
+    ) -> Self {
+        Self::Text {
+            title: title.into(),
+            content: content.into(),
+            kind,
+            state: TextModalState::new(),
+            selection: None,
+        }
+    }
+
+    fn error(title: impl Into<String>, content: impl Into<content::TextContent>) -> Self {
+        Self::text(title, content, ContentKind::Error)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct FinalizerTarget {
     target: Target,
@@ -482,7 +502,7 @@ struct TextSelection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSelection {
     text: TextSelection,
-    content: String,
+    content: content::TextContent,
     area: Rect,
     selecting: bool,
 }
@@ -522,18 +542,12 @@ enum ContentKind {
 }
 
 impl ContentKind {
-    fn supports_mouse_selection(self) -> bool {
-        matches!(
-            self,
-            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
-        )
+    fn is_full_screen(self) -> bool {
+        matches!(self, Self::Describe | Self::Yaml | Self::Events)
     }
 
-    fn wraps_by_default(self) -> bool {
-        matches!(
-            self,
-            Self::Describe | Self::Yaml | Self::Events | Self::Error | Self::SmallError
-        )
+    fn is_error(self) -> bool {
+        matches!(self, Self::Error | Self::SmallError)
     }
 }
 

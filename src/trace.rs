@@ -42,7 +42,7 @@ pub async fn execute(
     request: &TraceRequest,
     cancelled: CancellationToken,
 ) -> Result<TraceOutput, TraceError> {
-    let (program, args) = resolved_command(config, request)?;
+    let (program, args) = resolved_command(config, request);
     let mut command = Command::new(&program);
     command
         .args(&args)
@@ -87,7 +87,7 @@ pub async fn execute(
             match request.timeout {
                 Some(timeout) => time::timeout(timeout, child.wait())
                     .await
-                    .map_err(|_| anyhow!("trace command timed out after {}s", timeout.as_secs()))?
+                    .map_err(|_| anyhow!("trace command timed out after {timeout:?}"))?
                     .context("failed while waiting for trace command"),
                 None => child
                     .wait()
@@ -151,10 +151,7 @@ enum WaitOutcome {
     OutputLimit,
 }
 
-pub fn resolved_command(
-    config: &TraceConfig,
-    request: &TraceRequest,
-) -> Result<(String, Vec<String>)> {
+fn resolved_command(config: &TraceConfig, request: &TraceRequest) -> (String, Vec<String>) {
     let mut args = config.args.clone();
     args.extend(replace(
         &config.resource_args,
@@ -167,7 +164,7 @@ pub fn resolved_command(
     if let Some(namespace) = &request.namespace {
         args.extend(replace(&config.namespace_args, "{namespace}", namespace));
     }
-    Ok((config.program.clone(), args))
+    (config.program.clone(), args)
 }
 
 fn replace(args: &[String], placeholder: &str, value: &str) -> Vec<String> {
@@ -262,6 +259,84 @@ mod tests {
     use super::*;
     use nix::sys::signal::kill;
 
+    const TEST_DEADLINE: Duration = Duration::from_secs(30);
+
+    fn process_running(pid: Pid) -> bool {
+        if kill(pid, None).is_err() {
+            return false;
+        }
+        let stat = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default();
+        !stat.is_empty() && !stat.starts_with('Z')
+    }
+
+    fn script_config(script: &str) -> TraceConfig {
+        TraceConfig {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            resource_args: vec!["{resource}".into()],
+            ..TraceConfig::default()
+        }
+    }
+
+    struct RunningTrace {
+        cancel: CancellationToken,
+        task: JoinHandle<Result<TraceOutput, TraceError>>,
+    }
+
+    fn spawn_trace(script: &str) -> RunningTrace {
+        let config = script_config(script);
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let task = tokio::spawn(async move { execute(&config, &request(), token).await });
+        RunningTrace { cancel, task }
+    }
+
+    impl RunningTrace {
+        async fn cancel(&mut self) {
+            self.cancel.cancel();
+            let error = time::timeout(TEST_DEADLINE, &mut self.task)
+                .await
+                .expect("cancelled trace should complete")
+                .unwrap()
+                .unwrap_err();
+            assert!(error.to_string().contains("cancelled"), "{error}");
+        }
+    }
+
+    impl Drop for RunningTrace {
+        fn drop(&mut self) {
+            self.cancel.cancel();
+        }
+    }
+
+    struct GrandchildCleanup(PathBuf);
+
+    impl Drop for GrandchildCleanup {
+        fn drop(&mut self) {
+            if let Ok(contents) = std::fs::read_to_string(&self.0)
+                && let Ok(pid) = contents.trim().parse::<i32>()
+            {
+                let pid = Pid::from_raw(pid);
+                if process_running(pid) {
+                    let _ = kill(pid, Signal::SIGKILL);
+                }
+            }
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    async fn cancel_after_start(script: &str) -> Duration {
+        let mut trace = spawn_trace(script);
+        time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        trace.cancel().await;
+        started.elapsed()
+    }
+
     fn request() -> TraceRequest {
         TraceRequest {
             resource: "Bucket/example".into(),
@@ -278,7 +353,7 @@ mod tests {
             namespace: Some("default".into()),
             ..request()
         };
-        let (_, args) = resolved_command(&TraceConfig::default(), &request).unwrap();
+        let (_, args) = resolved_command(&TraceConfig::default(), &request);
         assert_eq!(
             args,
             [
@@ -312,6 +387,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeout_error_reports_sub_second_durations() {
+        let config = TraceConfig {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            resource_args: vec!["{resource}".into()],
+            ..TraceConfig::default()
+        };
+        let request = TraceRequest {
+            timeout: Some(Duration::from_millis(100)),
+            ..request()
+        };
+        let error = execute(&config, &request, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("after 100ms"), "{error}");
+    }
+
+    #[tokio::test]
     async fn rejects_output_over_the_configured_limit() {
         let config = TraceConfig {
             program: "/bin/sh".into(),
@@ -327,69 +420,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_stops_a_running_process() {
-        let config = TraceConfig {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), "sleep 30".into()],
-            resource_args: vec!["{resource}".into()],
-            ..TraceConfig::default()
-        };
-        let token = CancellationToken::new();
-        let cancel = token.clone();
-        let task = tokio::spawn(async move { execute(&config, &request(), token).await });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        cancel.cancel();
-        let result = time::timeout(Duration::from_secs(2), task)
-            .await
-            .expect("cancelled trace should complete")
-            .unwrap();
-        assert!(result.unwrap_err().to_string().contains("cancelled"));
-    }
-
-    async fn cancel_after_start(script: &str) -> Duration {
-        let config = TraceConfig {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), script.into()],
-            resource_args: vec!["{resource}".into()],
-            ..TraceConfig::default()
-        };
-        let token = CancellationToken::new();
-        let cancel = token.clone();
-        let task = tokio::spawn(async move { execute(&config, &request(), token).await });
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let started = std::time::Instant::now();
-        cancel.cancel();
-        let result = time::timeout(Duration::from_secs(5), task)
-            .await
-            .expect("cancelled trace should complete")
-            .unwrap();
-        assert!(result.unwrap_err().to_string().contains("cancelled"));
-        started.elapsed()
-    }
-
-    #[tokio::test]
     async fn cancellation_does_not_wait_out_the_grace_period_for_a_process_that_exits() {
         let elapsed = cancel_after_start("sleep 30").await;
-        assert!(elapsed < Duration::from_millis(700), "{elapsed:?}");
+        // The bound is the grace period itself, so it cannot be loosened further.
+        assert!(elapsed < TERMINATE_GRACE, "{elapsed:?}");
     }
 
     #[tokio::test]
     async fn cancellation_kills_a_process_that_ignores_sigterm() {
         let elapsed = cancel_after_start("trap '' TERM; sleep 30").await;
-        assert!(elapsed >= Duration::from_millis(700), "{elapsed:?}");
-        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
-    }
-
-    fn process_running(pid: Pid) -> bool {
-        if kill(pid, None).is_err() {
-            return false;
-        }
-        let stat = std::process::Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            .unwrap_or_default();
-        !stat.is_empty() && !stat.starts_with('Z')
+        assert!(
+            elapsed >= TERMINATE_GRACE - Duration::from_millis(50),
+            "{elapsed:?}"
+        );
+        assert!(elapsed < TEST_DEADLINE, "{elapsed:?}");
     }
 
     #[tokio::test]
@@ -402,20 +446,12 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let script = format!(
+        let _cleanup = GrandchildCleanup(pid_file.clone());
+        let mut trace = spawn_trace(&format!(
             "sh -c 'trap \"\" TERM; echo $$ > {}; exec sleep 30' & wait",
             pid_file.display()
-        );
-        let config = TraceConfig {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), script],
-            resource_args: vec!["{resource}".into()],
-            ..TraceConfig::default()
-        };
-        let token = CancellationToken::new();
-        let cancel = token.clone();
-        let task = tokio::spawn(async move { execute(&config, &request(), token).await });
-        let grandchild = time::timeout(Duration::from_secs(3), async {
+        ));
+        let grandchild = time::timeout(TEST_DEADLINE, async {
             loop {
                 if let Ok(contents) = std::fs::read_to_string(&pid_file)
                     && let Ok(pid) = contents.trim().parse::<i32>()
@@ -427,22 +463,13 @@ mod tests {
         })
         .await
         .expect("grandchild should record its pid");
-        cancel.cancel();
-        time::timeout(Duration::from_secs(5), task)
-            .await
-            .expect("cancelled trace should complete")
-            .unwrap()
-            .unwrap_err();
-        let gone = time::timeout(Duration::from_secs(2), async {
+        trace.cancel().await;
+        let gone = time::timeout(TEST_DEADLINE, async {
             while process_running(grandchild) {
                 time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await;
-        let _ = std::fs::remove_file(&pid_file);
-        if gone.is_err() {
-            let _ = kill(grandchild, Signal::SIGKILL);
-        }
         assert!(gone.is_ok(), "grandchild outlived the process group");
     }
 

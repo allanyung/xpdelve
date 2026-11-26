@@ -140,7 +140,7 @@ fn enter_and_space_never_toggle_tree_expansion() {
     for collapsed in [false, true] {
         for key in [KeyCode::Enter, KeyCode::Char(' ')] {
             app.handle_key(KeyEvent::new(key, KeyModifiers::NONE), area);
-            assert_eq!(app.visible().len(), if collapsed { 1 } else { 2 });
+            assert_eq!(app.visible_shared().len(), if collapsed { 1 } else { 2 });
             assert!(app.modal.is_none());
         }
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
@@ -159,7 +159,7 @@ fn problematic_parent_opens_details_without_changing_expansion() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
         assert!(matches!(app.modal, Some(Modal::Text { .. })));
         assert_eq!(app.collapsed, before);
-        assert_eq!(app.visible().len(), if collapsed { 1 } else { 2 });
+        assert_eq!(app.visible_shared().len(), if collapsed { 1 } else { 2 });
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), area);
     }
@@ -274,7 +274,7 @@ fn collapse_all_keeps_root_expanded() {
 
     assert!(!app.collapsed.contains(&root));
     assert!(app.collapsed.contains(&child));
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
     assert_eq!(app.selection.visible_index, 0);
 }
 
@@ -286,7 +286,7 @@ fn right_expands_a_collapsed_node() {
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), area);
 
-    assert_eq!(app.visible().len(), 2);
+    assert_eq!(app.visible_shared().len(), 2);
     assert_eq!(app.selection.visible_index, 0);
 }
 
@@ -437,7 +437,7 @@ fn command_palette_qualifies_duplicate_kinds_by_group() {
         app.kind_filter,
         Some(resource_kind("beta.example.io", "Widget"))
     );
-    assert_eq!(app.visible(), vec![2]);
+    assert_eq!(*app.visible_shared(), vec![2]);
     assert_eq!(app.selected_node().unwrap().identity.name, "beta");
 }
 
@@ -454,7 +454,7 @@ fn typing_narrows_the_command_palette_and_enter_filters_by_kind() {
 
     assert_eq!(app.mode, InputMode::Normal);
     assert_eq!(app.kind_filter, Some(resource_kind("", "Child")));
-    assert_eq!(app.visible(), vec![1]);
+    assert_eq!(*app.visible_shared(), vec![1]);
     assert_eq!(app.selected_node().unwrap().identity.kind, "Child");
 }
 
@@ -478,7 +478,7 @@ fn command_palette_navigation_executes_the_highlighted_action() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert_eq!(app.kind_filter, Some(resource_kind("", "Root")));
-    assert_eq!(app.visible(), vec![0]);
+    assert_eq!(*app.visible_shared(), vec![0]);
 }
 
 #[test]
@@ -496,7 +496,7 @@ fn clear_palette_command_removes_the_kind_filter() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert!(app.kind_filter.is_none());
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
 }
 
 #[test]
@@ -798,13 +798,13 @@ fn health_palette_command_filters_unhealthy_resources_with_ancestors() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
 
     assert_eq!(app.health_filter, HealthFilter::Unhealthy);
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
     assert_eq!(app.selection.visible_index, 0);
     assert!(app.modal.is_none());
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     assert_eq!(app.health_filter, HealthFilter::All);
-    assert_eq!(app.visible(), vec![0, 1, 2]);
+    assert_eq!(*app.visible_shared(), vec![0, 1, 2]);
 }
 
 #[test]
@@ -863,9 +863,9 @@ fn exclude_palette_puts_usage_first_and_applies_hidden_kinds() {
         kind: "Usage".into(),
     }));
     assert_eq!(
-        app.visible()
-            .into_iter()
-            .map(|index| app.snapshot.as_ref().unwrap().nodes[index]
+        app.visible_shared()
+            .iter()
+            .map(|&index| app.snapshot.as_ref().unwrap().nodes[index]
                 .identity
                 .kind
                 .as_str())
@@ -879,7 +879,7 @@ fn exclude_palette_puts_usage_first_and_applies_hidden_kinds() {
             )
             .unwrap(),
         );
-    assert_eq!(app.visible(), vec![0, 2]);
+    assert_eq!(*app.visible_shared(), vec![0, 2]);
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     assert_eq!(app.excluded_kinds.len(), 1);
 
@@ -908,18 +908,18 @@ fn exclude_picker_can_cancel_show_all_hide_all_and_show_only() {
     app.open_exclude_picker();
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
-    assert!(app.visible().is_empty());
+    assert!(app.visible_shared().is_empty());
 
     app.open_exclude_picker();
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
-    assert_eq!(app.visible(), vec![0, 1]);
+    assert_eq!(*app.visible_shared(), vec![0, 1]);
 
     app.open_exclude_picker();
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), area);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), area);
-    assert_eq!(app.visible(), vec![0]);
+    assert_eq!(*app.visible_shared(), vec![0]);
 }
 
 #[test]
@@ -1153,7 +1153,7 @@ fn escape_cancels_the_palette_then_clears_an_active_kind_filter() {
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), area);
     assert!(app.kind_filter.is_none());
-    assert_eq!(app.visible().len(), 2);
+    assert_eq!(app.visible_shared().len(), 2);
 }
 
 #[test]
@@ -1254,7 +1254,7 @@ fn resource_not_found_clears_stale_trace_state() {
         title: "YAML".into(),
         content: "kind: Root".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
 
@@ -1385,8 +1385,12 @@ fn extra_columns_union_is_aligned_before_status_in_both_table_modes() {
         assert_eq!(horizontal_slice(&rendered.lines[1], child, 10).trim(), "-");
         assert_eq!(horizontal_slice(&rendered.lines[2], flag, 4).trim(), "-");
         assert_eq!(header.contains("LAST"), !short);
-        let plan =
-            tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
+        let plan = tree_table_plan(
+            &app,
+            resource_tree_area(area).unwrap(),
+            &app.visible_shared(),
+        )
+        .unwrap();
         assert_eq!(
             plan.header().width() + 1,
             plan.horizontal_layout(0).pinned_width
@@ -1462,8 +1466,12 @@ fn extra_columns_work_in_package_tables() {
         assert!(header.contains("INSTALLED"));
         assert!(header.contains("HEALTHY"));
         assert!(!header.contains("GROUP"));
-        let plan =
-            tree_table_plan(&app, resource_tree_area(area).unwrap(), &app.visible()).unwrap();
+        let plan = tree_table_plan(
+            &app,
+            resource_tree_area(area).unwrap(),
+            &app.visible_shared(),
+        )
+        .unwrap();
         assert_eq!(
             plan.header().width() + 1,
             plan.horizontal_layout(0).pinned_width
@@ -1593,7 +1601,7 @@ fn logical_name_is_the_first_scrollable_column_in_all_table_modes() {
                     horizontal_slice(&rendered.lines[2], start, logical_name.width()),
                     logical_name
                 );
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 assert_eq!(
                     plan.header().width() + 1,
                     rendered.horizontal.pinned_width
@@ -1700,7 +1708,7 @@ fn logical_name_toggle_removes_the_column_and_preserves_pinned_regions() {
                     before.horizontal.content_width - hidden.horizontal.content_width,
                     "logical-resource".len() + 2
                 );
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 assert_eq!(
                     plan.header().width() + 1,
                     hidden.horizontal.pinned_width
@@ -1816,7 +1824,7 @@ fn logical_name_annotation_is_sanitized_and_missing_or_non_string_values_use_das
 fn narrow_table_keeps_timestamp_columns_scrollable_unless_short_is_enabled() {
     let app = app();
     let snapshot = app.snapshot.as_ref().unwrap();
-    let visible = app.visible();
+    let visible = app.visible_shared();
     let plan = TablePlan::new(snapshot, &visible, 50, false, false, false);
     let header = plan.header();
     assert!(header.contains("SYNCED LAST"));
@@ -1892,7 +1900,7 @@ fn external_name_column_order_and_toggle_preserve_pinned_regions_in_all_modes() 
                 app.apply_snapshot(Snapshot::parse(&bytes).unwrap());
                 assert_eq!(rendered_tree(&app, tree).unwrap().lines, shown.lines);
                 app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT), area);
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 let header = plan.header();
                 assert!(
                     header.find("LOGICAL NAME").unwrap() < header.find("EXTERNAL NAME").unwrap()
@@ -2124,7 +2132,7 @@ fn filter_applies_as_you_type_and_escape_restores_the_previous_filter() {
     assert_eq!(app.mode, InputMode::Filter);
     let names = |app: &App| {
         let snapshot = app.snapshot.as_ref().unwrap();
-        app.visible()
+        app.visible_shared()
             .iter()
             .map(|index| snapshot.nodes[*index].identity.name.clone())
             .collect::<Vec<_>>()
@@ -2269,7 +2277,7 @@ fn filter_matches_are_highlighted_in_rows_and_field_filters_only_mark_their_fiel
 
 #[test]
 fn modal_find_highlights_while_typing() {
-    let mut state = TextModalState::new(ContentKind::Yaml);
+    let mut state = TextModalState::new();
     state.query = "old".into();
     assert_eq!(state.highlight_query(), "old");
     state.search_input = Some(" new ".into());
@@ -2313,7 +2321,7 @@ fn yaml_modal(app: &mut App, content: String) {
         title: "demo — YAML".into(),
         content: content.into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
 }
@@ -2491,7 +2499,7 @@ fn long_unicode_statuses_are_capped_without_changing_model_text() {
     let middle_width = tree_table_plan(
         &app,
         resource_tree_area(Rect::new(0, 0, 100, 16)).unwrap(),
-        &app.visible(),
+        &app.visible_shared(),
     )
     .unwrap()
     .horizontal_layout(0)
@@ -2555,7 +2563,7 @@ fn status_rendering_is_single_line_and_zero_middle_space_cannot_scroll() {
     assert!(!rendered.lines[1].contains(['\n', '\t']));
     let plan = TablePlan::new(
         app.snapshot.as_ref().unwrap(),
-        &app.visible(),
+        &app.visible_shared(),
         4,
         false,
         false,
@@ -2699,7 +2707,7 @@ fn tree_pins_and_caps_long_unicode_objects_for_both_schemas() {
         );
         assert!(after.lines[0].trim_end().ends_with("STATUS"));
         assert!(after.lines.iter().all(|line| line.width() <= 48));
-        let plan = tree_table_plan(&app, area, &app.visible()).unwrap();
+        let plan = tree_table_plan(&app, area, &app.visible_shared()).unwrap();
         assert_eq!(
             plan.header().width() + 1
                 - after.horizontal.pinned_width
@@ -3077,7 +3085,7 @@ fn tree_horizontal_layout_matches_formatted_columns_across_schemas() {
             app.config.ui.short = short;
             for width in 32..160 {
                 let tree = resource_tree_area(Rect::new(0, 0, width, 16)).unwrap();
-                let plan = tree_table_plan(&app, tree, &app.visible()).unwrap();
+                let plan = tree_table_plan(&app, tree, &app.visible_shared()).unwrap();
                 let layout = plan.horizontal_layout(usize::MAX);
                 assert!(layout.pinned_width - 2 <= usize::from(width - 2) * 3 / 5);
                 let header = plan.header();
@@ -3424,7 +3432,7 @@ fn tree_scroll_hint_is_right_aligned_and_only_shown_for_overflow() {
             })
             .collect::<String>();
         let tree = resource_tree_area(Rect::new(0, 0, width, 20)).unwrap();
-        let horizontal = tree_table_plan(&app, tree, &app.visible())
+        let horizontal = tree_table_plan(&app, tree, &app.visible_shared())
             .unwrap()
             .horizontal_layout(0);
         if horizontal.max_offset() > 0 {
@@ -3537,7 +3545,7 @@ fn yaml_key_legend_uses_sofka_subtle_color() {
         title: "YAML: Widget/example".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     };
     let backend = TestBackend::new(100, 20);
@@ -3578,7 +3586,7 @@ fn yaml_modal_wraps_long_lines() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     };
     let backend = TestBackend::new(20, 8);
@@ -3600,7 +3608,7 @@ fn mutation_error_modal_wraps_long_lines_and_uses_danger_border() {
             "Resource: Widget/example\n\nadmission webhook rejected abcdefghijklmnopqrstuvwxyz"
                 .into(),
         kind: ContentKind::Error,
-        state: TextModalState::new(ContentKind::Error),
+        state: TextModalState::new(),
         selection: None,
     };
     let backend = TestBackend::new(24, 16);
@@ -3627,7 +3635,7 @@ fn popups_always_fill_their_whole_area_with_the_overlay_background() {
         title: "Overlay".into(),
         content: "Resource: Widget/example\n\nboom".into(),
         kind,
-        state: TextModalState::new(kind),
+        state: TextModalState::new(),
         selection: None,
     };
     let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -3664,7 +3672,7 @@ fn full_screen_views_and_main_screen_follow_skin_background() {
                 title: "View".into(),
                 content: "key: value".into(),
                 kind,
-                state: TextModalState::new(kind),
+                state: TextModalState::new(),
                 selection: None,
             };
             let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -3696,7 +3704,7 @@ fn yaml_modal_toggles_wrapping_and_scrolls_horizontally() {
         title: "YAML: Widget/example".into(),
         content: "value: abcdefghijklmnopqrstuvwxyz".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
 
@@ -3817,7 +3825,7 @@ fn content_mouse_wheel_scrolls_visual_rows_and_clamps() {
                 content: content.into(),
                 kind,
                 state: {
-                    let mut state = TextModalState::new(kind);
+                    let mut state = TextModalState::new();
                     state.wrapped = wrapped;
                     state
                 },
@@ -3908,7 +3916,7 @@ fn content_mouse_drag_copies_selected_source_text() {
             title: "Content".into(),
             content: "kind: Widget\nmetadata: {}".into(),
             kind: content_kind,
-            state: TextModalState::new(content_kind),
+            state: TextModalState::new(),
             selection: None,
         });
         let body = content_modal_body(area, content_kind);
@@ -3977,7 +3985,7 @@ fn content_drag_auto_scrolls_both_directions_and_copies_offscreen_text() {
                 let body = content_modal_body(area, kind);
                 let content = content::TextContent::from(source.clone());
                 let max_scroll = content.scroll_bounds(body.width, body.height, wrapped).0;
-                let mut state = TextModalState::new(kind);
+                let mut state = TextModalState::new();
                 state.wrapped = wrapped;
                 state.vertical_scroll = if upwards { max_scroll } else { 0 };
                 app.modal = Some(Modal::Text {
@@ -4031,14 +4039,15 @@ fn content_drag_auto_scrolls_both_directions_and_copies_offscreen_text() {
                 };
                 assert_eq!(state.vertical_scroll, if upwards { 0 } else { max_scroll });
                 assert_eq!(active.anchor, anchor);
-                let expected_focus = selection_point_at(
+                let expected_focus = reference_selection_point(
                     &source,
                     body,
-                    body.x,
-                    edge,
-                    state.vertical_scroll,
-                    0,
-                    wrapped,
+                    (body.x, edge),
+                    Viewport {
+                        vertical: state.vertical_scroll,
+                        horizontal: 0,
+                        wrapped,
+                    },
                     true,
                 )
                 .unwrap();
@@ -4068,7 +4077,7 @@ fn content_drag_stops_scrolling_inside_body_and_on_key_or_document_change() {
         title: "Content".into(),
         content: source.clone().into(),
         kind,
-        state: TextModalState::new(kind),
+        state: TextModalState::new(),
         selection: None,
     });
     let body = content_modal_body(area, kind);
@@ -4122,7 +4131,7 @@ fn content_wheel_preserves_drag_anchor_and_extends_copied_text() {
         title: "Content".into(),
         content: source.clone().into(),
         kind,
-        state: TextModalState::new(kind),
+        state: TextModalState::new(),
         selection: None,
     });
     let body = content_modal_body(area, kind);
@@ -4178,7 +4187,7 @@ fn content_mouse_click_does_not_copy_text() {
         title: "YAML".into(),
         content: "kind: Widget".into(),
         kind: ContentKind::Yaml,
-        state: TextModalState::new(ContentKind::Yaml),
+        state: TextModalState::new(),
         selection: None,
     });
     let area = Rect::new(0, 0, 40, 10);
@@ -4642,18 +4651,18 @@ fn wrapped_yaml_selection_uses_original_newlines_only() {
         .map(|grapheme| usize::from(grapheme.width.max(1)))
         .sum::<usize>()
         - 1;
-    let first = selection_point_at(content, body, 0, 0, 0, 0, true, false).unwrap();
-    let last = selection_point_at(
-        content,
-        body,
-        last_column as u16,
-        last_row as u16,
-        0,
-        0,
-        true,
-        false,
-    )
-    .unwrap();
+    let wrapped = Viewport {
+        vertical: 0,
+        horizontal: 0,
+        wrapped: true,
+    };
+    let text = content::TextContent::from(content);
+    let first = text
+        .selection_point_at(body, (0, 0), wrapped, false)
+        .unwrap();
+    let last = text
+        .selection_point_at(body, (last_column as u16, last_row as u16), wrapped, false)
+        .unwrap();
     let selection = TextSelection {
         anchor: first,
         focus: last,
@@ -4726,8 +4735,53 @@ fn modal_find_rows_invalidate_for_query_width_and_wrap() {
     assert!(content.match_rows("", 80, true).is_none());
 }
 
+fn reference_selection_point(
+    content: &str,
+    body: Rect,
+    (column, row): (u16, u16),
+    viewport: Viewport,
+    clamp: bool,
+) -> Option<SelectionPoint> {
+    let (column_offset, row_offset) = body_offset(body, column, row, clamp)?;
+    let rows = visual_rows(content, body.width, viewport.wrapped);
+    let visual_row = (usize::from(viewport.vertical) + usize::from(row_offset))
+        .min(rows.len().saturating_sub(1));
+    point_in_row(
+        rows.get(visual_row)?,
+        viewport.horizontal.saturating_add(column_offset),
+        clamp,
+    )
+}
+
+fn reference_render_selection(
+    frame: &mut ratatui::Frame<'_>,
+    body: Rect,
+    content: &str,
+    selection: TextSelection,
+    viewport: Viewport,
+    theme: &Theme,
+) {
+    let range = selection.range();
+    for (screen_row, row) in visual_rows(content, body.width, viewport.wrapped)
+        .iter()
+        .skip(usize::from(viewport.vertical))
+        .take(usize::from(body.height))
+        .enumerate()
+    {
+        paint_row(
+            frame,
+            body,
+            screen_row as u16,
+            row,
+            &range,
+            viewport.horizontal,
+            theme,
+        );
+    }
+}
+
 #[test]
-fn text_content_selection_matches_str_selection_everywhere() {
+fn text_content_selection_matches_visual_rows_reference_everywhere() {
     let source = (0..12)
         .map(|index| {
             format!(
@@ -4760,8 +4814,11 @@ fn text_content_selection_matches_str_selection_everywhere() {
                                         viewport,
                                         clamp
                                     ),
-                                    selection_point_at(
-                                        &source, body, column, row, vertical, horizontal, wrapped,
+                                    reference_selection_point(
+                                        &source,
+                                        body,
+                                        (column, row),
+                                        viewport,
                                         clamp
                                     ),
                                 );
@@ -4785,7 +4842,7 @@ fn text_content_selection_matches_str_selection_everywhere() {
                         .unwrap();
                     reference
                         .draw(|frame| {
-                            render_text_selection(
+                            reference_render_selection(
                                 frame, body, &source, selection, viewport, &theme,
                             );
                         })
@@ -5959,9 +6016,7 @@ fn an_open_review_is_not_changed_by_a_background_refresh() {
 }
 
 fn upgrade_plan_for_first(app: &App) -> upgrade::UpgradePlan {
-    app.upgrade_info_for(&app.snapshot.as_ref().unwrap().nodes[0])
-        .plan
-        .unwrap()
+    app.upgrade_info_at(0).unwrap().plan.unwrap()
 }
 
 #[test]
@@ -5973,7 +6028,7 @@ fn upgrading_shows_immediately_and_clears_when_a_trace_reflects_it() {
     app.begin_upgrades(std::slice::from_ref(&plan));
     assert_eq!(first_state(&app), UpgradeState::Upgrading);
     // Revision columns stay, and an in-flight resource cannot be marked again.
-    let info = app.upgrade_info_for(&app.snapshot.as_ref().unwrap().nodes[0]);
+    let info = app.upgrade_info_at(0).unwrap();
     assert_eq!((info.current, info.latest), (Some(1), Some(3)));
     assert!(info.plan.is_none());
     key(&mut app, KeyCode::Char(' '));
@@ -6639,73 +6694,26 @@ fn header_drops_the_update_notice_before_squeezing_the_resource() {
     assert!(header.contains("xpdelve v"));
 }
 
-fn synthetic_trace(
-    counter: &mut usize,
-    depth: usize,
-    max_depth: usize,
-    fanout: usize,
-) -> serde_json::Value {
-    let id = *counter;
-    *counter += 1;
-    let kind = id % 12;
-    let children: Vec<serde_json::Value> = if depth < max_depth {
-        (0..fanout)
-            .map(|_| synthetic_trace(counter, depth + 1, max_depth, fanout))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    serde_json::json!({
-        "object": {
-            "apiVersion": "example.io/v1",
-            "kind": format!("Kind{kind}"),
-            "metadata": {
-                "name": if id.is_multiple_of(100) { format!("hit-{id}") } else { format!("res-{id}") },
-                "namespace": format!("ns-{}", id % 50),
-                "uid": format!("uid-{id}"),
-                "annotations": {"crossplane.io/external-name": format!("external-{id}")},
-            },
-            "spec": {
-                "compositionRef": {"name": format!("comp-{kind}")},
-                "compositionUpdatePolicy": "Manual",
-                "compositionRevisionRef": {"name": format!("comp-{kind}-1")},
-            },
-            "status": {"conditions": [
-                {"type": "Ready", "status": if id.is_multiple_of(2) { "False" } else { "True" }, "reason": "Waiting"},
-                {"type": "Synced", "status": "True"}
-            ]}
-        },
-        "children": children,
-    })
-}
-
 #[test]
 #[ignore = "timing benchmark; run with --release -- --ignored --nocapture"]
 fn draw_timing_on_large_snapshot() {
     fn time_draws(label: &str, app: &mut App, terminal: &mut Terminal<TestBackend>) {
-        let mut durations = Vec::new();
-        for _ in 0..20 {
-            let started = std::time::Instant::now();
+        crate::test_support::bench_avg(label, 20, || {
             terminal
                 .draw(|frame| {
                     app.clamp_tree_horizontal_scroll(frame.area());
                     render(frame, app);
                 })
                 .unwrap();
-            durations.push(started.elapsed());
-        }
-        let total: std::time::Duration = durations.iter().sum();
+        });
         println!(
-            "{label}: {:?}/draw avg, first {:?}, visible {}, h-scroll {}",
-            total / 20,
-            durations[0],
-            app.visible().len(),
+            "  visible {}, h-scroll {}",
+            app.visible_shared().len(),
             app.resource_horizontal_scroll
         );
     }
 
-    let mut counter = 0;
-    let root = synthetic_trace(&mut counter, 0, 5, 7);
+    let root = crate::test_support::synthetic_trace(5, 7, true);
     let mut app = app();
     app.apply_snapshot(Snapshot::parse(&serde_json::to_vec(&root).unwrap()).unwrap());
     println!("nodes: {}", app.snapshot.as_ref().unwrap().nodes.len());
@@ -6777,23 +6785,14 @@ fn text_modal_timing_on_large_document() {
     let body = content_modal_body(area, ContentKind::Yaml);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     let draws = |label: &str, app: &App, terminal: &mut Terminal<TestBackend>| {
-        let mut durations = Vec::new();
-        for _ in 0..20 {
-            let started = std::time::Instant::now();
+        crate::test_support::bench_avg(label, 20, || {
             terminal.draw(|frame| render(frame, app)).unwrap();
-            durations.push(started.elapsed());
-        }
-        let total: std::time::Duration = durations.iter().sum();
-        println!(
-            "{label}: {:?}/draw avg, first {:?}",
-            total / 20,
-            durations[0]
-        );
+        });
     };
 
     for wrapped in [true, false] {
         let mut app = app();
-        let mut state = TextModalState::new(ContentKind::Yaml);
+        let mut state = TextModalState::new();
         state.wrapped = wrapped;
         state.vertical_scroll = 1_000;
         app.modal = Some(Modal::Text {
@@ -6828,24 +6827,21 @@ fn text_modal_timing_on_large_document() {
         let Some(Modal::Text { content, state, .. }) = &app.modal else {
             unreachable!()
         };
-        let started = std::time::Instant::now();
-        for step in 0..20_u16 {
+        let mut step = 0_u16;
+        crate::test_support::bench_avg("  drag event (selection_point_at)", 20, || {
             std::hint::black_box(content.selection_point_at(
                 body,
                 (body.x + step, body.y + step % body.height),
                 state.viewport(),
                 true,
             ));
-        }
-        println!(
-            "  drag events (selection_point_at): {:?}/event avg",
-            started.elapsed() / 20
-        );
+            step += 1;
+        });
     }
 }
 
 #[test]
-fn upgrade_projection_cache_follows_revision_and_snapshot_changes() {
+fn upgrade_projection_cache_follows_revision_changes() {
     let mut app = app_for_upgrades();
     assert_eq!(app.upgrade_available_count(), 1);
     let identity = app.snapshot.as_ref().unwrap().nodes[0].identity.clone();
@@ -6854,5 +6850,18 @@ fn upgrade_projection_cache_follows_revision_and_snapshot_changes() {
     app.revisions.clear_pending(&identity);
     assert_eq!(app.upgrade_available_count(), 1);
     app.revisions = RevisionDiscovery::loaded(upgrade::RevisionIndex::default());
+    assert_eq!(app.upgrade_available_count(), 0);
+}
+
+#[test]
+fn upgrade_projection_cache_drops_a_replaced_snapshot() {
+    let mut app = app_for_upgrades();
+    assert_eq!(app.upgrade_available_count(), 1);
+    app.apply_snapshot(
+        Snapshot::parse(
+            br#"{"object":{"apiVersion":"v1","kind":"Plain","metadata":{"name":"plain"}}}"#,
+        )
+        .unwrap(),
+    );
     assert_eq!(app.upgrade_available_count(), 0);
 }

@@ -22,10 +22,14 @@ fn scroll_vertical(scroll: u16, delta: isize, max_scroll: u16) -> u16 {
 }
 
 impl App {
+    pub(super) fn clear_tree_interaction(&mut self) {
+        self.tree_selection = None;
+        self.last_tree_click = None;
+    }
+
     pub(super) fn clamp_tree_horizontal_scroll(&mut self, terminal_area: Rect) {
         let Some(tree_area) = resource_tree_area(terminal_area) else {
-            self.tree_selection = None;
-            self.last_tree_click = None;
+            self.clear_tree_interaction();
             return;
         };
         let offset = if self.resource_horizontal_scroll == 0 {
@@ -42,8 +46,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|selection| selection.area != tree_area)
         {
-            self.tree_selection = None;
-            self.last_tree_click = None;
+            self.clear_tree_interaction();
         }
         self.resource_horizontal_scroll = offset;
     }
@@ -61,8 +64,7 @@ impl App {
                 .saturating_sub(count.saturating_mul(4))
         };
         self.clamp_tree_horizontal_scroll(terminal_area);
-        self.tree_selection = None;
-        self.last_tree_click = None;
+        self.clear_tree_interaction();
     }
 
     pub(super) fn handle_mouse(
@@ -110,9 +112,6 @@ impl App {
         else {
             return None;
         };
-        if !kind.supports_mouse_selection() {
-            return None;
-        }
         let body = content_modal_body(terminal_area, *kind);
         if let Some(delta) = vertical_wheel_delta(mouse, count) {
             if content_modal_area(terminal_area, *kind).contains((mouse.column, mouse.row).into()) {
@@ -302,13 +301,13 @@ impl App {
             action,
             ContextAction::Edit | ContextAction::Pause | ContextAction::Reconcile
         );
-        if changes_resource && self.config.read_only {
-            self.status = match action {
-                ContextAction::Edit => "Edit is disabled in read-only mode",
-                ContextAction::Pause => "Pause is disabled in read-only mode",
-                _ => "Reconcile is disabled in read-only mode",
-            }
-            .into();
+        if changes_resource
+            && !self.ensure_writable(match action {
+                ContextAction::Edit => "Edit",
+                ContextAction::Pause => "Pause",
+                _ => "Reconcile",
+            })
+        {
             return None;
         }
         match action {
@@ -374,8 +373,7 @@ impl App {
                 return None;
             }
             if let Some(delta) = vertical_wheel_delta(mouse, count) {
-                self.tree_selection = None;
-                self.last_tree_click = None;
+                self.clear_tree_interaction();
                 self.move_selection(delta);
                 self.ensure_selection_visible(usize::from(tree_area.height.saturating_sub(3)));
                 return None;
@@ -408,42 +406,30 @@ impl App {
                     )
                 {
                     self.toggle_mark_at(position);
-                    self.tree_selection = None;
-                    self.last_tree_click = None;
+                    self.clear_tree_interaction();
                     return None;
                 }
-                self.tree_selection = selection_point_at(
-                    &rendered.content,
-                    body,
-                    mouse.column,
-                    mouse.row,
-                    0,
-                    0,
-                    false,
-                    false,
-                )
-                .map(|point| TreeSelection {
-                    text: TextSelection {
-                        anchor: point,
-                        focus: point,
-                        dragged: false,
-                    },
-                    content: rendered.content,
-                    area: tree_area,
-                    selecting: true,
-                });
+                self.tree_selection = rendered
+                    .content
+                    .selection_point_at(body, (mouse.column, mouse.row), TREE_VIEWPORT, false)
+                    .map(|point| TreeSelection {
+                        text: TextSelection {
+                            anchor: point,
+                            focus: point,
+                            dragged: false,
+                        },
+                        content: rendered.content,
+                        area: tree_area,
+                        selecting: true,
+                    });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.last_tree_click = None;
                 if let Some(active) = &mut self.tree_selection
-                    && let Some(point) = selection_point_at(
-                        &active.content,
+                    && let Some(point) = active.content.selection_point_at(
                         body,
-                        mouse.column,
-                        mouse.row,
-                        0,
-                        0,
-                        false,
+                        (mouse.column, mouse.row),
+                        TREE_VIEWPORT,
                         true,
                     )
                 {
@@ -480,14 +466,10 @@ impl App {
                     }
                     return None;
                 }
-                if let Some(point) = selection_point_at(
-                    &active.content,
+                if let Some(point) = active.content.selection_point_at(
                     body,
-                    mouse.column,
-                    mouse.row,
-                    0,
-                    0,
-                    false,
+                    (mouse.column, mouse.row),
+                    TREE_VIEWPORT,
                     true,
                 ) {
                     active.text.focus = point;
@@ -507,14 +489,14 @@ impl App {
                     rendered.row_count,
                 ) {
                     self.set_selection(position);
-                    self.tree_selection = None;
-                    self.last_tree_click = None;
+                    self.clear_tree_interaction();
                     if let Some(target) = self.selected_target() {
                         let paused = self.selected_node().is_some_and(|node| node.paused);
                         let items = if self.upgrade_view {
                             let available = self
-                                .selected_node()
-                                .is_some_and(|node| self.upgrade_info_for(node).plan.is_some());
+                                .selected_index()
+                                .and_then(|index| self.upgrade_info_at(index))
+                                .is_some_and(|info| info.plan.is_some());
                             upgrade_context_menu_items(
                                 available,
                                 self.upgrade_marked.contains_key(&target.identity),
@@ -541,7 +523,7 @@ impl App {
 
     pub(super) fn captures_mouse(&self) -> bool {
         match &self.modal {
-            Some(Modal::Text { kind, .. }) => kind.supports_mouse_selection(),
+            Some(Modal::Text { .. }) => true,
             Some(Modal::ContextMenu { .. }) => true,
             Some(
                 Modal::Delete { .. }
@@ -569,8 +551,7 @@ impl App {
         }
         self.text_drag = None;
         if self.modal.is_none() {
-            self.tree_selection = None;
-            self.last_tree_click = None;
+            self.clear_tree_interaction();
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
             self.quit = true;
@@ -1026,9 +1007,9 @@ impl App {
                 }
             }
             (KeyCode::Char('e'), _) => {
-                if self.config.read_only {
-                    self.status = "Edit is disabled in read-only mode".into();
-                } else if let Some(target) = self.selected_target() {
+                if self.ensure_writable("Edit")
+                    && let Some(target) = self.selected_target()
+                {
                     return UiAction::Edit(target);
                 }
             }
@@ -1045,7 +1026,7 @@ impl App {
                 Some(nav::Nav::Page(step)) => self.move_selection(step * page_size.cast_signed()),
                 Some(nav::Nav::Top) => self.set_selection(0),
                 Some(nav::Nav::Bottom) => {
-                    self.set_selection(self.visible().len().saturating_sub(1));
+                    self.set_selection(self.visible_shared().len().saturating_sub(1));
                 }
                 None => {}
             },
