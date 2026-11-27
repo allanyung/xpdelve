@@ -40,13 +40,13 @@ does not guarantee that reconciliation succeeds, and there is no automatic rollb
 
 ## Sensitive Data
 
-Secret `data` and `stringData` are redacted from the live YAML modal, and
-`managedFields` is omitted. Other resource kinds are not recursively redacted,
-so their YAML or Describe output may contain credential-like values. Text from
-the cluster and external commands is sanitized to prevent terminal control
-sequences from executing. The trace command and kubectl still run with the
-user's normal environment and credentials; avoid placing credentials directly
-in custom command arguments.
+Secret values are displayed unredacted, in the live YAML modal, Describe output,
+and extra columns. Access control is the Kubernetes RBAC of the user's
+credentials: xpdelve shows what the API server lets that user read. The live
+YAML modal omits `managedFields`. Text from the cluster and external commands is
+sanitized to prevent terminal control sequences from executing. The trace
+command and kubectl still run with the user's normal environment and
+credentials; avoid placing credentials directly in custom command arguments.
 
 ## Network and Files
 

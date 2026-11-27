@@ -113,7 +113,7 @@ required for these mouse events. Ordinary vertical-wheel behavior is unchanged.
 | `n`, `N` | Select the next or previous find match |
 | `Esc` | Clear find, text filter, kind filter, and health filter |
 | `d` | Open captured `kubectl describe` output |
-| `y` | Open redacted live YAML |
+| `y` | Open live YAML |
 | `s` | Show the selected resource status |
 | `E` | Load related Kubernetes events |
 | `c` | Copy the canonical resource identifier with OSC 52 |

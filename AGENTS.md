@@ -23,7 +23,7 @@
 - Live tracing requires **both stdin and stdout to be terminals**; there is no stdin/file trace mode or `trace` subcommand. For noninteractive smoke checks use `task run -- version` or `task run -- --help`.
 - The app is writable by default. For inspection use `task run -- --readonly --context CONTEXT Kind/name`; runtime needs Crossplane CLI and kubeconfig access, plus kubectl for Describe/Edit.
 - Preserve native mutation safeguards: re-fetch and match trace UID; deletes use UID/resourceVersion preconditions, patches atomically test both. Keep read-only gating, confirmation flows, and per-resource/global mutation limits.
-- Preserve Secret YAML redaction and terminal-text sanitization (`src/kubernetes.rs`, `src/text.rs`); other resource kinds are not recursively credential-redacted. Details: `docs/safety.md`.
+- Preserve terminal-text sanitization (`src/text.rs`). Secret contents are shown as-is; Kubernetes RBAC is the access boundary. Details: `docs/safety.md`.
 - Configuration uses `CLI > config > defaults`, validates unknown fields strictly, and defaults to `$XDG_CONFIG_HOME/xpdelve/config.toml` or `~/.config/xpdelve/config.toml`; the update-check cache lives in `$XDG_STATE_HOME/xpdelve` or `~/.local/state/xpdelve`. Config changes/reload must retain CLI overrides; theme persistence must preserve unrelated settings. See `docs/configuration.md`.
 
 ## Operational gotchas

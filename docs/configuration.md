@@ -138,9 +138,8 @@ supported.
 Strings, numbers, and booleans render as text. Missing fields, nulls, objects,
 and arrays show `-`; select individual fields or array elements to display them.
 Terminal control sequences are made inert and newlines/tabs are flattened to
-spaces. Core Secret `data` and `stringData` payloads show `<redacted>` instead
-of their contents. Other resources may contain sensitive values; choose paths
-accordingly.
+spaces. Values are shown unredacted, including Secret `data` and `stringData`;
+choose paths accordingly.
 
 Values come from the current trace snapshot and update on trace refresh, without
 additional Kubernetes requests. Use `:reload` after editing configuration.

@@ -2825,9 +2825,6 @@ fn overlay_matches<'a>(line: Line<'a>, expression: &regex::Regex, theme: &Theme)
 }
 
 pub(super) fn yaml_value_style(value: &str, theme: &Theme) -> Style {
-    if value.contains("<redacted>") {
-        return theme.fg(theme.palette.red).bold();
-    }
     if matches!(value, "true" | "false" | "null" | "~") {
         theme.fg(theme.palette.yellow)
     } else if value.parse::<f64>().is_ok() {

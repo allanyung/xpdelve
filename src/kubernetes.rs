@@ -181,9 +181,9 @@ impl Kubernetes {
     }
 
     pub async fn yaml(&self, target: &Target) -> Result<String> {
-        let object = self.get_current(target).await?;
-        let redacted = redact_object(serde_json::to_value(&object)?);
-        serde_yaml::to_string(&redacted)
+        let mut object = self.get_current(target).await?;
+        object.metadata.managed_fields = None;
+        serde_yaml::to_string(&object)
             .map(|yaml| text::sanitize(&yaml))
             .context("failed to render object as YAML")
     }
@@ -584,25 +584,6 @@ fn ensure_uid(expected_uid: &str, live_uid: &str, identity: &Identity) -> Result
     Ok(())
 }
 
-pub(crate) fn redact_object(mut object: Value) -> Value {
-    let is_secret = object
-        .get("kind")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| kind == "Secret");
-    if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
-        metadata.remove("managedFields");
-    }
-    if is_secret && let Some(map) = object.as_object_mut() {
-        if map.contains_key("data") {
-            map.insert("data".into(), Value::String("<redacted>".into()));
-        }
-        if map.contains_key("stringData") {
-            map.insert("stringData".into(), Value::String("<redacted>".into()));
-        }
-    }
-    object
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,19 +626,6 @@ mod tests {
             DeletePropagation::Orphan.next(),
             DeletePropagation::Foreground
         );
-    }
-
-    #[test]
-    fn redacts_secret_payload_and_managed_fields() {
-        let redacted = redact_object(json!({
-            "kind": "Secret",
-            "metadata": {"managedFields": [{"manager": "test"}]},
-            "data": {"password": "encoded"},
-            "stringData": {"token": "clear"}
-        }));
-        assert_eq!(redacted["data"], "<redacted>");
-        assert_eq!(redacted["stringData"], "<redacted>");
-        assert!(redacted["metadata"].get("managedFields").is_none());
     }
 
     #[test]

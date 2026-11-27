@@ -125,12 +125,6 @@ impl ExtraColumn {
         let Some(value) = node.object.pointer(path) else {
             return "-".into();
         };
-        if node.resource_kind.group.is_empty()
-            && node.resource_kind.kind == "Secret"
-            && matches!(path.split('/').nth(1), Some("data" | "stringData"))
-        {
-            return "<redacted>".into();
-        }
         match value {
             Value::String(value) => cell_text(value),
             Value::Bool(_) | Value::Number(_) => value.to_string(),
@@ -234,7 +228,7 @@ mod tests {
         assert_eq!(columns[0].value(&snapshot.nodes[0]), "-");
         assert_eq!(columns[0].value(&snapshot.nodes[1]), "team");
         assert_eq!(columns[1].value(&snapshot.nodes[0]), "https://workspace");
-        assert_eq!(columns[1].value(&snapshot.nodes[1]), "<redacted>");
+        assert_eq!(columns[1].value(&snapshot.nodes[1]), "private");
         assert_eq!(columns[1].width, 30);
         assert_eq!(columns[2].value(&snapshot.nodes[0]), "42");
         let filtered = resolve(&config, &snapshot, &[0]);
@@ -300,27 +294,6 @@ mod tests {
             assert_eq!(columns[0].value(&snapshot.nodes[0]), expected);
             assert_eq!(columns[0].width, expected.width().max(5));
         }
-    }
-
-    #[test]
-    fn redacts_secret_payloads_but_not_metadata_or_custom_secret_kinds() {
-        let snapshot = snapshot();
-        for path in ["/data", "/data/token", "/stringData", "/stringData/token"] {
-            let config = config(&format!(
-                "[[extra_columns.Secret]]\nname='VALUE'\npath='{path}'"
-            ));
-            assert_eq!(
-                resolve(&config, &snapshot, &[1])[0].value(&snapshot.nodes[1]),
-                "<redacted>"
-            );
-        }
-        let snapshot = Snapshot::parse(br#"{"object":{"apiVersion":"example.org/v1","kind":"Secret","metadata":{"name":"custom"},"data":{"value":"visible"}}}"#).unwrap();
-        let config =
-            config("[[extra_columns.\"Secret.example.org\"]]\nname='VALUE'\npath='/data/value'");
-        assert_eq!(
-            resolve(&config, &snapshot, &[0])[0].value(&snapshot.nodes[0]),
-            "visible"
-        );
     }
 
     #[test]
