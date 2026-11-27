@@ -168,10 +168,9 @@ resource's current Composition is ever offered.
 
 ## Security
 
-Kubernetes Secret `data` and `stringData` plus `managedFields` are redacted from
-YAML views. Other resources may still contain credential-like values;
-broader recursive redaction and warning-gated reveal remain future work. Text
-from Kubernetes and external commands is sanitized before terminal rendering.
+Secret values are shown as returned by the API; Kubernetes RBAC is the access
+boundary. `managedFields` is omitted from YAML views. Text from Kubernetes and
+external commands is sanitized before terminal rendering.
 The application currently has no persistent logging, telemetry, crash upload,
 or automatic update checks.
 

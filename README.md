@@ -253,10 +253,9 @@ and configuration options.
 
 Native mutations re-fetch the selected object and verify its UID. Deletes also
 use UID and resource-version server preconditions; patches test UID and
-resourceVersion atomically. Secret payloads are redacted in YAML views, and
-untrusted cluster text is sanitized before terminal rendering. Non-Secret
-resources may still contain credential-like values. Use `--readonly` to disable
-mutations.
+resourceVersion atomically. Untrusted cluster text is sanitized before terminal
+rendering. Secret values are displayed as returned by the API; Kubernetes RBAC
+is the access boundary. Use `--readonly` to disable mutations.
 
 xpdelve makes one outbound request, to the GitHub releases API, at most once a
 day to look for a newer release; it sends no cluster data. Disable it with
